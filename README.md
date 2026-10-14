@@ -12,6 +12,8 @@
 
 用 Android Studio 打开项目并同步 Gradle，然后运行 `app` 配置。手机需运行 Android 10 或更新版本。
 
+也可以直接在项目目录运行 `gradlew.bat assembleDebug`。APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`；连接开启 USB 调试的手机后可运行 `gradlew.bat installDebug`。
+
 ## 当前范围
 
 - 创建和选择本地分类

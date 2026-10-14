@@ -54,13 +54,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -72,7 +72,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -236,6 +235,7 @@ private fun HomeScreen(
                         CategoryRow(
                             name = name,
                             selected = name == selectedCategory,
+                            canDelete = categories.size > 1,
                             onClick = { onSelect(name) },
                             onDelete = { onDelete(name) },
                         )
@@ -255,7 +255,7 @@ private fun HomeScreen(
 }
 
 @Composable
-private fun CategoryRow(name: String, selected: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun CategoryRow(name: String, selected: Boolean, canDelete: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
     Surface(
         onClick = onClick,
         color = if (selected) Mint else Color.White,
@@ -275,8 +275,10 @@ private fun CategoryRow(name: String, selected: Boolean, onClick: () -> Unit, on
             if (selected) {
                 Text("已选", style = MaterialTheme.typography.labelSmall, color = Moss, modifier = Modifier.padding(horizontal = 8.dp))
             }
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.DeleteOutline, contentDescription = "删除分类 $name", tint = Muted, modifier = Modifier.size(20.dp))
+            if (canDelete) {
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Filled.DeleteOutline, contentDescription = "删除分类 $name", tint = Muted, modifier = Modifier.size(20.dp))
+                }
             }
         }
     }
@@ -402,7 +404,7 @@ private fun CameraScreen(
                     enabled = capture != null,
                     modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 30.dp).size(76.dp),
                     shape = CircleShape,
-                    colors = ButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Moss),
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Moss),
                 ) {
                     Icon(Icons.Filled.CameraAlt, contentDescription = "拍照", modifier = Modifier.size(32.dp))
                 }
