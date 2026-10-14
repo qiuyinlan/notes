@@ -4,9 +4,15 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
+import android.net.Uri
 import android.os.Bundle
+import android.os.Build
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -18,6 +24,7 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +39,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -46,6 +57,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -61,6 +73,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -70,6 +84,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -83,12 +102,16 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
+import java.io.File
 
 private val Ink = Color(0xFF1C2421)
 private val Moss = Color(0xFF315D4A)
 private val Mint = Color(0xFFE4F0E8)
 private val Paper = Color(0xFFF5F7F4)
 private val Muted = Color(0xFF707A74)
+
+private data class Category(val name: String, val folderUri: String? = null)
+private data class PhotoItem(val uri: Uri, val name: String)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -117,29 +140,61 @@ class MainActivity : ComponentActivity() {
 private fun AlbumCameraApp() {
     val context = LocalContext.current
     var categories by remember { mutableStateOf(CategoryStore.load(context)) }
-    var selectedCategory by rememberSaveable { mutableStateOf(categories.firstOrNull() ?: "日常") }
+    var selectedCategory by rememberSaveable { mutableStateOf(categories.firstOrNull()?.name ?: "日常") }
     var showCreateDialog by remember { mutableStateOf(false) }
     var cameraOpen by rememberSaveable { mutableStateOf(false) }
+    var previewCategory by remember { mutableStateOf<Category?>(null) }
+    var pendingPreview by remember { mutableStateOf<Category?>(null) }
+    var pendingCategoryName by remember { mutableStateOf("") }
+    val photoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+    val photoPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) previewCategory = pendingPreview
+        pendingPreview = null
+    }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        val name = safeFolderName(pendingCategoryName)
+        if (uri != null && name.isNotBlank() && categories.none { it.name == name }) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+            categories = categories + Category(name, uri.toString())
+            selectedCategory = name
+            CategoryStore.save(context, categories)
+        }
+        showCreateDialog = false
+    }
 
     LaunchedEffect(categories) {
-        if (categories.isNotEmpty() && selectedCategory !in categories) selectedCategory = categories.first()
+        if (categories.isNotEmpty() && categories.none { it.name == selectedCategory }) selectedCategory = categories.first().name
     }
 
     if (cameraOpen) {
         CameraScreen(
-            category = selectedCategory,
+            category = categories.firstOrNull { it.name == selectedCategory } ?: Category(selectedCategory),
             onBack = { cameraOpen = false },
             onCategoryChange = { selectedCategory = it },
             categories = categories,
         )
     } else {
-        HomeScreen(
+        if (previewCategory != null) {
+            CategoryPhotosScreen(
+                category = previewCategory!!,
+                onBack = { previewCategory = null },
+                onShoot = { selectedCategory = previewCategory!!.name; previewCategory = null; cameraOpen = true },
+            )
+        } else HomeScreen(
             categories = categories,
             selectedCategory = selectedCategory,
-            onSelect = { selectedCategory = it },
+            onSelect = { category ->
+                selectedCategory = category.name
+                if (category.folderUri == null && ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
+                    pendingPreview = category
+                    photoPermissionLauncher.launch(photoPermission)
+                } else previewCategory = category
+            },
             onAdd = { showCreateDialog = true },
             onDelete = { name ->
-                categories = categories - name
+                categories = categories.filterNot { it.name == name }
                 CategoryStore.save(context, categories)
             },
             onShoot = { cameraOpen = true },
@@ -151,22 +206,23 @@ private fun AlbumCameraApp() {
             onDismiss = { showCreateDialog = false },
             onCreate = { rawName ->
                 val name = safeFolderName(rawName)
-                if (name.isNotBlank() && name !in categories) {
-                    categories = categories + name
+                if (name.isNotBlank() && categories.none { it.name == name }) {
+                    categories = categories + Category(name)
                     selectedCategory = name
                     CategoryStore.save(context, categories)
                 }
                 showCreateDialog = false
             },
+            onPickFolder = { name -> pendingCategoryName = name; folderPicker.launch(null) },
         )
     }
 }
 
 @Composable
 private fun HomeScreen(
-    categories: List<String>,
+    categories: List<Category>,
     selectedCategory: String,
-    onSelect: (String) -> Unit,
+    onSelect: (Category) -> Unit,
     onAdd: () -> Unit,
     onDelete: (String) -> Unit,
     onShoot: () -> Unit,
@@ -186,7 +242,7 @@ private fun HomeScreen(
                 }
                 Surface(shape = CircleShape, color = Mint, modifier = Modifier.size(48.dp)) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Lock, contentDescription = "仅保存在本机", tint = Moss, modifier = Modifier.size(21.dp))
+                    Icon(Icons.Filled.PhotoLibrary, contentDescription = "本地相册", tint = Moss, modifier = Modifier.size(21.dp))
                     }
                 }
             }
@@ -202,7 +258,7 @@ private fun HomeScreen(
                         Text("  当前分类", color = Color.White.copy(alpha = .8f), style = MaterialTheme.typography.labelLarge)
                     }
                     Text(selectedCategory, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 11.dp))
-                    Text("照片将保存到 DCIM/$selectedCategory", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+                    Text("保存到 ${categories.firstOrNull { it.name == selectedCategory }?.displayLocation() ?: "DCIM/$selectedCategory"}", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
                     Button(
                         onClick = onShoot,
                         modifier = Modifier.fillMaxWidth().padding(top = 18.dp).height(50.dp),
@@ -231,13 +287,13 @@ private fun HomeScreen(
                 }
             } else {
                 LazyColumn(contentPadding = PaddingValues(bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(categories, key = { it }) { name ->
+                    items(categories, key = { it.name }) { category ->
                         CategoryRow(
-                            name = name,
-                            selected = name == selectedCategory,
+                            category = category,
+                            selected = category.name == selectedCategory,
                             canDelete = categories.size > 1,
-                            onClick = { onSelect(name) },
-                            onDelete = { onDelete(name) },
+                            onClick = { onSelect(category) },
+                            onDelete = { onDelete(category.name) },
                         )
                     }
                 }
@@ -255,7 +311,7 @@ private fun HomeScreen(
 }
 
 @Composable
-private fun CategoryRow(name: String, selected: Boolean, canDelete: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun CategoryRow(category: Category, selected: Boolean, canDelete: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
     Surface(
         onClick = onClick,
         color = if (selected) Mint else Color.White,
@@ -269,15 +325,15 @@ private fun CategoryRow(name: String, selected: Boolean, canDelete: Boolean, onC
                 }
             }
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                Text(name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = Ink)
-                Text(if (selected) "拍摄将存入此分类" else "本地相册文件夹", style = MaterialTheme.typography.labelSmall, color = Muted)
+                Text(category.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = Ink)
+                Text(category.displayLocation(), style = MaterialTheme.typography.labelSmall, color = Muted)
             }
             if (selected) {
                 Text("已选", style = MaterialTheme.typography.labelSmall, color = Moss, modifier = Modifier.padding(horizontal = 8.dp))
             }
             if (canDelete) {
                 IconButton(onClick = onDelete) {
-                    Icon(Icons.Filled.DeleteOutline, contentDescription = "删除分类 $name", tint = Muted, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Filled.DeleteOutline, contentDescription = "删除分类 ${category.name}", tint = Muted, modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -285,29 +341,37 @@ private fun CategoryRow(name: String, selected: Boolean, canDelete: Boolean, onC
 }
 
 @Composable
-private fun CreateCategoryDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+private fun CreateCategoryDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit, onPickFolder: (String) -> Unit) {
     var name by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("新建分类") },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it.take(30) },
-                singleLine = true,
-                label = { Text("分类名称") },
-                placeholder = { Text("例如：旅行、家人") },
-            )
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(30) },
+                    singleLine = true,
+                    label = { Text("分类名称") },
+                    placeholder = { Text("例如：旅行、家人") },
+                )
+                Text("默认保存到 DCIM/分类名，也可以选择手机里已有的文件夹。", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.padding(top = 10.dp))
+            }
         },
-        confirmButton = { TextButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) { Text("创建") } },
+        confirmButton = {
+            Row {
+                TextButton(onClick = { onPickFolder(name) }, enabled = name.isNotBlank()) { Text("选择已有文件夹") }
+                TextButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) { Text("默认位置") }
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
 @Composable
 private fun CameraScreen(
-    category: String,
-    categories: List<String>,
+    category: Category,
+    categories: List<Category>,
     onCategoryChange: (String) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -321,12 +385,15 @@ private fun CameraScreen(
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         hasPermission = granted
     }
+    var showCategoryMenu by remember { mutableStateOf(false) }
+
+    BackHandler(onBack = onBack)
 
     LaunchedEffect(Unit) {
         if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    DisposableEffect(hasPermission, category, previewView) {
+    DisposableEffect(hasPermission, category.name, previewView) {
         val view = previewView
         if (hasPermission && view != null) {
             var disposed = false
@@ -377,14 +444,21 @@ private fun CameraScreen(
                 }
                 Column(Modifier.weight(1f)) {
                     Text("正在拍摄", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.labelMedium)
-                    Text(category, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(category.name, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 }
                 if (categories.size > 1) {
-                    IconButton(onClick = {
-                        val current = categories.indexOf(category)
-                        onCategoryChange(categories[(current + 1).mod(categories.size)])
-                    }) {
-                        Icon(Icons.Filled.SwapHoriz, contentDescription = "切换分类", tint = Color.White)
+                    Box {
+                        IconButton(onClick = { showCategoryMenu = true }) {
+                            Icon(Icons.Filled.SwapHoriz, contentDescription = "选择分类", tint = Color.White)
+                        }
+                        DropdownMenu(expanded = showCategoryMenu, onDismissRequest = { showCategoryMenu = false }) {
+                            categories.forEach { item ->
+                                DropdownMenuItem(
+                                    text = { Text(item.name) },
+                                    onClick = { onCategoryChange(item.name); showCategoryMenu = false },
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -398,7 +472,7 @@ private fun CameraScreen(
                 if (cameraError != null) {
                     Text(cameraError ?: "", color = Color.White, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 12.dp))
                 }
-                Text("保存到 DCIM/$category", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.labelMedium, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 14.dp))
+                Text("保存到 ${category.displayLocation()}", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.labelMedium, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 14.dp))
                 FilledIconButton(
                     onClick = { takePhoto(context, capture, category, cameraExecutor) },
                     enabled = capture != null,
@@ -413,30 +487,37 @@ private fun CameraScreen(
     }
 }
 
-private fun takePhoto(context: Context, imageCapture: ImageCapture?, category: String, executor: Executor) {
+private fun takePhoto(context: Context, imageCapture: ImageCapture?, category: Category, executor: Executor) {
     val currentCapture = imageCapture ?: return
     val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
     val values = ContentValues().apply {
-        put(MediaStore.Images.Media.DISPLAY_NAME, "${timestamp}.jpg")
+        put(MediaStore.Images.Media.DISPLAY_NAME, "$timestamp.jpg")
         put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-        put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/$category")
+        if (category.folderUri == null) put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/${category.name}")
     }
-    val output = ImageCapture.OutputFileOptions.Builder(
-        context.contentResolver,
-        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-        values,
-    ).build()
+    val targetDoc = category.folderUri?.let { DocumentsContract.createDocument(context.contentResolver, Uri.parse(it), "image/jpeg", "$timestamp.jpg") }
+    if (category.folderUri != null && targetDoc == null) {
+        Toast.makeText(context, "无法在所选文件夹中创建照片", Toast.LENGTH_LONG).show()
+        return
+    }
+    val temp = if (targetDoc != null) File(context.cacheDir, "$timestamp.jpg") else null
+    val output = if (temp != null) ImageCapture.OutputFileOptions.Builder(temp).build()
+    else ImageCapture.OutputFileOptions.Builder(context.contentResolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values).build()
     currentCapture.takePicture(output, executor, object : ImageCapture.OnImageSavedCallback {
         override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-            (context as? ComponentActivity)?.runOnUiThread {
-                Toast.makeText(context, "已保存到 $category", Toast.LENGTH_SHORT).show()
-            }
+            val saved = runCatching {
+                if (temp != null && targetDoc != null) {
+                    context.contentResolver.openOutputStream(targetDoc, "w")!!.use { outputStream -> temp.inputStream().use { it.copyTo(outputStream) } }
+                    temp.delete()
+                }
+                true
+            }.getOrDefault(false)
+            (context as? ComponentActivity)?.runOnUiThread { Toast.makeText(context, if (saved) "已保存到 ${category.name}" else "照片已拍摄，但写入分类失败", Toast.LENGTH_SHORT).show() }
         }
-
         override fun onError(exception: ImageCaptureException) {
-            (context as? ComponentActivity)?.runOnUiThread {
-                Toast.makeText(context, "保存失败：${exception.message ?: "请重试"}", Toast.LENGTH_LONG).show()
-            }
+            temp?.delete()
+            if (targetDoc != null) runCatching { DocumentsContract.deleteDocument(context.contentResolver, targetDoc) }
+            (context as? ComponentActivity)?.runOnUiThread { Toast.makeText(context, "保存失败：${exception.message ?: "请重试"}", Toast.LENGTH_LONG).show() }
         }
     })
 }
@@ -445,16 +526,56 @@ private object CategoryStore {
     private const val PREFS = "categories"
     private const val KEY_NAMES = "names"
 
-    fun load(context: Context): List<String> = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        .getStringSet(KEY_NAMES, setOf("日常", "家人", "旅行"))
-        .orEmpty()
-        .sorted()
+    fun load(context: Context): List<Category> = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet(KEY_NAMES, setOf("日常", "家人", "旅行" )).orEmpty().mapNotNull {
+        val p = it.split("|", limit = 2); Category(p[0], p.getOrNull(1)).takeIf { c -> c.name.isNotBlank() }
+    }.sortedBy { it.name }
 
-    fun save(context: Context, categories: List<String>) {
+    fun save(context: Context, categories: List<Category>) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putStringSet(KEY_NAMES, categories.toSet())
+            .putStringSet(KEY_NAMES, categories.map { it.name + (it.folderUri?.let { u -> "|$u" } ?: "") }.toSet())
             .apply()
     }
+}
+
+private fun Category.displayLocation(): String = folderUri?.let { "已选择的手机文件夹" } ?: "DCIM/$name"
+
+@Composable
+private fun CategoryPhotosScreen(category: Category, onBack: () -> Unit, onShoot: () -> Unit) {
+    val context = LocalContext.current
+    var selected by remember { mutableStateOf<Uri?>(null) }
+    val photos = remember(category) { queryPhotos(context, category) }
+    BackHandler(onBack = onBack)
+    Scaffold(containerColor = Paper, topBar = {
+        Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+            Text(category.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            TextButton(onClick = onShoot) { Text("拍摄") }
+        }
+    }) { p ->
+        if (photos.isEmpty()) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { Text("这个分类还没有照片", color = Muted) }
+        else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize().padding(p), contentPadding = PaddingValues(4.dp)) { items(photos) { photo -> PhotoThumb(photo) { selected = photo.uri } } }
+    }
+    selected?.let { uri -> PhotoViewer(uri) { selected = null } }
+}
+
+@Composable private fun PhotoThumb(photo: PhotoItem, onClick: () -> Unit) {
+    val context = LocalContext.current
+    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = withContext(Dispatchers.IO) { runCatching { ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, photo.uri)) }.getOrNull() } }
+    val bitmap: Bitmap? = bitmapState.value
+    if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.padding(2.dp).size(120.dp).clickable(onClick = onClick), contentScale = ContentScale.Crop)
+}
+
+@Composable private fun PhotoViewer(uri: Uri, onClose: () -> Unit) {
+    val context = LocalContext.current
+    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = uri) { value = withContext(Dispatchers.IO) { runCatching { ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) }.getOrNull() } }
+    val bitmap: Bitmap? = bitmapState.value
+    Box(Modifier.fillMaxSize().background(Color.Black).clickable(onClick = onClose)) { if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit); IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd).padding(28.dp)) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) } }
+}
+
+private fun queryPhotos(context: Context, category: Category): List<PhotoItem> {
+    val uris = mutableListOf<PhotoItem>()
+    if (category.folderUri != null) runCatching { context.contentResolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(Uri.parse(category.folderUri), DocumentsContract.getTreeDocumentId(Uri.parse(category.folderUri))), arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c -> while (c.moveToNext()) if (c.getString(2)?.startsWith("image/") == true) { val id = c.getString(0); uris += PhotoItem(DocumentsContract.buildDocumentUriUsingTree(Uri.parse(category.folderUri), id), c.getString(1)) } } } else context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME), "${MediaStore.Images.Media.RELATIVE_PATH}=?", arrayOf("DCIM/${category.name}/"), "${MediaStore.Images.Media.DATE_ADDED} DESC")?.use { c -> while (c.moveToNext()) uris += PhotoItem(Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)), c.getString(1)) }
+    return uris
 }
 
 private fun safeFolderName(value: String): String = value
