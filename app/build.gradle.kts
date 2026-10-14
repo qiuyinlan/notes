@@ -17,8 +17,8 @@ android {
         applicationId = "com.localalbum.camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.9.1"
+        versionCode = 15
+        versionName = "0.10.2"
     }
 
     buildTypes {
@@ -43,6 +43,8 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-ui:1.5.1")
     implementation(platform("androidx.compose:compose-bom:2025.02.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
