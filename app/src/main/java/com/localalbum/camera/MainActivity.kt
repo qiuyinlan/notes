@@ -46,6 +46,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -120,7 +121,7 @@ private val Paper = Color(0xFFF5F7F4)
 private val Muted = Color(0xFF707A74)
 
 private data class Category(val name: String, val folderUri: String? = null)
-private data class PhotoItem(val uri: Uri, val name: String)
+private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null)
 
 private enum class AppScreen { HOME, CATEGORY, ORGANIZE, TRASH }
 
@@ -232,6 +233,7 @@ private fun AlbumCameraApp() {
         AppScreen.CATEGORY -> previewCategory?.let { category ->
             CategoryPhotosScreen(
                 category = category,
+                categories = categories,
                 onBack = { screen = AppScreen.HOME },
                 onShoot = { selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
                 onStageDelete = { photos -> trash = (trash + photos).distinctBy { it.uri } },
@@ -239,6 +241,7 @@ private fun AlbumCameraApp() {
         }
         AppScreen.ORGANIZE -> OrganizePhotosScreen(
             photos = organizePhotos,
+            categories = categories,
             onBack = { screen = AppScreen.HOME },
             onStageDelete = { photos -> trash = (trash + photos).distinctBy { it.uri } },
             onTrash = { screen = AppScreen.TRASH },
@@ -608,7 +611,7 @@ private object CategoryStore {
 private fun Category.displayLocation(): String = folderUri?.let { "已选择的手机文件夹" } ?: "DCIM/$name"
 
 @Composable
-private fun CategoryPhotosScreen(category: Category, onBack: () -> Unit, onShoot: () -> Unit, onStageDelete: (List<PhotoItem>) -> Unit) {
+private fun CategoryPhotosScreen(category: Category, categories: List<Category>, onBack: () -> Unit, onShoot: () -> Unit, onStageDelete: (List<PhotoItem>) -> Unit) {
     val context = LocalContext.current
     var photos by remember(category) { mutableStateOf(queryPhotos(context, category)) }
     var selecting by remember { mutableStateOf(false) }
@@ -651,10 +654,17 @@ private fun CategoryPhotosScreen(category: Category, onBack: () -> Unit, onShoot
         PhotoViewerScreen(
             photos = photos,
             initialIndex = index,
+            categories = categories,
             onClose = { viewerIndex = null },
             onStageDelete = { photo ->
                 photos = photos.filterNot { it.uri == photo.uri }
                 onStageDelete(listOf(photo))
+            },
+            onMove = { photo, target ->
+                if (movePhoto(context, photo, target)) {
+                    photos = photos.filterNot { it.uri == photo.uri }
+                    viewerIndex = null
+                }
             },
         )
     }
@@ -679,8 +689,10 @@ private fun PhotoThumb(photo: PhotoItem, selected: Boolean = false, onClick: () 
 private fun PhotoViewerScreen(
     photos: List<PhotoItem>,
     initialIndex: Int,
+    categories: List<Category>,
     onClose: () -> Unit,
     onStageDelete: (PhotoItem) -> Unit,
+    onMove: (PhotoItem, Category) -> Unit,
 ) {
     if (photos.isEmpty()) { onClose(); return }
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, photos.lastIndex), pageCount = { photos.size })
@@ -704,6 +716,13 @@ private fun PhotoViewerScreen(
                 if (photos.size == 1) onClose() else if (pagerState.currentPage >= photos.lastIndex) scope.launch { pagerState.animateScrollToPage(photos.lastIndex - 1) }
             }) { Icon(Icons.Filled.DeleteOutline, null, tint = Color.White); Text("  暂存删除", color = Color.White) }
         }
+        LazyRow(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(bottom = 76.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 18.dp)) {
+            items(categories, key = { it.name }) { target ->
+                Surface(onClick = { onMove(photos[pagerState.currentPage], target) }, color = Color.White.copy(alpha = .9f), shape = RoundedCornerShape(18.dp)) {
+                    Text(target.name, color = Ink, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                }
+            }
+        }
     }
 }
 
@@ -720,11 +739,13 @@ private fun PhotoPageImage(photo: PhotoItem) {
 @Composable
 private fun OrganizePhotosScreen(
     photos: List<PhotoItem>,
+    categories: List<Category>,
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
     onTrash: () -> Unit,
     trashCount: Int,
 ) {
+    val context = LocalContext.current
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var selecting by remember { mutableStateOf(false) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
@@ -759,7 +780,7 @@ private fun OrganizePhotosScreen(
             }
         }
     }
-    viewerIndex?.let { index -> PhotoViewerScreen(photos, index, { viewerIndex = null }, { photo -> onStageDelete(listOf(photo)) }) }
+    viewerIndex?.let { index -> PhotoViewerScreen(photos, index, categories, { viewerIndex = null }, { photo -> onStageDelete(listOf(photo)) }, { photo, target -> if (movePhoto(context, photo, target)) viewerIndex = null }) }
 }
 
 @Composable
@@ -794,7 +815,7 @@ private fun TrashScreen(
 
 private fun queryPhotos(context: Context, category: Category): List<PhotoItem> {
     val uris = mutableListOf<PhotoItem>()
-    if (category.folderUri != null) runCatching { context.contentResolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(Uri.parse(category.folderUri), DocumentsContract.getTreeDocumentId(Uri.parse(category.folderUri))), arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c -> while (c.moveToNext()) if (c.getString(2)?.startsWith("image/") == true) { val id = c.getString(0); uris += PhotoItem(DocumentsContract.buildDocumentUriUsingTree(Uri.parse(category.folderUri), id), c.getString(1)) } } } else context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME), "${MediaStore.Images.Media.RELATIVE_PATH}=?", arrayOf("DCIM/${category.name}/"), "${MediaStore.Images.Media.DATE_ADDED} DESC")?.use { c -> while (c.moveToNext()) uris += PhotoItem(Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)), c.getString(1)) }
+    if (category.folderUri != null) runCatching { context.contentResolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(Uri.parse(category.folderUri), DocumentsContract.getTreeDocumentId(Uri.parse(category.folderUri))), arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c -> while (c.moveToNext()) if (c.getString(2)?.startsWith("image/") == true) { val id = c.getString(0); uris += PhotoItem(DocumentsContract.buildDocumentUriUsingTree(Uri.parse(category.folderUri), id), c.getString(1), category.folderUri) } } } else context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME), "${MediaStore.Images.Media.RELATIVE_PATH}=?", arrayOf("DCIM/${category.name}/"), "${MediaStore.Images.Media.DATE_ADDED} DESC")?.use { c -> while (c.moveToNext()) uris += PhotoItem(Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)), c.getString(1), "DCIM/${category.name}") }
     return uris
 }
 
@@ -803,12 +824,38 @@ private fun queryAllPhotos(context: Context, categories: List<Category>): List<P
 
 private fun deletePhoto(context: Context, photo: PhotoItem) {
     runCatching {
-        if (photo.uri.authority == "com.android.providers.media.documents" || photo.uri.scheme == "content") {
-            context.contentResolver.delete(photo.uri, null, null)
-        } else {
-            DocumentsContract.deleteDocument(context.contentResolver, photo.uri)
-        }
+        if (DocumentsContract.isDocumentUri(context, photo.uri)) DocumentsContract.deleteDocument(context.contentResolver, photo.uri)
+        else context.contentResolver.delete(photo.uri, null, null)
     }
+}
+
+private fun movePhoto(context: Context, photo: PhotoItem, target: Category): Boolean {
+    val targetKey = target.folderUri ?: "DCIM/${target.name}"
+    if (photo.sourceKey == targetKey) return true
+    val targetUri = runCatching {
+        if (target.folderUri != null) {
+            DocumentsContract.createDocument(context.contentResolver, Uri.parse(target.folderUri), "image/jpeg", photo.name)
+        } else {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, photo.name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/${target.name}")
+            }
+            context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        }
+    }.getOrNull() ?: return false
+    val copied = runCatching {
+        context.contentResolver.openInputStream(photo.uri)!!.use { input ->
+            context.contentResolver.openOutputStream(targetUri)!!.use { output -> input.copyTo(output) }
+        }
+        true
+    }.getOrDefault(false)
+    if (!copied) {
+        runCatching { deletePhoto(context, PhotoItem(targetUri, photo.name)) }
+        return false
+    }
+    deletePhoto(context, photo)
+    return true
 }
 
 private fun safeFolderName(value: String): String = value
