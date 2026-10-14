@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -632,17 +633,20 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                 Text(category.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("${photos.size} 张照片", style = MaterialTheme.typography.labelSmall, color = Muted)
             }
-            if (selecting && selected.isNotEmpty()) {
-                IconButton(onClick = {
-                    val removed = photos.filter { it.uri in selected }
-                    photos = photos.filterNot { it.uri in selected }
-                    selected = emptySet()
-                    selecting = false
-                    onStageDelete(removed)
-                }) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = Moss) }
-            }
             IconButton(onClick = { selecting = !selecting; selected = emptySet() }) {
-                Icon(Icons.Filled.Check, if (selecting) "完成选择" else "选择", tint = Moss)
+                Icon(if (selecting) Icons.Filled.Close else Icons.Filled.RadioButtonUnchecked, if (selecting) "取消选择" else "选择", tint = Moss)
+            }
+            if (selecting) {
+                IconButton(
+                    enabled = selected.isNotEmpty(),
+                    onClick = {
+                        val removed = photos.filter { it.uri in selected }
+                        photos = photos.filterNot { it.uri in selected }
+                        selected = emptySet()
+                        selecting = false
+                        onStageDelete(removed)
+                    },
+                ) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = if (selected.isNotEmpty()) Moss else Muted) }
             }
             TextButton(onClick = onShoot) { Text("拍摄") }
         }
@@ -706,28 +710,30 @@ private fun PhotoViewerScreen(
     val scope = rememberCoroutineScope()
     BackHandler(onBack = onClose)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize().padding(bottom = 172.dp)) { page ->
             PhotoPageImage(photos[page])
         }
         Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
             Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, modifier = Modifier.weight(1f))
         }
-        Row(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 28.dp, vertical = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            TextButton(onClick = {
-                if (pagerState.currentPage < photos.lastIndex) scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } else onClose()
-            }) { Text("保留", color = Color.White) }
-            TextButton(onClick = {
-                val photo = photos[pagerState.currentPage]
-                onStageDelete(photo)
-                if (photos.size == 1) onClose() else if (pagerState.currentPage >= photos.lastIndex) scope.launch { pagerState.animateScrollToPage(photos.lastIndex - 1) }
-            }) { Icon(Icons.Filled.DeleteOutline, null, tint = Color.White); Text("  暂存删除", color = Color.White) }
-        }
-        LazyRow(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(bottom = 76.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 18.dp)) {
-            items(categories, key = { it.name }) { target ->
-                Surface(onClick = { onMove(photos[pagerState.currentPage], target) }, color = Color.White.copy(alpha = .9f), shape = RoundedCornerShape(18.dp)) {
-                    Text(target.name, color = Ink, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+        Column(Modifier.fillMaxWidth().align(Alignment.BottomCenter).background(Color(0xFF111111)).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 18.dp, vertical = 10.dp)) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 2.dp)) {
+                items(categories, key = { it.name }) { target ->
+                    Surface(onClick = { onMove(photos[pagerState.currentPage], target) }, color = Color(0xFF303030), shape = RoundedCornerShape(18.dp)) {
+                        Text(target.name, color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                    }
                 }
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = {
+                    if (pagerState.currentPage < photos.lastIndex) scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } else onClose()
+                }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("保留") }
+                Button(onClick = {
+                    val photo = photos[pagerState.currentPage]
+                    onStageDelete(photo)
+                    if (photos.size == 1) onClose() else if (pagerState.currentPage >= photos.lastIndex) scope.launch { pagerState.animateScrollToPage(photos.lastIndex - 1) }
+                }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A), contentColor = Color.White)) { Icon(Icons.Filled.DeleteOutline, null); Text("  暂存删除") }
             }
         }
     }
@@ -798,7 +804,7 @@ private fun OrganizePhotosScreen(
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (selecting) "已选 ${selected.size} 张" else "共 ${visiblePhotos.size} 张，点击照片查看", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.weight(1f))
                 if (selecting && selected.isNotEmpty()) IconButton(onClick = { onStageDelete(visiblePhotos.filter { it.uri in selected }); selected = emptySet(); selecting = false }) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = Moss) }
-                IconButton(onClick = { selecting = !selecting; selected = emptySet() }) { Icon(Icons.Filled.Check, "选择", tint = Moss) }
+                IconButton(onClick = { selecting = !selecting; selected = emptySet() }) { Icon(if (selecting) Icons.Filled.Close else Icons.Filled.RadioButtonUnchecked, if (selecting) "取消选择" else "选择", tint = Moss) }
             }
             if (visiblePhotos.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到可整理的照片", color = Muted) }
             else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(4.dp)) {
