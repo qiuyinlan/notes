@@ -111,6 +111,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
@@ -1254,35 +1255,48 @@ private fun VideoReviewScreen(
                             val down = awaitFirstDown(requireUnconsumed = false)
                             var totalVertical = 0f
                             var totalHorizontal = 0f
-                            var fastForwarding = false
-                            var released = false
-                            val speedStep = 48.dp.toPx()
-                            while (!released) {
-                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                totalVertical += change.position.y - change.previousPosition.y
-                                totalHorizontal += change.position.x - change.previousPosition.x
-                                val moved = kotlin.math.hypot(totalVertical.toDouble(), totalHorizontal.toDouble()).toFloat()
-                                if (!fastForwarding && change.pressed && moved < viewConfiguration.touchSlop && change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis) {
-                                    fastForwarding = true
-                                    heldSpeed = 2
+                            var releasedChange: androidx.compose.ui.input.pointer.PointerInputChange? = null
+                            val longPressWait = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull false
+                                    totalVertical += change.position.y - change.previousPosition.y
+                                    totalHorizontal += change.position.x - change.previousPosition.x
+                                    if (!change.pressed) {
+                                        releasedChange = change
+                                        return@withTimeoutOrNull false
+                                    }
+                                    val moved = kotlin.math.hypot(totalVertical.toDouble(), totalHorizontal.toDouble()).toFloat()
+                                    if (moved >= viewConfiguration.touchSlop) return@withTimeoutOrNull false
                                 }
-                                if (fastForwarding) {
+                                @Suppress("UNREACHABLE_CODE")
+                                true
+                            }
+                            val fastForwarding = longPressWait == null
+                            val speedStep = 48.dp.toPx()
+                            if (fastForwarding) {
+                                heldSpeed = 2
+                                player.setPlaybackParameters(PlaybackParameters(2f))
+                                var released = false
+                                while (!released) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    totalVertical += change.position.y - change.previousPosition.y
+                                    totalHorizontal += change.position.x - change.previousPosition.x
                                     val speed = (2f - totalVertical / speedStep).roundToInt().coerceIn(1, 5)
                                     player.setPlaybackParameters(PlaybackParameters(speed.toFloat()))
                                     heldSpeed = speed
                                     change.consume()
-                                } else if (kotlin.math.abs(totalVertical) >= viewConfiguration.touchSlop) {
-                                    change.consume()
+                                    released = !change.pressed
                                 }
-                                released = !change.pressed
-                            }
-                            if (fastForwarding) {
                                 player.setPlaybackParameters(PlaybackParameters(1f))
                                 heldSpeed = null
                             } else if (kotlin.math.abs(totalVertical) > 80f) {
                                 val nextIndex = if (totalVertical < 0f) currentIndex + 1 else currentIndex - 1
                                 currentUri = videos.getOrNull(nextIndex)?.uri ?: currentUri
+                            } else if (releasedChange != null && kotlin.math.hypot(totalVertical.toDouble(), totalHorizontal.toDouble()).toFloat() < viewConfiguration.touchSlop) {
+                                if (player.isPlaying) player.pause() else player.play()
+                                isPlaying = player.isPlaying
                             }
                         }
                     },
@@ -1305,7 +1319,25 @@ private fun VideoReviewScreen(
                 }
                 Spacer(Modifier.weight(1f))
                 heldSpeed?.let { speed ->
-                    Text("x$speed", color = Color.White, style = MaterialTheme.typography.headlineMedium, modifier = Modifier.align(Alignment.CenterHorizontally).background(Color.Black.copy(alpha = .65f), CircleShape).padding(horizontal = 22.dp, vertical = 10.dp))
+                    Surface(color = Color.Black.copy(alpha = .72f), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                        Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+                                (1..5).forEach { level ->
+                                    val active = level == speed
+                                    Box(
+                                        Modifier
+                                            .width(if (active) 5.dp else 3.dp)
+                                            .height((7 + level * 3 + if (active) 4 else 0).dp)
+                                            .background(if (level <= speed) Color(0xFFFFC107) else Color.White.copy(alpha = .45f), RoundedCornerShape(2.dp))
+                                    )
+                                }
+                            }
+                            Column(horizontalAlignment = Alignment.Start) {
+                                Text("${speed}x", color = Color(0xFFFFC107), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, maxLines = 1)
+                                Text("倍速", color = Color.White, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                            }
+                        }
+                    }
                 }
                 Column(Modifier.fillMaxWidth().background(Color(0xFF111111)).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 14.dp, vertical = 6.dp)) {
                     Text(currentVideo.name, color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
