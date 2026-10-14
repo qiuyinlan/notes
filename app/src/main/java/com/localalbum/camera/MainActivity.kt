@@ -643,19 +643,25 @@ private fun CameraScreen(
 private fun takePhoto(context: Context, imageCapture: ImageCapture?, category: Category, executor: Executor) {
     val currentCapture = imageCapture ?: return
     val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-    val values = ContentValues().apply {
-        put(MediaStore.Images.Media.DISPLAY_NAME, "$timestamp.jpg")
-        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-        if (category.folderUri == null) put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/${category.name}")
-    }
-    val targetDoc = category.folderUri?.let { DocumentsContract.createDocument(context.contentResolver, Uri.parse(it), "image/jpeg", "$timestamp.jpg") }
-    if (category.folderUri != null && targetDoc == null) {
-        Toast.makeText(context, "无法在所选文件夹中创建照片", Toast.LENGTH_LONG).show()
+    val prepared = runCatching {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "$timestamp.jpg")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            if (category.folderUri == null) put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/${category.name}")
+        }
+        val targetDoc = category.folderUri?.let { DocumentsContract.createDocument(context.contentResolver, Uri.parse(it), "image/jpeg", "$timestamp.jpg") }
+        if (category.folderUri != null && targetDoc == null) error("无法在所选文件夹中创建照片")
+        val temp = if (targetDoc != null) File(context.cacheDir, "$timestamp.jpg") else null
+        val output = if (temp != null) ImageCapture.OutputFileOptions.Builder(temp).build()
+        else ImageCapture.OutputFileOptions.Builder(context.contentResolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values).build()
+        Triple(output, targetDoc, temp)
+    }.getOrElse {
+        Toast.makeText(context, "无法准备保存位置，请重新选择文件夹", Toast.LENGTH_LONG).show()
         return
     }
-    val temp = if (targetDoc != null) File(context.cacheDir, "$timestamp.jpg") else null
-    val output = if (temp != null) ImageCapture.OutputFileOptions.Builder(temp).build()
-    else ImageCapture.OutputFileOptions.Builder(context.contentResolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values).build()
+    val output = prepared.first
+    val targetDoc = prepared.second
+    val temp = prepared.third
     currentCapture.takePicture(output, executor, object : ImageCapture.OnImageSavedCallback {
         override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
             val saved = runCatching {
