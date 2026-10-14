@@ -124,9 +124,10 @@ private val Paper = Color(0xFFF5F7F4)
 private val Muted = Color(0xFF707A74)
 
 private data class Category(val name: String, val folderUri: String? = null)
+private data class ImportFolder(val name: String, val uri: Uri, val imageCount: Int)
 private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null, val dateMillis: Long = 0L)
 
-private enum class AppScreen { HOME, CATEGORY, ORGANIZE, TRASH }
+private enum class AppScreen { HOME, CATEGORY, ORGANIZE, TRASH, IMPORT }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -165,6 +166,17 @@ private fun AlbumCameraApp() {
     var pendingPreview by remember { mutableStateOf<Category?>(null) }
     var pendingOrganize by remember { mutableStateOf(false) }
     var pendingCategoryName by remember { mutableStateOf("") }
+    var pendingDeleteCategory by remember { mutableStateOf<Category?>(null) }
+    var importFolders by remember { mutableStateOf<List<ImportFolder>>(emptyList()) }
+    var importSelected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var pendingSystemDelete by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
+    val deleteRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            trash = trash.filterNot { item -> pendingSystemDelete.any { it.uri == item.uri } }
+            Toast.makeText(context, "照片已删除", Toast.LENGTH_SHORT).show()
+        }
+        pendingSystemDelete = emptyList()
+    }
     val photoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
     val photoPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted && pendingPreview != null) {
@@ -178,7 +190,7 @@ private fun AlbumCameraApp() {
         pendingOrganize = false
     }
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        val name = safeFolderName(pendingCategoryName)
+        val name = safeFolderName(pendingCategoryName).ifBlank { uri?.let { folderDisplayName(context, it) }.orEmpty() }
         if (uri != null && name.isNotBlank() && categories.none { it.name == name }) {
             runCatching {
                 context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
@@ -188,6 +200,14 @@ private fun AlbumCameraApp() {
             CategoryStore.save(context, categories)
         }
         showCreateDialog = false
+    }
+    val picturesPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            importFolders = queryPictureFolders(context, uri)
+            importSelected = emptySet()
+            screen = AppScreen.IMPORT
+        }
     }
 
     LaunchedEffect(categories) {
@@ -217,10 +237,7 @@ private fun AlbumCameraApp() {
                 }
             },
             onAdd = { showCreateDialog = true },
-            onDelete = { name ->
-                categories = categories.filterNot { it.name == name }
-                CategoryStore.save(context, categories)
-            },
+            onDelete = { name -> pendingDeleteCategory = categories.firstOrNull { it.name == name } },
             onShoot = { screen = AppScreen.HOME; cameraOpen = true },
             onShootCategory = { category -> selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
             onOrganize = {
@@ -233,6 +250,7 @@ private fun AlbumCameraApp() {
                 }
             },
             onTrash = { screen = AppScreen.TRASH },
+            onImport = { picturesPicker.launch(null) },
         )
         AppScreen.CATEGORY -> previewCategory?.let { category ->
             CategoryPhotosScreen(
@@ -256,8 +274,33 @@ private fun AlbumCameraApp() {
             onBack = { screen = AppScreen.HOME },
             onRestore = { restored -> trash = trash.filterNot { item -> restored.any { it.uri == item.uri } } },
             onDelete = { deleted ->
-                deleted.forEach { deletePhoto(context, it) }
-                trash = trash.filterNot { item -> deleted.any { it.uri == item.uri } }
+                if (Build.VERSION.SDK_INT >= 30 && deleted.any { it.uri.authority == "media" }) {
+                    pendingSystemDelete = deleted
+                    runCatching {
+                        val request = MediaStore.createDeleteRequest(context.contentResolver, deleted.map { it.uri })
+                        deleteRequest.launch(androidx.activity.result.IntentSenderRequest.Builder(request.intentSender).build())
+                    }.onFailure { Toast.makeText(context, "无法发起系统删除确认", Toast.LENGTH_LONG).show() }
+                } else {
+                    deleted.forEach { deletePhoto(context, it) }
+                    trash = trash.filterNot { item -> deleted.any { it.uri == item.uri } }
+                }
+            },
+        )
+        AppScreen.IMPORT -> ImportFoldersScreen(
+            folders = importFolders,
+            selected = importSelected,
+            onBack = { screen = AppScreen.HOME },
+            onToggle = { folder -> importSelected = if (folder.uri in importSelected) importSelected - folder.uri else importSelected + folder.uri },
+            onSelectAll = { importSelected = if (importSelected.size == importFolders.size) emptySet() else importFolders.map { it.uri }.toSet() },
+            onImport = {
+                val existing = categories.map { it.name }.toSet()
+                val additions = importFolders.filter { it.uri in importSelected && it.name !in existing }.map { Category(it.name, it.uri.toString()) }
+                if (additions.isNotEmpty()) {
+                    categories = (categories + additions).distinctBy { it.name }
+                    CategoryStore.save(context, categories)
+                }
+                Toast.makeText(context, "已导入 ${additions.size} 个文件夹", Toast.LENGTH_SHORT).show()
+                screen = AppScreen.HOME
             },
         )
     }
@@ -277,6 +320,29 @@ private fun AlbumCameraApp() {
             onPickFolder = { name -> pendingCategoryName = name; folderPicker.launch(null) },
         )
     }
+    pendingDeleteCategory?.let { category ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteCategory = null },
+            title = { Text("删除分类？") },
+            text = { Text("请选择删除方式。只删除分类会保留照片；删除分类和照片会把该分类中的图片放入系统回收站/删除位置。") },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        queryPhotos(context, category).forEach { deletePhoto(context, it) }
+                        categories = categories.filterNot { it.name == category.name }
+                        CategoryStore.save(context, categories)
+                        pendingDeleteCategory = null
+                    }) { Text("分类和照片") }
+                    TextButton(onClick = {
+                        categories = categories.filterNot { it.name == category.name }
+                        CategoryStore.save(context, categories)
+                        pendingDeleteCategory = null
+                    }) { Text("只删分类") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { pendingDeleteCategory = null }) { Text("取消") } },
+        )
+    }
 }
 
 @Composable
@@ -291,6 +357,7 @@ private fun HomeScreen(
     onShootCategory: (Category) -> Unit,
     onOrganize: () -> Unit,
     onTrash: () -> Unit,
+    onImport: () -> Unit,
 ) {
     Scaffold(containerColor = Paper) { padding ->
         Column(
@@ -344,7 +411,7 @@ private fun HomeScreen(
                 IconButton(onClick = onAdd) { Icon(Icons.Filled.Add, contentDescription = "新建分类", tint = Moss) }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = onOrganize, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) {
+                Button(onClick = onOrganize, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107), contentColor = Ink)) {
                     Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
                     Text("  整理照片")
                 }
@@ -353,6 +420,10 @@ private fun HomeScreen(
                         Icon(Icons.Filled.DeleteOutline, contentDescription = "删除暂存区", tint = Moss)
                     }
                 }
+            }
+            Button(onClick = onImport, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Moss)) {
+                Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("  导入手机存储/Pictures 文件夹")
             }
             if (categories.isEmpty()) {
                 Surface(color = Color.White, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -435,12 +506,12 @@ private fun CreateCategoryDialog(onDismiss: () -> Unit, onCreate: (String) -> Un
                     label = { Text("分类名称") },
                     placeholder = { Text("例如：旅行、家人") },
                 )
-                Text("默认保存到 DCIM/分类名，也可以选择手机里已有的文件夹。", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.padding(top = 10.dp))
+                Text("可以先输入名称，或直接选择已有文件夹并自动使用文件夹名称。", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.padding(top = 10.dp))
             }
         },
         confirmButton = {
             Row {
-                TextButton(onClick = { onPickFolder(name) }, enabled = name.isNotBlank()) { Text("选择已有文件夹") }
+                TextButton(onClick = { onPickFolder(name) }) { Text("选择已有文件夹") }
                 TextButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) { Text("默认位置") }
             }
         },
@@ -651,6 +722,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                         selected = emptySet()
                         selecting = false
                         onStageDelete(removed)
+                        Toast.makeText(context, "已放入删除暂存区", Toast.LENGTH_SHORT).show()
                     },
                 ) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = Moss) }
             }
@@ -676,6 +748,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
             onStageDelete = { photo ->
                 photos = photos.filterNot { it.uri == photo.uri }
                 onStageDelete(listOf(photo))
+                Toast.makeText(context, "已放入删除暂存区", Toast.LENGTH_SHORT).show()
             },
             onMove = { photo, target ->
                 if (movePhoto(context, photo, target)) {
@@ -813,7 +886,7 @@ private fun OrganizePhotosScreen(
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (selecting) "已选 ${selected.size} 张" else "共 ${visiblePhotos.size} 张，点击照片查看", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.weight(1f))
-                if (selecting && selected.isNotEmpty()) IconButton(onClick = { onStageDelete(visiblePhotos.filter { it.uri in selected }); selected = emptySet(); selecting = false }) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = Moss) }
+                if (selecting && selected.isNotEmpty()) IconButton(onClick = { onStageDelete(visiblePhotos.filter { it.uri in selected }); selected = emptySet(); selecting = false; Toast.makeText(context, "已放入删除暂存区", Toast.LENGTH_SHORT).show() }) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = Moss) }
                 IconButton(onClick = { selecting = !selecting; selected = emptySet() }) { Icon(if (selecting) Icons.Filled.Close else Icons.Filled.RadioButtonUnchecked, if (selecting) "取消选择" else "选择", tint = Moss) }
             }
             if (visiblePhotos.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到可整理的照片", color = Muted) }
@@ -860,10 +933,87 @@ private fun TrashScreen(
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("确认永久删除？") }, text = { Text(if (selected.isEmpty()) "将删除暂存区内的全部照片。" else "将删除已选择的 ${selected.size} 张照片。") }, confirmButton = { TextButton(onClick = { onDelete(if (selected.isEmpty()) photos else photos.filter { it.uri in selected }); selected = emptySet(); confirmDelete = false }) { Text("确认删除") } }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } })
 }
 
+@Composable
+private fun ImportFoldersScreen(
+    folders: List<ImportFolder>,
+    selected: Set<Uri>,
+    onBack: () -> Unit,
+    onToggle: (ImportFolder) -> Unit,
+    onSelectAll: () -> Unit,
+    onImport: () -> Unit,
+) {
+    BackHandler(onBack = onBack)
+    Scaffold(containerColor = Paper, topBar = {
+        Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+            Column(Modifier.weight(1f)) {
+                Text("导入 Pictures 文件夹", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("选择后会按原文件夹名称加入分类，不复制照片", style = MaterialTheme.typography.labelSmall, color = Muted)
+            }
+            IconButton(onClick = onSelectAll) { Icon(Icons.Filled.Check, "全选", tint = Moss) }
+        }
+    }, bottomBar = {
+        Surface(color = Color.White, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onImport, enabled = selected.isNotEmpty(), modifier = Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 18.dp, vertical = 10.dp), shape = RoundedCornerShape(8.dp)) {
+                Text("导入已选 ${selected.size} 个文件夹")
+            }
+        }
+    }) { p ->
+        if (folders.isEmpty()) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { Text("这个文件夹下没有图片子文件夹", color = Muted) }
+        else LazyColumn(Modifier.fillMaxSize().padding(p), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(folders, key = { it.uri.toString() }) { folder ->
+                val checked = folder.uri in selected
+                Surface(onClick = { onToggle(folder) }, color = if (checked) Mint else Color.White, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (checked) Icons.Filled.Check else Icons.Filled.RadioButtonUnchecked, if (checked) "已选" else "未选", tint = Moss)
+                        Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                            Text(folder.name, fontWeight = FontWeight.Medium)
+                            Text("${folder.imageCount} 张图片", style = MaterialTheme.typography.labelSmall, color = Muted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun queryPhotos(context: Context, category: Category): List<PhotoItem> {
     val uris = mutableListOf<PhotoItem>()
     if (category.folderUri != null) runCatching { context.contentResolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(Uri.parse(category.folderUri), DocumentsContract.getTreeDocumentId(Uri.parse(category.folderUri))), arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use { c -> while (c.moveToNext()) if (c.getString(2)?.startsWith("image/") == true) { val id = c.getString(0); uris += PhotoItem(DocumentsContract.buildDocumentUriUsingTree(Uri.parse(category.folderUri), id), c.getString(1), category.folderUri, c.getLong(3)) } } } else context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED), "${MediaStore.Images.Media.RELATIVE_PATH}=?", arrayOf("DCIM/${category.name}/"), "${MediaStore.Images.Media.DATE_ADDED} DESC")?.use { c -> while (c.moveToNext()) uris += PhotoItem(Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)), c.getString(1), "DCIM/${category.name}", c.getLong(2) * 1000L) }
     return uris
+}
+
+private fun folderDisplayName(context: Context, treeUri: Uri): String? = runCatching {
+    val documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+    context.contentResolver.query(documentUri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+}.getOrNull()
+
+private fun queryPictureFolders(context: Context, picturesTree: Uri): List<ImportFolder> {
+    val result = mutableListOf<ImportFolder>()
+    runCatching {
+        val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(picturesTree, DocumentsContract.getTreeDocumentId(picturesTree))
+        context.contentResolver.query(childUri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, DocumentsContract.Document.COLUMN_DISPLAY_NAME)?.use { c ->
+            while (c.moveToNext()) {
+                if (c.getString(2) != DocumentsContract.Document.MIME_TYPE_DIR) continue
+                val id = c.getString(0)
+                val folderUri = DocumentsContract.buildDocumentUriUsingTree(picturesTree, id)
+                val imageCount = countImagesInTree(context, picturesTree, id)
+                if (imageCount > 0) result += ImportFolder(c.getString(1), folderUri, imageCount)
+            }
+        }
+    }
+    return result
+}
+
+private fun countImagesInTree(context: Context, treeUri: Uri, documentId: String): Int {
+    val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
+    var count = 0
+    runCatching {
+        context.contentResolver.query(childUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c ->
+            while (c.moveToNext()) if (c.getString(0)?.startsWith("image/") == true) count++
+        }
+    }
+    return count
 }
 
 private fun queryAllPhotos(context: Context, categories: List<Category>): List<PhotoItem> {
