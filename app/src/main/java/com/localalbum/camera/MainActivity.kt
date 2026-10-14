@@ -554,9 +554,11 @@ private fun CameraScreen(
                 }
                 Text("保存到 ${category.displayLocation()}", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.labelMedium, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 14.dp))
                 FilledIconButton(
-                    onClick = { takePhoto(context, capture, category, cameraExecutor) },
-                    enabled = capture != null,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 30.dp).size(76.dp),
+                    onClick = {
+                        if (capture == null) Toast.makeText(context, "相机还在准备，请稍候", Toast.LENGTH_SHORT).show()
+                        else takePhoto(context, capture, category, cameraExecutor)
+                    },
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 30.dp).size(76.dp).zIndex(2f),
                     shape = CircleShape,
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Moss),
                 ) {
@@ -639,15 +641,18 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
             }
             if (selecting) {
                 IconButton(
-                    enabled = selected.isNotEmpty(),
                     onClick = {
+                        if (selected.isEmpty()) {
+                            Toast.makeText(context, "请先选择照片", Toast.LENGTH_SHORT).show()
+                            return@IconButton
+                        }
                         val removed = photos.filter { it.uri in selected }
                         photos = photos.filterNot { it.uri in selected }
                         selected = emptySet()
                         selecting = false
                         onStageDelete(removed)
                     },
-                ) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = if (selected.isNotEmpty()) Moss else Muted) }
+                ) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = Moss) }
             }
             TextButton(onClick = onShoot) { Text("拍摄") }
         }
@@ -720,7 +725,7 @@ private fun PhotoViewerScreen(
                 Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, modifier = Modifier.weight(1f))
             }
         }
-        Surface(color = Color(0xFF111111), modifier = Modifier.fillMaxWidth()) {
+        Surface(color = Color(0xFF111111), modifier = Modifier.fillMaxWidth().zIndex(10f)) {
             Column(Modifier.padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 18.dp, vertical = 10.dp)) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 2.dp)) {
                     items(categories, key = { it.name }) { target ->
