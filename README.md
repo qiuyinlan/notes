@@ -12,7 +12,7 @@
 
 用 Android Studio 打开项目并同步 Gradle，然后运行 `app` 配置。手机需运行 Android 10 或更新版本。
 
-也可以直接在项目目录运行 `gradlew.bat assembleDebug`。APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`；连接开启 USB 调试的手机后可运行 `gradlew.bat installDebug`。
+也可以直接在项目目录运行 `gradlew.bat assembleRelease`。APK 输出到 `app/build/outputs/apk/release/app-release.apk`；连接开启 USB 调试的手机后可运行 `gradlew.bat installRelease`。当前 Release 变体为测试用途，使用本机 Android debug 密钥签名，不应用于正式商店发布。
 
 ## 当前范围
 
