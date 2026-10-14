@@ -43,6 +43,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -58,6 +60,10 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -85,8 +91,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
@@ -112,6 +121,8 @@ private val Muted = Color(0xFF707A74)
 
 private data class Category(val name: String, val folderUri: String? = null)
 private data class PhotoItem(val uri: Uri, val name: String)
+
+private enum class AppScreen { HOME, CATEGORY, ORGANIZE, TRASH }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -143,13 +154,24 @@ private fun AlbumCameraApp() {
     var selectedCategory by rememberSaveable { mutableStateOf(categories.firstOrNull()?.name ?: "日常") }
     var showCreateDialog by remember { mutableStateOf(false) }
     var cameraOpen by rememberSaveable { mutableStateOf(false) }
+    var screen by rememberSaveable { mutableStateOf(AppScreen.HOME) }
     var previewCategory by remember { mutableStateOf<Category?>(null) }
+    var organizePhotos by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
+    var trash by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
     var pendingPreview by remember { mutableStateOf<Category?>(null) }
+    var pendingOrganize by remember { mutableStateOf(false) }
     var pendingCategoryName by remember { mutableStateOf("") }
     val photoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
     val photoPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) previewCategory = pendingPreview
+        if (granted && pendingPreview != null) {
+            previewCategory = pendingPreview
+            screen = AppScreen.CATEGORY
+        } else if (granted && pendingOrganize) {
+            organizePhotos = queryAllPhotos(context, categories).shuffled().take(20)
+            screen = AppScreen.ORGANIZE
+        }
         pendingPreview = null
+        pendingOrganize = false
     }
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         val name = safeFolderName(pendingCategoryName)
@@ -175,22 +197,20 @@ private fun AlbumCameraApp() {
             onCategoryChange = { selectedCategory = it },
             categories = categories,
         )
-    } else {
-        if (previewCategory != null) {
-            CategoryPhotosScreen(
-                category = previewCategory!!,
-                onBack = { previewCategory = null },
-                onShoot = { selectedCategory = previewCategory!!.name; previewCategory = null; cameraOpen = true },
-            )
-        } else HomeScreen(
+    } else when (screen) {
+        AppScreen.HOME -> HomeScreen(
             categories = categories,
             selectedCategory = selectedCategory,
+            trashCount = trash.size,
             onSelect = { category ->
                 selectedCategory = category.name
                 if (category.folderUri == null && ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
                     pendingPreview = category
                     photoPermissionLauncher.launch(photoPermission)
-                } else previewCategory = category
+                } else {
+                    previewCategory = category
+                    screen = AppScreen.CATEGORY
+                }
             },
             onAdd = { showCreateDialog = true },
             onDelete = { name ->
@@ -198,6 +218,40 @@ private fun AlbumCameraApp() {
                 CategoryStore.save(context, categories)
             },
             onShoot = { cameraOpen = true },
+            onOrganize = {
+                if (ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
+                    pendingOrganize = true
+                    photoPermissionLauncher.launch(photoPermission)
+                } else {
+                    organizePhotos = queryAllPhotos(context, categories).shuffled().take(20)
+                    screen = AppScreen.ORGANIZE
+                }
+            },
+            onTrash = { screen = AppScreen.TRASH },
+        )
+        AppScreen.CATEGORY -> previewCategory?.let { category ->
+            CategoryPhotosScreen(
+                category = category,
+                onBack = { screen = AppScreen.HOME },
+                onShoot = { selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
+                onStageDelete = { photos -> trash = (trash + photos).distinctBy { it.uri } },
+            )
+        }
+        AppScreen.ORGANIZE -> OrganizePhotosScreen(
+            photos = organizePhotos,
+            onBack = { screen = AppScreen.HOME },
+            onStageDelete = { photos -> trash = (trash + photos).distinctBy { it.uri } },
+            onTrash = { screen = AppScreen.TRASH },
+            trashCount = trash.size,
+        )
+        AppScreen.TRASH -> TrashScreen(
+            photos = trash,
+            onBack = { screen = AppScreen.HOME },
+            onRestore = { restored -> trash = trash.filterNot { item -> restored.any { it.uri == item.uri } } },
+            onDelete = { deleted ->
+                deleted.forEach { deletePhoto(context, it) }
+                trash = trash.filterNot { item -> deleted.any { it.uri == item.uri } }
+            },
         )
     }
 
@@ -222,10 +276,13 @@ private fun AlbumCameraApp() {
 private fun HomeScreen(
     categories: List<Category>,
     selectedCategory: String,
+    trashCount: Int,
     onSelect: (Category) -> Unit,
     onAdd: () -> Unit,
     onDelete: (String) -> Unit,
     onShoot: () -> Unit,
+    onOrganize: () -> Unit,
+    onTrash: () -> Unit,
 ) {
     Scaffold(containerColor = Paper) { padding ->
         Column(
@@ -277,6 +334,17 @@ private fun HomeScreen(
                 Text("我的分类", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 Text("${categories.size} 个", style = MaterialTheme.typography.labelMedium, color = Muted)
                 IconButton(onClick = onAdd) { Icon(Icons.Filled.Add, contentDescription = "新建分类", tint = Moss) }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = onOrganize, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) {
+                    Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("  整理照片")
+                }
+                if (trashCount > 0) {
+                    IconButton(onClick = onTrash, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Filled.DeleteOutline, contentDescription = "删除暂存区", tint = Moss)
+                    }
+                }
             }
             if (categories.isEmpty()) {
                 Surface(color = Color.White, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -540,42 +608,207 @@ private object CategoryStore {
 private fun Category.displayLocation(): String = folderUri?.let { "已选择的手机文件夹" } ?: "DCIM/$name"
 
 @Composable
-private fun CategoryPhotosScreen(category: Category, onBack: () -> Unit, onShoot: () -> Unit) {
+private fun CategoryPhotosScreen(category: Category, onBack: () -> Unit, onShoot: () -> Unit, onStageDelete: (List<PhotoItem>) -> Unit) {
     val context = LocalContext.current
-    var selected by remember { mutableStateOf<Uri?>(null) }
-    val photos = remember(category) { queryPhotos(context, category) }
+    var photos by remember(category) { mutableStateOf(queryPhotos(context, category)) }
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Paper, topBar = {
         Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
-            Text(category.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Column(Modifier.weight(1f)) {
+                Text(category.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("${photos.size} 张照片", style = MaterialTheme.typography.labelSmall, color = Muted)
+            }
+            if (selecting && selected.isNotEmpty()) {
+                IconButton(onClick = {
+                    val removed = photos.filter { it.uri in selected }
+                    photos = photos.filterNot { it.uri in selected }
+                    selected = emptySet()
+                    selecting = false
+                    onStageDelete(removed)
+                }) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = Moss) }
+            }
+            IconButton(onClick = { selecting = !selecting; selected = emptySet() }) {
+                Icon(Icons.Filled.Check, if (selecting) "完成选择" else "选择", tint = Moss)
+            }
             TextButton(onClick = onShoot) { Text("拍摄") }
         }
     }) { p ->
         if (photos.isEmpty()) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { Text("这个分类还没有照片", color = Muted) }
-        else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize().padding(p), contentPadding = PaddingValues(4.dp)) { items(photos) { photo -> PhotoThumb(photo) { selected = photo.uri } } }
+        else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize().padding(p), contentPadding = PaddingValues(4.dp)) {
+            items(photos, key = { it.uri.toString() }) { photo ->
+                PhotoThumb(photo, selected = photo.uri in selected, onClick = {
+                    if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
+                    else viewerIndex = photos.indexOfFirst { it.uri == photo.uri }
+                })
+            }
+        }
     }
-    selected?.let { uri -> PhotoViewer(uri) { selected = null } }
+    viewerIndex?.let { index ->
+        PhotoViewerScreen(
+            photos = photos,
+            initialIndex = index,
+            onClose = { viewerIndex = null },
+            onStageDelete = { photo ->
+                photos = photos.filterNot { it.uri == photo.uri }
+                onStageDelete(listOf(photo))
+            },
+        )
+    }
 }
 
-@Composable private fun PhotoThumb(photo: PhotoItem, onClick: () -> Unit) {
+@Composable
+private fun PhotoThumb(photo: PhotoItem, selected: Boolean = false, onClick: () -> Unit) {
+    val context = LocalContext.current
+    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = withContext(Dispatchers.IO) { runCatching { ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, photo.uri)) }.getOrNull() } }
+    Box(Modifier.padding(2.dp).size(120.dp).clickable(onClick = onClick)) {
+        val bitmap: Bitmap? = bitmapState.value
+        if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        if (selected) {
+            Surface(color = Moss, shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp)) {
+                Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhotoViewerScreen(
+    photos: List<PhotoItem>,
+    initialIndex: Int,
+    onClose: () -> Unit,
+    onStageDelete: (PhotoItem) -> Unit,
+) {
+    if (photos.isEmpty()) { onClose(); return }
+    val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, photos.lastIndex), pageCount = { photos.size })
+    val scope = rememberCoroutineScope()
+    BackHandler(onBack = onClose)
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+            PhotoPageImage(photos[page])
+        }
+        Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
+            Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, modifier = Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 28.dp, vertical = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            TextButton(onClick = {
+                if (pagerState.currentPage < photos.lastIndex) scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } else onClose()
+            }) { Text("保留", color = Color.White) }
+            TextButton(onClick = {
+                val photo = photos[pagerState.currentPage]
+                onStageDelete(photo)
+                if (photos.size == 1) onClose() else if (pagerState.currentPage >= photos.lastIndex) scope.launch { pagerState.animateScrollToPage(photos.lastIndex - 1) }
+            }) { Icon(Icons.Filled.DeleteOutline, null, tint = Color.White); Text("  暂存删除", color = Color.White) }
+        }
+    }
+}
+
+@Composable
+private fun PhotoPageImage(photo: PhotoItem) {
     val context = LocalContext.current
     val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = withContext(Dispatchers.IO) { runCatching { ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, photo.uri)) }.getOrNull() } }
     val bitmap: Bitmap? = bitmapState.value
-    if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.padding(2.dp).size(120.dp).clickable(onClick = onClick), contentScale = ContentScale.Crop)
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = photo.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+    }
 }
 
-@Composable private fun PhotoViewer(uri: Uri, onClose: () -> Unit) {
-    val context = LocalContext.current
-    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = uri) { value = withContext(Dispatchers.IO) { runCatching { ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) }.getOrNull() } }
-    val bitmap: Bitmap? = bitmapState.value
-    Box(Modifier.fillMaxSize().background(Color.Black).clickable(onClick = onClose)) { if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit); IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd).padding(28.dp)) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) } }
+@Composable
+private fun OrganizePhotosScreen(
+    photos: List<PhotoItem>,
+    onBack: () -> Unit,
+    onStageDelete: (List<PhotoItem>) -> Unit,
+    onTrash: () -> Unit,
+    trashCount: Int,
+) {
+    var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var selecting by remember { mutableStateOf(false) }
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var mode by remember { mutableStateOf("随机整理") }
+    BackHandler(onBack = onBack)
+    Scaffold(containerColor = Paper, topBar = {
+        Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+            Column(Modifier.weight(1f)) { Text("整理照片", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("本次 ${photos.size} 张", style = MaterialTheme.typography.labelSmall, color = Muted) }
+            if (trashCount > 0) IconButton(onClick = onTrash) { Icon(Icons.Filled.DeleteOutline, "删除暂存区", tint = Moss) }
+        }
+    }) { p ->
+        Column(Modifier.fillMaxSize().padding(p)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("随机整理", "最近照片").forEach { item ->
+                    TextButton(onClick = { mode = item }) { Text(item, color = if (mode == item) Moss else Muted, fontWeight = if (mode == item) FontWeight.Bold else FontWeight.Normal) }
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (selecting) "已选 ${selected.size} 张" else "点击照片查看，或进入选择模式", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.weight(1f))
+                if (selecting && selected.isNotEmpty()) IconButton(onClick = { onStageDelete(photos.filter { it.uri in selected }); selected = emptySet(); selecting = false }) { Icon(Icons.Filled.DeleteOutline, "暂存删除", tint = Moss) }
+                IconButton(onClick = { selecting = !selecting; selected = emptySet() }) { Icon(Icons.Filled.Check, "选择", tint = Moss) }
+            }
+            if (photos.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到可整理的照片", color = Muted) }
+            else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(4.dp)) {
+                items(photos, key = { it.uri.toString() }) { photo ->
+                    PhotoThumb(photo, photo.uri in selected) {
+                        if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
+                        else viewerIndex = photos.indexOfFirst { it.uri == photo.uri }
+                    }
+                }
+            }
+        }
+    }
+    viewerIndex?.let { index -> PhotoViewerScreen(photos, index, { viewerIndex = null }, { photo -> onStageDelete(listOf(photo)) }) }
+}
+
+@Composable
+private fun TrashScreen(
+    photos: List<PhotoItem>,
+    onBack: () -> Unit,
+    onRestore: (List<PhotoItem>) -> Unit,
+    onDelete: (List<PhotoItem>) -> Unit,
+) {
+    var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    BackHandler(onBack = onBack)
+    Scaffold(containerColor = Paper, topBar = {
+        Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+            Text("删除暂存区", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text("${photos.size} 张", style = MaterialTheme.typography.labelMedium, color = Muted)
+        }
+    }, bottomBar = {
+        if (photos.isNotEmpty()) Row(Modifier.fillMaxWidth().background(Color.White).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 22.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            TextButton(onClick = { onRestore(if (selected.isEmpty()) photos else photos.filter { it.uri in selected }); selected = emptySet() }) { Icon(Icons.Filled.Undo, null); Text("  恢复") }
+            TextButton(onClick = { confirmDelete = true }) { Icon(Icons.Filled.Delete, null); Text("  删除") }
+        }
+    }) { p ->
+        if (photos.isEmpty()) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { Text("暂存区为空", color = Muted) }
+        else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize().padding(p), contentPadding = PaddingValues(4.dp)) {
+            items(photos, key = { it.uri.toString() }) { photo -> PhotoThumb(photo, photo.uri in selected) { selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri } }
+        }
+    }
+    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("确认永久删除？") }, text = { Text(if (selected.isEmpty()) "将删除暂存区内的全部照片。" else "将删除已选择的 ${selected.size} 张照片。") }, confirmButton = { TextButton(onClick = { onDelete(if (selected.isEmpty()) photos else photos.filter { it.uri in selected }); selected = emptySet(); confirmDelete = false }) { Text("确认删除") } }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } })
 }
 
 private fun queryPhotos(context: Context, category: Category): List<PhotoItem> {
     val uris = mutableListOf<PhotoItem>()
     if (category.folderUri != null) runCatching { context.contentResolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(Uri.parse(category.folderUri), DocumentsContract.getTreeDocumentId(Uri.parse(category.folderUri))), arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c -> while (c.moveToNext()) if (c.getString(2)?.startsWith("image/") == true) { val id = c.getString(0); uris += PhotoItem(DocumentsContract.buildDocumentUriUsingTree(Uri.parse(category.folderUri), id), c.getString(1)) } } } else context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME), "${MediaStore.Images.Media.RELATIVE_PATH}=?", arrayOf("DCIM/${category.name}/"), "${MediaStore.Images.Media.DATE_ADDED} DESC")?.use { c -> while (c.moveToNext()) uris += PhotoItem(Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)), c.getString(1)) }
     return uris
+}
+
+private fun queryAllPhotos(context: Context, categories: List<Category>): List<PhotoItem> =
+    categories.flatMap { queryPhotos(context, it) }.distinctBy { it.uri }
+
+private fun deletePhoto(context: Context, photo: PhotoItem) {
+    runCatching {
+        if (photo.uri.authority == "com.android.providers.media.documents" || photo.uri.scheme == "content") {
+            context.contentResolver.delete(photo.uri, null, null)
+        } else {
+            DocumentsContract.deleteDocument(context.contentResolver, photo.uri)
+        }
+    }
 }
 
 private fun safeFolderName(value: String): String = value

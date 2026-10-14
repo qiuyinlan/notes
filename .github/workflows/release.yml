@@ -19,4 +19,4 @@ jobs:
         with:
           prerelease: true
           generate_release_notes: true
-          files: releases/takephoto-v0.2.2.apk
+          files: releases/takephoto-v0.3.0.apk
