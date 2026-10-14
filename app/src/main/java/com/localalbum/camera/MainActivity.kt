@@ -108,6 +108,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.text.SimpleDateFormat
@@ -220,8 +221,8 @@ private fun AlbumCameraApp() {
                 categories = categories.filterNot { it.name == name }
                 CategoryStore.save(context, categories)
             },
-            onShoot = { cameraOpen = true },
-            onShootCategory = { category -> selectedCategory = category.name; cameraOpen = true },
+            onShoot = { screen = AppScreen.HOME; cameraOpen = true },
+            onShootCategory = { category -> selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
             onOrganize = {
                 if (ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
                     pendingOrganize = true
@@ -238,7 +239,7 @@ private fun AlbumCameraApp() {
                 category = category,
                 categories = categories,
                 onBack = { screen = AppScreen.HOME },
-                onShoot = { selectedCategory = category.name; cameraOpen = true },
+                onShoot = { selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
                 onStageDelete = { photos -> trash = (trash + photos).distinctBy { it.uri } },
             )
         }
@@ -407,7 +408,7 @@ private fun CategoryRow(category: Category, selected: Boolean, canDelete: Boolea
             if (selected) {
                 Text("已选", style = MaterialTheme.typography.labelSmall, color = Moss, modifier = Modifier.padding(horizontal = 8.dp))
             }
-            IconButton(onClick = onShoot) {
+            IconButton(onClick = onShoot, modifier = Modifier.zIndex(1f)) {
                 Icon(Icons.Filled.CameraAlt, contentDescription = "拍摄到 ${category.name}", tint = Moss, modifier = Modifier.size(20.dp))
             }
             if (canDelete) {
@@ -709,31 +710,35 @@ private fun PhotoViewerScreen(
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, photos.lastIndex), pageCount = { photos.size })
     val scope = rememberCoroutineScope()
     BackHandler(onBack = onClose)
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize().padding(bottom = 172.dp)) { page ->
-            PhotoPageImage(photos[page])
+    Column(Modifier.fillMaxSize().background(Color.Black)) {
+        Box(Modifier.fillMaxWidth().weight(1f)) {
+            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                PhotoPageImage(photos[page])
+            }
+            Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
+                Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, modifier = Modifier.weight(1f))
+            }
         }
-        Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
-            Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, modifier = Modifier.weight(1f))
-        }
-        Column(Modifier.fillMaxWidth().align(Alignment.BottomCenter).background(Color(0xFF111111)).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 18.dp, vertical = 10.dp)) {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 2.dp)) {
-                items(categories, key = { it.name }) { target ->
-                    Surface(onClick = { onMove(photos[pagerState.currentPage], target) }, color = Color(0xFF303030), shape = RoundedCornerShape(18.dp)) {
-                        Text(target.name, color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+        Surface(color = Color(0xFF111111), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 18.dp, vertical = 10.dp)) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 2.dp)) {
+                    items(categories, key = { it.name }) { target ->
+                        Surface(onClick = { onMove(photos[pagerState.currentPage], target) }, color = Color(0xFF303030), shape = RoundedCornerShape(18.dp)) {
+                            Text(target.name, color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                        }
                     }
                 }
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = {
-                    if (pagerState.currentPage < photos.lastIndex) scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } else onClose()
-                }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("保留") }
-                Button(onClick = {
-                    val photo = photos[pagerState.currentPage]
-                    onStageDelete(photo)
-                    if (photos.size == 1) onClose() else if (pagerState.currentPage >= photos.lastIndex) scope.launch { pagerState.animateScrollToPage(photos.lastIndex - 1) }
-                }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A), contentColor = Color.White)) { Icon(Icons.Filled.DeleteOutline, null); Text("  暂存删除") }
+                Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(onClick = {
+                        if (pagerState.currentPage < photos.lastIndex) scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } else onClose()
+                    }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("保留") }
+                    Button(onClick = {
+                        val photo = photos[pagerState.currentPage]
+                        onStageDelete(photo)
+                        if (photos.size == 1) onClose() else if (pagerState.currentPage >= photos.lastIndex) scope.launch { pagerState.animateScrollToPage(photos.lastIndex - 1) }
+                    }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A), contentColor = Color.White)) { Icon(Icons.Filled.DeleteOutline, null); Text("  暂存删除") }
+                }
             }
         }
     }
