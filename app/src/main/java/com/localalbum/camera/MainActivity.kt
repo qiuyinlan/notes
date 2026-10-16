@@ -1106,7 +1106,6 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
-    var previewIndex by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(stagedPhotos) { photos = photos.filterNot { photo -> stagedPhotos.any { it.uri == photo.uri } } }
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Paper, topBar = {
@@ -1153,7 +1152,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                 PhotoThumb(photo, selected = photo.uri in selected, onClick = {
                     if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
                     else viewerIndex = photos.indexOfFirst { it.uri == photo.uri }
-                }, onLongClick = { previewIndex = photos.indexOfFirst { it.uri == photo.uri } })
+                }, onLongClick = { if (!selecting) viewerIndex = photos.indexOfFirst { it.uri == photo.uri } })
             }
         }
     }
@@ -1176,13 +1175,6 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                 }
             },
             stagedCount = stagedPhotos.size,
-        )
-    }
-    previewIndex?.let { index ->
-        PhotoPreviewScreen(
-            photos = photos,
-            initialIndex = index,
-            onClose = { previewIndex = null },
         )
     }
 }
@@ -1385,7 +1377,6 @@ private fun OrganizePhotosScreen(
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var selecting by remember { mutableStateOf(false) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
-    var previewIndex by remember { mutableStateOf<Int?>(null) }
     var gameMode by rememberSaveable { mutableStateOf(false) }
     var modeMenuExpanded by remember { mutableStateOf(false) }
     var mode by remember { mutableStateOf("随机整理") }
@@ -1413,9 +1404,11 @@ private fun OrganizePhotosScreen(
     if (gameMode) {
         PhotoDeleteGameScreen(
             photos = sourcePhotos,
+            categories = categories,
             stagedCount = trashCount,
             onBack = onBack,
             onStageDelete = onStageDelete,
+            onOrganized = onOrganized,
             onTrash = onTrash,
             onExitGame = { gameMode = false },
         )
@@ -1504,7 +1497,7 @@ private fun OrganizePhotosScreen(
                         else {
                             viewerIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri }
                         }
-                    }, onLongClick = { previewIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri } })
+                    }, onLongClick = { if (!selecting) viewerIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri } })
                 }
             }
         }
@@ -1527,22 +1520,17 @@ private fun OrganizePhotosScreen(
             autoPlayEnabled = true,
         )
     }
-    previewIndex?.let { index ->
-        PhotoPreviewScreen(
-            photos = visiblePhotos,
-            initialIndex = index,
-            onClose = { previewIndex = null },
-        )
-    }
 }
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
 private fun PhotoDeleteGameScreen(
     photos: List<PhotoItem>,
+    categories: List<Category>,
     stagedCount: Int,
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
+    onOrganized: (Int) -> Unit,
     onTrash: () -> Unit,
     onExitGame: () -> Unit,
 ) {
@@ -1558,6 +1546,22 @@ private fun PhotoDeleteGameScreen(
         remaining = remaining.filterNot { it.uri == photo.uri }
         batch = batch.filterNot { it.uri == photo.uri }
         onStageDelete(listOf(photo))
+    }
+
+    fun keep(photo: PhotoItem) {
+        if (batch.none { it.uri == photo.uri }) return
+        remaining = remaining.filterNot { it.uri == photo.uri }
+        batch = batch.filterNot { it.uri == photo.uri }
+        onOrganized(1)
+    }
+
+    fun move(photo: PhotoItem, target: Category) {
+        if (movePhoto(context, photo, target)) {
+            remaining = remaining.filterNot { it.uri == photo.uri }
+            batch = batch.filterNot { it.uri == photo.uri }
+            onOrganized(1)
+            previewIndex = null
+        }
     }
 
     LaunchedEffect(batch, remaining, roundSize) {
@@ -1666,10 +1670,16 @@ private fun PhotoDeleteGameScreen(
         }
     }
     previewIndex?.let { index ->
-        PhotoPreviewScreen(
+        PhotoViewerScreen(
             photos = batch,
             initialIndex = index,
+            categories = categories,
             onClose = { previewIndex = null },
+            onOpenTrash = { previewIndex = null; onTrash() },
+            onStageDelete = { stage(it) },
+            onKeep = { keep(it) },
+            onMove = { photo, target -> move(photo, target) },
+            stagedCount = stagedCount,
         )
     }
 }
