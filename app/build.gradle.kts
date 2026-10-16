@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val signingProperties = Properties().apply {
+    val propertiesFile = rootProject.file("keystore.properties")
+    if (propertiesFile.exists()) propertiesFile.inputStream().use { load(it) }
+}
+val releaseKeystorePath = signingProperties.getProperty("storeFile")
 
 android {
     namespace = "com.localalbum.camera"
@@ -17,21 +25,42 @@ android {
         applicationId = "com.localalbum.camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.10.3"
+        versionCode = 17
+        versionName = "0.11.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (!releaseKeystorePath.isNullOrBlank()) {
+                storeFile = rootProject.file(releaseKeystorePath)
+                storePassword = signingProperties.getProperty("storePassword")
+                keyAlias = signingProperties.getProperty("keyAlias")
+                keyPassword = signingProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+}
+
+tasks.configureEach {
+    if (name.contains("Release", ignoreCase = true) && name.startsWith("assemble", ignoreCase = true)) {
+        doFirst {
+            check(!releaseKeystorePath.isNullOrBlank()) {
+                "Configure keystore.properties with your release signing key before building release."
+            }
+        }
     }
 }
 

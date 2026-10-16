@@ -76,6 +76,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -86,6 +88,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -146,11 +150,12 @@ private data class Category(val name: String, val folderUri: String? = null)
 private data class ImportFolder(val name: String, val uri: Uri, val imageCount: Int)
 private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null, val dateMillis: Long = 0L)
 private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long)
+private data class MediaStorage(val photoBytes: Long = 0L, val videoBytes: Long = 0L)
 
 private fun PhotoItem.belongsTo(category: Category): Boolean =
     sourceKey == (category.folderUri ?: "DCIM/${category.name}")
 
-private enum class AppScreen { HOME, CATEGORY, ORGANIZE, TRASH, IMPORT, VIDEOS, VIDEO_TRASH }
+private enum class AppScreen { HOME, MORE, CATEGORY, ORGANIZE, TRASH, IMPORT, VIDEOS, VIDEO_TRASH }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -190,6 +195,8 @@ private fun AlbumCameraApp() {
     var trash by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
     var videos by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var videoTrash by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var organizedCount by remember { mutableStateOf(StatsStore.organized(context)) }
+    var deletedCount by remember { mutableStateOf(StatsStore.deleted(context)) }
     var pendingPreview by remember { mutableStateOf<Category?>(null) }
     var pendingOrganize by remember { mutableStateOf(false) }
     var pendingCategoryName by remember { mutableStateOf("") }
@@ -199,9 +206,22 @@ private fun AlbumCameraApp() {
     var pendingSystemDelete by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
     var pendingVideoDelete by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var pendingVideoReview by remember { mutableStateOf(false) }
+    fun recordOrganized(amount: Int) {
+        if (amount > 0) {
+            StatsStore.addOrganized(context, amount)
+            organizedCount += amount
+        }
+    }
+    fun recordDeleted(amount: Int) {
+        if (amount > 0) {
+            StatsStore.addDeleted(context, amount)
+            deletedCount += amount
+        }
+    }
     val deleteRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             trash = trash.filterNot { item -> pendingSystemDelete.any { it.uri == item.uri } }
+            recordDeleted(pendingSystemDelete.size)
             Toast.makeText(context, "照片已删除", Toast.LENGTH_SHORT).show()
         }
         pendingSystemDelete = emptyList()
@@ -210,6 +230,7 @@ private fun AlbumCameraApp() {
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             videos = videos.filterNot { item -> pendingVideoDelete.any { it.uri == item.uri } }
             videoTrash = videoTrash.filterNot { item -> pendingVideoDelete.any { it.uri == item.uri } }
+            recordDeleted(pendingVideoDelete.size)
             Toast.makeText(context, "视频已删除", Toast.LENGTH_SHORT).show()
         }
         pendingVideoDelete = emptyList()
@@ -276,6 +297,7 @@ private fun AlbumCameraApp() {
             selectedCategory = selectedCategory,
             trashCount = trash.size,
             videoTrashCount = videoTrash.size,
+            onMore = { screen = AppScreen.MORE },
             onSelect = { category ->
                 selectedCategory = category.name
                 if (category.folderUri == null && ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
@@ -314,6 +336,11 @@ private fun AlbumCameraApp() {
             },
             onVideoTrash = { screen = AppScreen.VIDEO_TRASH },
         )
+        AppScreen.MORE -> MoreScreen(
+            organizedCount = organizedCount,
+            deletedCount = deletedCount,
+            onHome = { screen = AppScreen.HOME },
+        )
         AppScreen.CATEGORY -> previewCategory?.let { category ->
             CategoryPhotosScreen(
                 category = category,
@@ -329,7 +356,8 @@ private fun AlbumCameraApp() {
             photos = organizePhotos.filterNot { photo -> trash.any { it.uri == photo.uri } },
             categories = categories,
             onBack = { screen = AppScreen.HOME },
-            onStageDelete = { photos -> trash = (trash + photos).distinctBy { it.uri } },
+            onStageDelete = { photos -> recordOrganized(photos.size); trash = (trash + photos).distinctBy { it.uri } },
+            onOrganized = { recordOrganized(1) },
             onTrash = { trashCategory = null; screen = AppScreen.TRASH },
             trashCount = trash.size,
         )
@@ -344,6 +372,7 @@ private fun AlbumCameraApp() {
                 val removedDocuments = documentPhotos.filter { deletePhoto(context, it) }
                 if (removedDocuments.isNotEmpty()) {
                     trash = trash.filterNot { item -> removedDocuments.any { it.uri == item.uri } }
+                    recordDeleted(removedDocuments.size)
                 }
                 if (removedDocuments.size < documentPhotos.size) {
                     Toast.makeText(context, "部分文件无法删除，仍保留在暂存区", Toast.LENGTH_LONG).show()
@@ -382,7 +411,8 @@ private fun AlbumCameraApp() {
             stagedCount = videoTrash.size,
             onBack = { screen = AppScreen.HOME },
             onTrash = { screen = AppScreen.VIDEO_TRASH },
-            onStageDelete = { video -> videoTrash = (videoTrash + video).distinctBy { it.uri } },
+            onStageDelete = { video -> recordOrganized(1); videoTrash = (videoTrash + video).distinctBy { it.uri } },
+            onKeep = { recordOrganized(1) },
         )
         AppScreen.VIDEO_TRASH -> VideoTrashScreen(
             videos = videoTrash,
@@ -402,6 +432,7 @@ private fun AlbumCameraApp() {
                     val removed = deleted.filter { runCatching { context.contentResolver.delete(it.uri, null, null) > 0 }.getOrDefault(false) }
                     videos = videos.filterNot { item -> removed.any { it.uri == item.uri } }
                     videoTrash = videoTrash.filterNot { item -> removed.any { it.uri == item.uri } }
+                    recordDeleted(removed.size)
                     if (removed.size < deleted.size) Toast.makeText(context, "部分视频删除失败，仍保留在暂存区", Toast.LENGTH_LONG).show()
                 }
             },
@@ -454,6 +485,7 @@ private fun HomeScreen(
     selectedCategory: String,
     trashCount: Int,
     videoTrashCount: Int,
+    onMore: () -> Unit,
     onSelect: (Category) -> Unit,
     onAdd: () -> Unit,
     onDelete: (String) -> Unit,
@@ -465,7 +497,12 @@ private fun HomeScreen(
     onVideos: () -> Unit,
     onVideoTrash: () -> Unit,
 ) {
-    Scaffold(containerColor = Paper) { padding ->
+    Scaffold(containerColor = Paper, bottomBar = {
+        NavigationBar(containerColor = Color.White) {
+            NavigationBarItem(selected = true, onClick = {}, icon = { Icon(Icons.Filled.Home, "首页") }, label = { Text("首页") })
+            NavigationBarItem(selected = false, onClick = onMore, icon = { Icon(Icons.Filled.MoreHoriz, "更多") }, label = { Text("更多") })
+        }
+    }) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding),
         ) {
@@ -561,6 +598,85 @@ private fun HomeScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun MoreScreen(
+    organizedCount: Int,
+    deletedCount: Int,
+    onHome: () -> Unit,
+) {
+    val context = LocalContext.current
+    var storage by remember { mutableStateOf(MediaStorage()) }
+    LaunchedEffect(Unit) {
+        storage = withContext(Dispatchers.IO) { queryMediaStorage(context) }
+    }
+    BackHandler(onBack = onHome)
+    val totalBytes = storage.photoBytes + storage.videoBytes
+    Scaffold(containerColor = Paper, bottomBar = {
+        NavigationBar(containerColor = Color.White) {
+            NavigationBarItem(selected = false, onClick = onHome, icon = { Icon(Icons.Filled.Home, "首页") }, label = { Text("首页") })
+            NavigationBarItem(selected = true, onClick = {}, icon = { Icon(Icons.Filled.MoreHoriz, "更多") }, label = { Text("更多") })
+        }
+    }) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 22.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                Text("更多", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Ink)
+                Text("查看本机相册的整理记录和空间占用", style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 5.dp))
+            }
+            item {
+                Surface(color = Color.White, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("整理数据", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink)
+                        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            StatValue(label = "已整理", value = organizedCount.toString(), modifier = Modifier.weight(1f))
+                            StatValue(label = "已删除", value = deletedCount.toString(), modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+            item {
+                Surface(color = Color.White, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(18.dp)) {
+                        Text("相册占用空间", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink)
+                        Text(formatBytes(totalBytes), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Moss, modifier = Modifier.padding(top = 12.dp))
+                        Text("照片和视频合计", style = MaterialTheme.typography.labelMedium, color = Muted, modifier = Modifier.padding(top = 3.dp))
+                        Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            StorageValue(label = "照片", value = formatBytes(storage.photoBytes), modifier = Modifier.weight(1f))
+                            StorageValue(label = "视频", value = formatBytes(storage.videoBytes), modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+            item {
+                Text("空间数据来自手机本地媒体库，打开此页面时会自动刷新。", style = MaterialTheme.typography.labelSmall, color = Muted)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatValue(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(color = Mint, shape = RoundedCornerShape(8.dp), modifier = modifier) {
+        Column(Modifier.padding(14.dp)) {
+            Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Moss)
+            Text(label, style = MaterialTheme.typography.labelMedium, color = Muted, modifier = Modifier.padding(top = 3.dp))
+        }
+    }
+}
+
+@Composable
+private fun StorageValue(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(color = Paper, shape = RoundedCornerShape(8.dp), modifier = modifier) {
+        Column(Modifier.padding(14.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMedium, color = Muted)
+            Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink, modifier = Modifier.padding(top = 5.dp))
         }
     }
 }
@@ -815,6 +931,26 @@ private object CategoryStore {
     }
 }
 
+private object StatsStore {
+    private const val PREFS = "organize_stats"
+    private const val ORGANIZED = "organized_count"
+    private const val DELETED = "deleted_count"
+
+    fun organized(context: Context): Int = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(ORGANIZED, 0)
+
+    fun deleted(context: Context): Int = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(DELETED, 0)
+
+    fun addOrganized(context: Context, amount: Int) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putInt(ORGANIZED, prefs.getInt(ORGANIZED, 0) + amount).apply()
+    }
+
+    fun addDeleted(context: Context, amount: Int) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putInt(DELETED, prefs.getInt(DELETED, 0) + amount).apply()
+    }
+}
+
 private fun Category.displayLocation(): String = folderUri?.let { "已选择的手机文件夹" } ?: "DCIM/$name"
 
 @Composable
@@ -1030,6 +1166,7 @@ private fun OrganizePhotosScreen(
     categories: List<Category>,
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
+    onOrganized: (Int) -> Unit,
     onTrash: () -> Unit,
     trashCount: Int,
 ) {
@@ -1153,8 +1290,8 @@ private fun OrganizePhotosScreen(
                 visiblePhotos = visiblePhotos.filterNot { it.uri == photo.uri }
                 onStageDelete(listOf(photo))
             },
-            onKeep = { photo -> processedUris = processedUris + photo.uri },
-            onMove = { photo, target -> if (movePhoto(context, photo, target)) viewerIndex = null },
+            onKeep = { photo -> processedUris = processedUris + photo.uri; onOrganized(1) },
+            onMove = { photo, target -> if (movePhoto(context, photo, target)) { onOrganized(1); viewerIndex = null } },
             stagedCount = trashCount,
             autoPlayEnabled = true,
         )
@@ -1199,6 +1336,7 @@ private fun VideoReviewScreen(
     onBack: () -> Unit,
     onTrash: () -> Unit,
     onStageDelete: (VideoItem) -> Unit,
+    onKeep: () -> Unit,
 ) {
     val context = LocalContext.current
     var currentUri by remember { mutableStateOf(videos.firstOrNull()?.uri) }
@@ -1360,7 +1498,7 @@ private fun VideoReviewScreen(
                         IconButton(onClick = { if (player.isPlaying) player.pause() else player.play(); isPlaying = player.isPlaying }) {
                             Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (isPlaying) "暂停视频" else "播放视频", tint = Color.White)
                         }
-                        TextButton(onClick = { currentUri = videos.getOrNull(currentIndex + 1)?.uri }, modifier = Modifier.weight(1f)) { Text("保留并下一个", color = Color.White) }
+                        TextButton(onClick = { onKeep(); currentUri = videos.getOrNull(currentIndex + 1)?.uri }, modifier = Modifier.weight(1f)) { Text("保留并下一个", color = Color.White) }
                         Button(onClick = {
                             val nextVideo = videos.getOrNull(currentIndex + 1) ?: videos.getOrNull(currentIndex - 1)
                             currentUri = nextVideo?.uri
@@ -1561,6 +1699,39 @@ private fun queryAllVideos(context: Context): List<VideoItem> {
         }
     }
     return videos
+}
+
+private fun queryMediaStorage(context: Context): MediaStorage = MediaStorage(
+    photoBytes = queryMediaBytes(context, MediaStore.Images.Media.EXTERNAL_CONTENT_URI),
+    videoBytes = queryMediaBytes(context, MediaStore.Video.Media.EXTERNAL_CONTENT_URI),
+)
+
+private fun queryMediaBytes(context: Context, collection: Uri): Long {
+    var total = 0L
+    runCatching {
+        context.contentResolver.query(collection, arrayOf(MediaStore.MediaColumns.SIZE), null, null, null)?.use { cursor ->
+            val sizeIndex = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+            if (sizeIndex >= 0) {
+                while (cursor.moveToNext()) {
+                    if (!cursor.isNull(sizeIndex)) total += cursor.getLong(sizeIndex).coerceAtLeast(0L)
+                }
+            }
+        }
+    }
+    return total
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val units = arrayOf("KB", "MB", "GB", "TB")
+    var value = bytes.toDouble()
+    var unitIndex = -1
+    while (value >= 1024.0 && unitIndex < units.lastIndex) {
+        value /= 1024.0
+        unitIndex++
+    }
+    return if (value >= 100.0 || unitIndex == 0) "%.0f %s".format(Locale.getDefault(), value, units[unitIndex])
+    else "%.1f %s".format(Locale.getDefault(), value, units[unitIndex])
 }
 
 private fun isMediaStorePhoto(context: Context, photo: PhotoItem): Boolean =
