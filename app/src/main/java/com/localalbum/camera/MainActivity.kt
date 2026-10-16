@@ -67,7 +67,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.shape.CircleShape
@@ -129,6 +132,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -160,15 +164,16 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.PlaybackParameters
-import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
+import androidx.media3.exoplayer.source.preload.TargetPreloadStatusControl
 import androidx.media3.ui.PlayerView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val Ink = Color(0xFF1C2421)
@@ -181,6 +186,8 @@ private data class Category(val name: String, val folderUri: String? = null)
 private data class ImportFolder(val name: String, val uri: Uri, val imageCount: Int)
 private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null, val dateMillis: Long = 0L, val sizeBytes: Long = 0L)
 private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long, val sizeBytes: Long = 0L, val sourceKey: String? = null)
+private data class PendingVideoMove(val video: VideoItem, val targetPath: String, val targetName: String)
+private enum class VideoMoveResult { MOVED, NEEDS_CONFIRMATION, FAILED }
 private data class MediaStorage(
     val photoCount: Int = 0,
     val videoCount: Int = 0,
@@ -188,10 +195,23 @@ private data class MediaStorage(
     val videoBytes: Long = 0L,
 )
 
+private sealed interface UndoableStage {
+    val organizedAmount: Int
+    data class Photos(val items: List<PhotoItem>, val reviewedItems: List<PhotoItem>) : UndoableStage {
+        override val organizedAmount: Int = reviewedItems.size
+    }
+    data class Video(val item: VideoItem, override val organizedAmount: Int) : UndoableStage
+}
+
 private fun PhotoItem.belongsTo(category: Category): Boolean =
     sourceKey == (category.folderUri ?: "DCIM/${category.name}")
 
 private enum class AppScreen { HOME, MORE, CATEGORY, ORGANIZE, TRASH, IMPORT, VIDEOS, VIDEO_TRASH }
+
+private const val MODE_RANDOM = "\u968f\u673a\u6574\u7406"
+private const val MODE_MONTH = "\u6309\u6708\u4efd\u6574\u7406"
+private const val MODE_ALL = "\u5168\u90e8\u6574\u7406"
+private const val MONTH_FORMAT = "yyyy\u5e74MM\u6708"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -234,6 +254,9 @@ private fun AlbumCameraApp() {
     var organizedCount by remember { mutableStateOf(StatsStore.organized(context)) }
     var deletedCount by remember { mutableStateOf(StatsStore.deleted(context)) }
     var clearedBytes by remember { mutableStateOf(StatsStore.deletedBytes(context)) }
+    var reviewedPhotoKeys by remember { mutableStateOf(ReviewedStore.photos(context)) }
+    var reviewedVideoKeys by remember { mutableStateOf(ReviewedStore.videos(context)) }
+    var showRoundCompleteDialog by remember { mutableStateOf(false) }
     var loadingOrganize by remember { mutableStateOf(false) }
     var photoCatalog by remember { mutableStateOf<List<PhotoItem>?>(null) }
     var videoCatalog by remember { mutableStateOf<List<VideoItem>?>(null) }
@@ -249,11 +272,13 @@ private fun AlbumCameraApp() {
     var importSelected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var pendingSystemDelete by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
     var pendingVideoDelete by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var pendingVideoMove by remember { mutableStateOf<PendingVideoMove?>(null) }
+    val undoableStages = remember { mutableStateListOf<UndoableStage>() }
     var pendingVideoReview by remember { mutableStateOf(false) }
     fun recordOrganized(amount: Int) {
-        if (amount > 0) {
+        if (amount != 0) {
             StatsStore.addOrganized(context, amount)
-            organizedCount += amount
+            organizedCount = (organizedCount + amount).coerceAtLeast(0)
         }
     }
     fun recordDeleted(amount: Int, bytes: Long = 0L) {
@@ -265,6 +290,42 @@ private fun AlbumCameraApp() {
             StatsStore.addDeletedBytes(context, bytes)
             clearedBytes += bytes
         }
+    }
+    fun markPhotosReviewed(items: Collection<PhotoItem>): List<PhotoItem> {
+        val newItems = items.filter { it.uri.toString() !in reviewedPhotoKeys }
+        if (newItems.isEmpty()) return emptyList()
+        newItems.forEach { ReviewedStore.markPhoto(context, it.uri) }
+        reviewedPhotoKeys = reviewedPhotoKeys + newItems.map { it.uri.toString() }
+        recordOrganized(newItems.size)
+        return newItems
+    }
+    fun markVideoReviewed(item: VideoItem): Boolean {
+        val key = item.uri.toString()
+        if (key in reviewedVideoKeys) return false
+        ReviewedStore.markVideo(context, item.uri)
+        reviewedVideoKeys = reviewedVideoKeys + key
+        recordOrganized(1)
+        return true
+    }
+    fun undoLastStage() {
+        val action = undoableStages.removeLastOrNull() ?: return
+        when (action) {
+            is UndoableStage.Photos -> {
+                trash = (trash + action.items).distinctBy { it.uri }
+                if (action.reviewedItems.isNotEmpty()) {
+                    action.reviewedItems.forEach { ReviewedStore.unmarkPhoto(context, it.uri) }
+                    reviewedPhotoKeys = reviewedPhotoKeys - action.reviewedItems.map { it.uri.toString() }.toSet()
+                }
+                recordOrganized(-action.organizedAmount)
+            }
+            is UndoableStage.Video -> {
+                videoTrash = videoTrash.filterNot { it.uri == action.item.uri }
+                ReviewedStore.unmarkVideo(context, action.item.uri)
+                reviewedVideoKeys = reviewedVideoKeys - action.item.uri.toString()
+                recordOrganized(-action.organizedAmount)
+            }
+        }
+        Toast.makeText(context, "已撤回上一次暂存删除", Toast.LENGTH_SHORT).show()
     }
     val deleteRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
@@ -282,6 +343,23 @@ private fun AlbumCameraApp() {
             Toast.makeText(context, "视频已删除", Toast.LENGTH_SHORT).show()
         }
         pendingVideoDelete = emptyList()
+    }
+    val videoMoveRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val move = pendingVideoMove
+        if (move != null) {
+            val moved = result.resultCode == android.app.Activity.RESULT_OK && runCatching {
+                moveVideoInPlace(context, move.video.uri, move.targetPath)
+            }.getOrDefault(false)
+            if (moved) {
+                videos = videos.filterNot { it.uri == move.video.uri }
+                videoCatalog = videoCatalog?.filterNot { it.uri == move.video.uri }
+                markVideoReviewed(move.video)
+                Toast.makeText(context, "\u89c6\u9891\u5df2\u79fb\u52a8\u5230${move.targetName}", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "\u89c6\u9891\u4fdd\u7559\u5728\u539f\u5206\u7c7b", Toast.LENGTH_SHORT).show()
+            }
+            pendingVideoMove = null
+        }
     }
     val photoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
     val videoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -336,10 +414,22 @@ private fun AlbumCameraApp() {
         if (mediaChangeToken > 0) delay(300)
         refreshMediaCatalog()
         if (openOrganizerWhenLoaded && photoCatalog != null) {
-            organizePhotos = photoCatalog.orEmpty()
+            organizePhotos = photoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedPhotoKeys }
             screen = AppScreen.ORGANIZE
             loadingOrganize = false
             openOrganizerWhenLoaded = false
+        }
+    }
+
+    LaunchedEffect(photoCatalog, videoCatalog, reviewedPhotoKeys, reviewedVideoKeys) {
+        val photos = photoCatalog ?: return@LaunchedEffect
+        val loadedVideos = videoCatalog ?: return@LaunchedEffect
+        val hasMedia = photos.isNotEmpty() || loadedVideos.isNotEmpty()
+        val allReviewed = photos.all { it.uri.toString() in reviewedPhotoKeys } &&
+            loadedVideos.all { it.uri.toString() in reviewedVideoKeys }
+        if (hasMedia && allReviewed && !ReviewedStore.roundCompleteAnnounced(context)) {
+            ReviewedStore.setRoundCompleteAnnounced(context, true)
+            showRoundCompleteDialog = true
         }
     }
 
@@ -347,7 +437,7 @@ private fun AlbumCameraApp() {
         if (granted && pendingVideoReview) {
             screenScope.launch {
                 refreshMediaCatalog()
-                videos = videoCatalog.orEmpty()
+                videos = videoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedVideoKeys }
                 screen = AppScreen.VIDEOS
             }
         } else if (!granted) {
@@ -367,7 +457,7 @@ private fun AlbumCameraApp() {
                     photoCatalog.orEmpty()
                 }
                     .onSuccess {
-                        organizePhotos = it
+                        organizePhotos = it.filterNot { photo -> photo.uri.toString() in reviewedPhotoKeys }
                         screen = AppScreen.ORGANIZE
                     }
                     .onFailure { Toast.makeText(context, "读取照片失败，请稍后重试", Toast.LENGTH_LONG).show() }
@@ -440,7 +530,7 @@ private fun AlbumCameraApp() {
                 } else {
                     val cachedPhotos = photoCatalog
                     if (cachedPhotos != null && !mediaCatalogLoading) {
-                        organizePhotos = cachedPhotos
+                        organizePhotos = cachedPhotos.filterNot { it.uri.toString() in reviewedPhotoKeys }
                         screen = AppScreen.ORGANIZE
                     } else if (mediaCatalogLoading) {
                         openOrganizerWhenLoaded = true
@@ -453,7 +543,7 @@ private fun AlbumCameraApp() {
                                 refreshMediaCatalog()
                                 photoCatalog.orEmpty()
                             }.onSuccess {
-                                organizePhotos = it
+                                organizePhotos = it.filterNot { photo -> photo.uri.toString() in reviewedPhotoKeys }
                                 screen = AppScreen.ORGANIZE
                             }.onFailure {
                                 Toast.makeText(context, "读取照片失败，请稍后重试", Toast.LENGTH_LONG).show()
@@ -469,14 +559,14 @@ private fun AlbumCameraApp() {
                 if (ContextCompat.checkSelfPermission(context, videoPermission) == PackageManager.PERMISSION_GRANTED) {
                     val cachedVideos = videoCatalog
                     if (cachedVideos != null && !mediaCatalogLoading) {
-                        videos = cachedVideos
+                        videos = cachedVideos.filterNot { it.uri.toString() in reviewedVideoKeys }
                         screen = AppScreen.VIDEOS
                     } else if (mediaCatalogLoading) {
                         Toast.makeText(context, "正在读取视频，请稍后重试", Toast.LENGTH_SHORT).show()
                     } else {
                         screenScope.launch {
                             refreshMediaCatalog()
-                            videos = videoCatalog.orEmpty()
+                            videos = videoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedVideoKeys }
                             screen = AppScreen.VIDEOS
                         }
                     }
@@ -499,9 +589,11 @@ private fun AlbumCameraApp() {
                 category = category,
                 categories = categories,
                 stagedPhotos = trash.filter { it.belongsTo(category) },
+                canUndo = undoableStages.isNotEmpty(),
+                onUndo = ::undoLastStage,
                 onBack = { screen = AppScreen.HOME },
                 onShoot = { selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
-                onStageDelete = { photos -> trash = (trash + photos).distinctBy { it.uri } },
+                onStageDelete = { photos -> undoableStages.add(UndoableStage.Photos(photos, emptyList())); trash = (trash + photos).distinctBy { it.uri } },
                 onTrash = { trashCategory = category; screen = AppScreen.TRASH },
             )
         }
@@ -509,8 +601,10 @@ private fun AlbumCameraApp() {
             photos = organizePhotos.filterNot { photo -> trash.any { it.uri == photo.uri } },
             categories = categories,
             onBack = { screen = AppScreen.HOME },
-            onStageDelete = { photos -> recordOrganized(photos.size); trash = (trash + photos).distinctBy { it.uri } },
-            onOrganized = { recordOrganized(1) },
+            onStageDelete = { photos -> undoableStages.add(UndoableStage.Photos(photos, markPhotosReviewed(photos))); trash = (trash + photos).distinctBy { it.uri } },
+            onUndo = ::undoLastStage,
+            canUndo = undoableStages.isNotEmpty(),
+            onSeen = ::markPhotosReviewed,
             onTrash = { trashCategory = null; screen = AppScreen.TRASH },
             trashCount = trash.size,
         )
@@ -559,21 +653,69 @@ private fun AlbumCameraApp() {
                 screen = AppScreen.HOME
             },
         )
-        AppScreen.VIDEOS -> VideoReviewScreen(
+        AppScreen.VIDEOS -> VideoOrganizerScreen(
             videos = videos.filterNot { item -> videoTrash.any { it.uri == item.uri } },
             categories = categories,
             stagedCount = videoTrash.size,
+            canUndo = undoableStages.isNotEmpty(),
             onBack = { screen = AppScreen.HOME },
             onTrash = { screen = AppScreen.VIDEO_TRASH },
-            onStageDelete = { video -> recordOrganized(1); videoTrash = (videoTrash + video).distinctBy { it.uri } },
-            onKeep = { recordOrganized(1) },
+            onStageDelete = { video -> undoableStages.add(UndoableStage.Video(video, if (markVideoReviewed(video)) 1 else 0)); videoTrash = (videoTrash + video).distinctBy { it.uri } },
+            onUndo = ::undoLastStage,
+            onKeep = ::markVideoReviewed,
             onMove = { video, target ->
-                if (moveVideo(context, video, target)) {
+                val targetPath = videoTargetRelativePath(target)
+                if (targetPath == null) {
+                    Toast.makeText(context, "\u76ee\u6807\u6587\u4ef6\u5939\u4e0d\u652f\u6301\u76f4\u63a5\u79fb\u52a8\u89c6\u9891", Toast.LENGTH_SHORT).show()
+                    VideoMoveResult.FAILED
+                } else if (video.sourceKey == targetPath) {
                     videos = videos.filterNot { it.uri == video.uri }
                     videoCatalog = videoCatalog?.filterNot { it.uri == video.uri }
-                    recordOrganized(1)
-                    true
-                } else false
+                    markVideoReviewed(video)
+                    VideoMoveResult.MOVED
+                } else if (pendingVideoMove != null) {
+                    VideoMoveResult.FAILED
+                } else {
+                    val pending = PendingVideoMove(video, targetPath, target.name)
+                    fun requestVideoWritePermission(): VideoMoveResult {
+                        pendingVideoMove = pending
+                        return runCatching {
+                            val request = MediaStore.createWriteRequest(context.contentResolver, listOf(video.uri))
+                            videoMoveRequest.launch(androidx.activity.result.IntentSenderRequest.Builder(request.intentSender).build())
+                            VideoMoveResult.NEEDS_CONFIRMATION
+                        }.getOrElse {
+                            pendingVideoMove = null
+                            VideoMoveResult.FAILED
+                        }
+                    }
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        try {
+                            if (moveVideoInPlace(context, video.uri, targetPath)) {
+                                videos = videos.filterNot { it.uri == video.uri }
+                                videoCatalog = videoCatalog?.filterNot { it.uri == video.uri }
+                                markVideoReviewed(video)
+                                VideoMoveResult.MOVED
+                            } else requestVideoWritePermission()
+                        } catch (_: SecurityException) {
+                            requestVideoWritePermission()
+                        }
+                    } else {
+                        try {
+                            if (moveVideoInPlace(context, video.uri, targetPath)) {
+                                videos = videos.filterNot { it.uri == video.uri }
+                                videoCatalog = videoCatalog?.filterNot { it.uri == video.uri }
+                                markVideoReviewed(video)
+                                VideoMoveResult.MOVED
+                            } else VideoMoveResult.FAILED
+                        } catch (error: android.app.RecoverableSecurityException) {
+                            pendingVideoMove = pending
+                            videoMoveRequest.launch(androidx.activity.result.IntentSenderRequest.Builder(error.userAction.actionIntent.intentSender).build())
+                            VideoMoveResult.NEEDS_CONFIRMATION
+                        } catch (_: SecurityException) {
+                            VideoMoveResult.FAILED
+                        }
+                    }
+                }
             },
         )
         AppScreen.VIDEO_TRASH -> VideoTrashScreen(
@@ -639,6 +781,28 @@ private fun AlbumCameraApp() {
             dismissButton = { TextButton(onClick = { pendingDeleteCategory = null }) { Text("取消") } },
         )
     }
+    if (showRoundCompleteDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                ReviewedStore.setRoundCompleteAnnounced(context, true)
+                showRoundCompleteDialog = false
+            },
+            title = { Text("这一轮整理完成") },
+            text = { Text("手机里的照片和视频都已经整理过一遍了，是否要再次整理？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    ReviewedStore.clearReviewed(context)
+                    reviewedPhotoKeys = emptySet()
+                    reviewedVideoKeys = emptySet()
+                    screen = AppScreen.HOME
+                    showRoundCompleteDialog = false
+                }) { Text("再次整理") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRoundCompleteDialog = false }) { Text("稍后") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -693,9 +857,12 @@ private fun HomeScreen(
                             Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
                             Text(if (organizeLoading) "  正在读取照片..." else "  整理照片")
                         }
-                        if (trashCount > 0) {
-                            IconButton(onClick = onTrash, modifier = Modifier.size(48.dp)) {
+                        IconButton(onClick = onTrash, modifier = Modifier.size(48.dp)) {
+                            Box {
                                 Icon(Icons.Filled.DeleteOutline, contentDescription = "删除暂存区", tint = Moss)
+                                Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(16.dp)) {
+                                    Box(contentAlignment = Alignment.Center) { Text(trashCount.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink) }
+                                }
                             }
                         }
                     }
@@ -712,9 +879,12 @@ private fun HomeScreen(
                             Icon(Icons.Filled.VideoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
                             Text("  整理视频")
                         }
-                        if (videoTrashCount > 0) {
-                            IconButton(onClick = onVideoTrash, modifier = Modifier.size(48.dp)) {
+                        IconButton(onClick = onVideoTrash, modifier = Modifier.size(48.dp)) {
+                            Box {
                                 Icon(Icons.Filled.DeleteOutline, contentDescription = "视频删除暂存区", tint = Moss)
+                                Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(16.dp)) {
+                                    Box(contentAlignment = Alignment.Center) { Text(videoTrashCount.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink) }
+                                }
                             }
                         }
                     }
@@ -1112,7 +1282,7 @@ private object StatsStore {
 
     fun addOrganized(context: Context, amount: Int) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit().putInt(ORGANIZED, prefs.getInt(ORGANIZED, 0) + amount).apply()
+        prefs.edit().putInt(ORGANIZED, (prefs.getInt(ORGANIZED, 0) + amount).coerceAtLeast(0)).apply()
     }
 
     fun addDeleted(context: Context, amount: Int) {
@@ -1129,14 +1299,68 @@ private object StatsStore {
 
 private fun Category.displayLocation(): String = folderUri?.let { "已选择的手机文件夹" } ?: "DCIM/$name"
 
+private object ReviewedStore {
+    private const val PREFS = "reviewed_media"
+    private const val PHOTOS = "photos"
+    private const val VIDEOS = "videos"
+    private const val ROUND_COMPLETE_ANNOUNCED = "round_complete_announced"
+
+    fun photos(context: Context): Set<String> = load(context, PHOTOS)
+
+    fun videos(context: Context): Set<String> = load(context, VIDEOS)
+
+    fun markPhoto(context: Context, uri: Uri) = mark(context, PHOTOS, uri)
+
+    fun markVideo(context: Context, uri: Uri) = mark(context, VIDEOS, uri)
+
+    fun unmarkPhoto(context: Context, uri: Uri) = unmark(context, PHOTOS, uri)
+
+    fun unmarkVideo(context: Context, uri: Uri) = unmark(context, VIDEOS, uri)
+
+    fun roundCompleteAnnounced(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ROUND_COMPLETE_ANNOUNCED, false)
+
+    fun setRoundCompleteAnnounced(context: Context, announced: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(ROUND_COMPLETE_ANNOUNCED, announced)
+            .apply()
+    }
+
+    fun clearReviewed(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .remove(PHOTOS)
+            .remove(VIDEOS)
+            .putBoolean(ROUND_COMPLETE_ANNOUNCED, false)
+            .apply()
+    }
+
+    private fun load(context: Context, key: String): Set<String> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet(key, emptySet()).orEmpty().toSet()
+
+    private fun mark(context: Context, key: String, uri: Uri) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val updated = prefs.getStringSet(key, emptySet()).orEmpty().toMutableSet().apply { add(uri.toString()) }
+        prefs.edit().putStringSet(key, updated).apply()
+    }
+
+    private fun unmark(context: Context, key: String, uri: Uri) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val updated = prefs.getStringSet(key, emptySet()).orEmpty().toMutableSet().apply { remove(uri.toString()) }
+        prefs.edit().putStringSet(key, updated).apply()
+    }
+}
+
 @Composable
-private fun CategoryPhotosScreen(category: Category, categories: List<Category>, stagedPhotos: List<PhotoItem>, onBack: () -> Unit, onShoot: () -> Unit, onStageDelete: (List<PhotoItem>) -> Unit, onTrash: () -> Unit) {
+private fun CategoryPhotosScreen(category: Category, categories: List<Category>, stagedPhotos: List<PhotoItem>, canUndo: Boolean, onUndo: () -> Unit, onBack: () -> Unit, onShoot: () -> Unit, onStageDelete: (List<PhotoItem>) -> Unit, onTrash: () -> Unit) {
     val context = LocalContext.current
     var photos by remember(category) { mutableStateOf(queryPhotos(context, category)) }
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
-    LaunchedEffect(stagedPhotos) { photos = photos.filterNot { photo -> stagedPhotos.any { it.uri == photo.uri } } }
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
+    val selectionBounds = remember { mutableStateMapOf<Uri, Rect>() }
+    var selectionGridOrigin by remember { mutableStateOf(Offset.Zero) }
+    LaunchedEffect(stagedPhotos) { photos = queryPhotos(context, category).filterNot { photo -> stagedPhotos.any { it.uri == photo.uri } } }
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Paper, topBar = {
         Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1145,6 +1369,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                 Text(category.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("${photos.size} 张照片", style = MaterialTheme.typography.labelSmall, color = Muted)
             }
+            IconButton(onClick = onUndo, enabled = canUndo) { Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Moss) }
             IconButton(onClick = {
                 if (!selecting) {
                     onTrash()
@@ -1177,12 +1402,20 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
         }
     }) { p ->
         if (photos.isEmpty()) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { Text("这个分类还没有照片", color = Muted) }
-        else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize().padding(p), contentPadding = PaddingValues(4.dp)) {
-            items(photos, key = { it.uri.toString() }) { photo ->
-                PhotoThumb(photo, selected = photo.uri in selected, onClick = {
-                    if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
-                    else viewerIndex = photos.indexOfFirst { it.uri == photo.uri }
-                }, onLongClick = { if (!selecting) viewerIndex = photos.indexOfFirst { it.uri == photo.uri } })
+        else Box(
+            Modifier.fillMaxSize().padding(p)
+                .onGloballyPositioned { selectionGridOrigin = it.positionInRoot() }
+                .photoGridDragSelection(selecting, photos, selected, selectionBounds, selectionGridOrigin) { uri, shouldSelect ->
+                    selected = if (shouldSelect) selected + uri else selected - uri
+                },
+        ) {
+            LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(4.dp)) {
+                items(photos, key = { it.uri.toString() }) { photo ->
+                    PhotoThumb(photo, selected = photo.uri in selected, onBoundsChanged = { rect -> if (rect == null) selectionBounds.remove(photo.uri) else selectionBounds[photo.uri] = rect }, onClick = {
+                        if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
+                        else previewIndex = photos.indexOfFirst { it.uri == photo.uri }
+                    }, onLongClick = { if (!selecting) viewerIndex = photos.indexOfFirst { it.uri == photo.uri } })
+                }
             }
         }
     }
@@ -1205,7 +1438,76 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                 }
             },
             stagedCount = stagedPhotos.size,
+            canUndo = canUndo,
+            onUndo = onUndo,
         )
+    }
+    previewIndex?.let { index ->
+        PhotoPreviewScreen(photos = photos, initialIndex = index, onClose = { previewIndex = null })
+    }
+}
+
+@Composable
+private fun Modifier.photoGridDragSelection(
+    enabled: Boolean,
+    photos: List<PhotoItem>,
+    selected: Set<Uri>,
+    bounds: Map<Uri, Rect>,
+    gridOrigin: Offset,
+    onSelectionChange: (Uri, Boolean) -> Unit,
+): Modifier {
+    val latestEnabled = rememberUpdatedState(enabled)
+    val latestPhotos = rememberUpdatedState(photos)
+    val latestSelected = rememberUpdatedState(selected)
+    val latestBounds = rememberUpdatedState(bounds)
+    val latestOrigin = rememberUpdatedState(gridOrigin)
+    val latestOnSelectionChange = rememberUpdatedState(onSelectionChange)
+    return pointerInput(Unit) {
+        awaitEachGesture {
+            val down = awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
+            if (!latestEnabled.value) return@awaitEachGesture
+            val downRoot = down.position + latestOrigin.value
+            val startPhoto = latestPhotos.value.firstOrNull { latestBounds.value[it.uri]?.contains(downRoot) == true }
+                ?: return@awaitEachGesture
+            val shouldSelect = startPhoto.uri !in latestSelected.value
+            val visited = mutableSetOf<Uri>()
+            var previous = down.position
+            var directionLocked = false
+            var selectingDrag = false
+            var finished = false
+            while (!finished) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                val point = change.position
+                if (change.pressed) {
+                    val deltaFromDown = point - down.position
+                    if (!directionLocked && deltaFromDown.getDistance() > viewConfiguration.touchSlop) {
+                        directionLocked = true
+                        // A mainly vertical first movement belongs to LazyVerticalGrid scrolling.
+                        // Once the gesture starts horizontally, it stays in selection mode even
+                        // when the user turns upward or downward later.
+                        selectingDrag = kotlin.math.abs(deltaFromDown.x) > kotlin.math.abs(deltaFromDown.y) * 1.5f
+                        if (!selectingDrag) break
+                        change.consume()
+                        visited.add(startPhoto.uri)
+                        latestOnSelectionChange.value(startPhoto.uri, shouldSelect)
+                    }
+                    if (selectingDrag) {
+                        change.consume()
+                        val segmentStart = previous + latestOrigin.value
+                        val segmentEnd = point + latestOrigin.value
+                        latestPhotos.value.forEach { photo ->
+                            val rect = latestBounds.value[photo.uri] ?: return@forEach
+                            if (photo.uri !in visited && segmentIntersectsRect(segmentStart, segmentEnd, rect)) {
+                                visited.add(photo.uri)
+                                latestOnSelectionChange.value(photo.uri, shouldSelect)
+                            }
+                        }
+                    }
+                } else finished = true
+                previous = point
+            }
+        }
     }
 }
 
@@ -1216,10 +1518,14 @@ private fun PhotoThumb(
     selected: Boolean = false,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
+    onBoundsChanged: ((Rect?) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = loadPhotoBitmap(context, photo, 480) }
-    Box(Modifier.padding(2.dp).size(120.dp).combinedClickable(onClick = onClick, onLongClick = onLongClick)) {
+    DisposableEffect(photo.uri) {
+        onDispose { onBoundsChanged?.invoke(null) }
+    }
+    Box(Modifier.padding(2.dp).size(120.dp).onGloballyPositioned { coordinates -> onBoundsChanged?.invoke(coordinates.boundsInRoot()) }.combinedClickable(onClick = onClick, onLongClick = onLongClick)) {
         val bitmap: Bitmap? = bitmapState.value
         if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         if (selected) {
@@ -1235,16 +1541,19 @@ private fun PhotoPreviewScreen(
     photos: List<PhotoItem>,
     initialIndex: Int,
     onClose: () -> Unit,
+    onSeen: (PhotoItem) -> Unit = {},
 ) {
     if (photos.isEmpty()) {
         onClose()
         return
     }
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, photos.lastIndex), pageCount = { photos.size })
+    val currentPhoto = photos.getOrNull(pagerState.currentPage)
+    LaunchedEffect(currentPhoto?.uri) { currentPhoto?.let(onSeen) }
     BackHandler(onBack = onClose)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
-            PhotoPageImage(photos[page])
+            ZoomablePhotoPageImage(photos[page])
         }
         Row(
             Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp),
@@ -1271,7 +1580,10 @@ private fun PhotoViewerScreen(
     onStageDelete: (PhotoItem) -> Unit,
     onMove: (PhotoItem, Category) -> Unit,
     onKeep: (PhotoItem) -> Unit = {},
+    onSeen: (PhotoItem) -> Unit = {},
     stagedCount: Int,
+    canUndo: Boolean,
+    onUndo: () -> Unit,
     autoPlayEnabled: Boolean = false,
 ) {
     if (photos.isEmpty()) { onClose(); return }
@@ -1279,6 +1591,9 @@ private fun PhotoViewerScreen(
     val scope = rememberCoroutineScope()
     var autoPlaying by remember { mutableStateOf(false) }
     val currentPhoto = photos.getOrNull(pagerState.currentPage)
+    LaunchedEffect(currentPhoto?.uri) {
+        currentPhoto?.let(onSeen)
+    }
     LaunchedEffect(autoPlayEnabled, autoPlaying, currentPhoto?.uri) {
         if (autoPlayEnabled && autoPlaying) {
             delay(1000)
@@ -1289,21 +1604,24 @@ private fun PhotoViewerScreen(
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Box(Modifier.fillMaxWidth().weight(1f)) {
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
-                PhotoPageImage(photos[page])
+                    ZoomablePhotoPageImage(photos[page])
             }
             Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
                 Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, modifier = Modifier.weight(1f))
+                IconButton(onClick = onUndo, enabled = canUndo, colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White)) {
+                    Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Color.White)
+                }
                 IconButton(onClick = onOpenTrash) {
                     Box(Modifier.size(40.dp)) {
                         Icon(Icons.Filled.DeleteOutline, "打开删除暂存区", tint = Color.White, modifier = Modifier.align(Alignment.Center))
                         Surface(
                             color = Color(0xFFFFC107),
                             shape = CircleShape,
-                            modifier = Modifier.align(Alignment.TopEnd).width(if (stagedCount > 99) 24.dp else 18.dp).height(18.dp),
+                            modifier = Modifier.align(Alignment.TopEnd).size(16.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Text(if (stagedCount > 99) "99+" else stagedCount.toString(), style = MaterialTheme.typography.labelSmall, color = Ink, maxLines = 1)
+                                Text(stagedCount.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink, maxLines = 1)
                             }
                         }
                     }
@@ -1336,9 +1654,7 @@ private fun PhotoViewerScreen(
                     }, modifier = Modifier.width(72.dp), contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("保留", maxLines = 1) }
                     Button(onClick = {
                         autoPlaying = false
-                        val photo = photos[pagerState.currentPage]
-                        onStageDelete(photo)
-                        if (photos.size == 1) onClose() else if (pagerState.currentPage >= photos.lastIndex) scope.launch { pagerState.animateScrollToPage(photos.lastIndex - 1) }
+                        photos.getOrNull(pagerState.currentPage)?.let(onStageDelete)
                     }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A), contentColor = Color.White)) {
                         Icon(Icons.Filled.DeleteOutline, null)
                         Text("暂存删除", maxLines = 1, softWrap = false, modifier = Modifier.padding(start = 4.dp))
@@ -1356,6 +1672,57 @@ private fun PhotoPageImage(photo: PhotoItem) {
     val bitmap: Bitmap? = bitmapState.value
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = photo.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+    }
+}
+
+@Composable
+private fun ZoomablePhotoPageImage(photo: PhotoItem) {
+    val context = LocalContext.current
+    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) {
+        value = loadPhotoBitmap(context, photo, 4096)
+    }
+    var scale by remember(photo.uri) { mutableStateOf(1f) }
+    var translation by remember(photo.uri) { mutableStateOf(Offset.Zero) }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(photo.uri) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.changes.none { it.pressed }) break
+                        if (event.changes.count { it.pressed } >= 2) {
+                            scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
+                            translation += event.calculatePan()
+                            event.changes.forEach { it.consume() }
+                        }
+                    }
+                }
+            }
+            .pointerInput(photo.uri) {
+                detectTapGestures(onDoubleTap = {
+                    scale = if (scale > 1.05f) 1f else 2f
+                    if (scale == 1f) translation = Offset.Zero
+                })
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        bitmapState.value?.let { bitmap ->
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = photo.name,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = translation.x
+                        translationY = translation.y
+                    },
+                contentScale = ContentScale.Fit,
+            )
+        }
     }
 }
 
@@ -1397,7 +1764,9 @@ private fun OrganizePhotosScreen(
     categories: List<Category>,
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
-    onOrganized: (Int) -> Unit,
+    canUndo: Boolean,
+    onUndo: () -> Unit,
+    onSeen: (Collection<PhotoItem>) -> Unit,
     onTrash: () -> Unit,
     trashCount: Int,
 ) {
@@ -1406,10 +1775,13 @@ private fun OrganizePhotosScreen(
     val sourcePhotos = remember { photos }
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var selecting by remember { mutableStateOf(false) }
+    val selectionBounds = remember { mutableStateMapOf<Uri, Rect>() }
+    var selectionGridOrigin by remember { mutableStateOf(Offset.Zero) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
     var gameMode by rememberSaveable { mutableStateOf(false) }
     var modeMenuExpanded by remember { mutableStateOf(false) }
-    var mode by remember { mutableStateOf("随机整理") }
+    var mode by remember { mutableStateOf(MODE_RANDOM) }
     var countText by remember { mutableStateOf("20") }
     var selectedMonth by remember { mutableStateOf<String?>(null) }
     val count = countText.toIntOrNull()?.coerceIn(1, 500) ?: 20
@@ -1417,17 +1789,19 @@ private fun OrganizePhotosScreen(
     var visiblePhotos by remember { mutableStateOf(batchPhotos) }
     var processedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     val monthOptions = remember(sourcePhotos) {
-        sourcePhotos.mapNotNull { if (it.dateMillis > 0) SimpleDateFormat("yyyy年MM月", Locale.CHINA).format(Date(it.dateMillis)) else null }.distinct()
+        sourcePhotos.mapNotNull { if (it.dateMillis > 0) SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(it.dateMillis)) else null }.distinct()
     }
-    LaunchedEffect(mode, countText, selectedMonth, sourcePhotos) {
-        processedUris = emptySet()
-        val nextBatch = if (mode == "随机整理") sourcePhotos.shuffled().take(count)
-        else sourcePhotos.filter { item -> selectedMonth == null || (item.dateMillis > 0 && SimpleDateFormat("yyyy年MM月", Locale.CHINA).format(Date(item.dateMillis)) == selectedMonth) }
+    LaunchedEffect(mode, countText, selectedMonth) {
+        val available = sourcePhotos.filterNot { it.uri in processedUris }
+        val nextBatch = when (mode) {
+            MODE_RANDOM -> available.shuffled().take(count)
+            MODE_ALL -> available
+            else -> available.filter { item -> selectedMonth == null || (item.dateMillis > 0 && SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(item.dateMillis)) == selectedMonth) }
+        }
         batchPhotos = nextBatch
         visiblePhotos = nextBatch
     }
     val remainingCount = sourcePhotos.count { it.uri !in processedUris }
-    val nextBatchCount = minOf(count, remainingCount)
     val batchComplete = batchPhotos.isNotEmpty() && batchPhotos.all { it.uri in processedUris }
     BackHandler(onBack = onBack)
     // ORGANIZE_MODE_SWITCH
@@ -1436,9 +1810,11 @@ private fun OrganizePhotosScreen(
             photos = sourcePhotos,
             categories = categories,
             stagedCount = trashCount,
+            canUndo = canUndo,
+            onUndo = onUndo,
             onBack = onBack,
             onStageDelete = onStageDelete,
-            onOrganized = onOrganized,
+            onSeen = onSeen,
             onTrash = onTrash,
             onExitGame = { gameMode = false },
         )
@@ -1446,6 +1822,9 @@ private fun OrganizePhotosScreen(
     }
     Scaffold(containerColor = Paper, topBar = {
         Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+            Column(Modifier.weight(1f)) { Text("整理照片", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("本次 ${photos.size} 张", style = MaterialTheme.typography.labelSmall, color = Muted) }
             Box {
                 IconButton(onClick = { modeMenuExpanded = true }) { Icon(Icons.Filled.SwapHoriz, "鍒囨崲鏁寸悊妯″紡", tint = Moss) }
                 DropdownMenu(expanded = modeMenuExpanded, onDismissRequest = { modeMenuExpanded = false }) {
@@ -1453,23 +1832,15 @@ private fun OrganizePhotosScreen(
                     DropdownMenuItem(text = { Text("游戏删照片") }, onClick = { gameMode = true; modeMenuExpanded = false })
                 }
             }
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
-            Column(Modifier.weight(1f)) { Text("整理照片", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("本次 ${photos.size} 张", style = MaterialTheme.typography.labelSmall, color = Muted) }
-            if (trashCount > 0 || selecting) IconButton(onClick = {
-                if (!selecting) {
-                    onTrash()
-                } else if (selected.isEmpty()) {
-                    Toast.makeText(context, "请先选择照片", Toast.LENGTH_SHORT).show()
-                } else {
-                    val staged = visiblePhotos.filter { it.uri in selected }
-                    processedUris = processedUris + staged.map { it.uri }
-                    visiblePhotos = visiblePhotos.filterNot { it.uri in selected }
-                    onStageDelete(staged)
-                    selected = emptySet()
-                    selecting = false
-                    Toast.makeText(context, "已放入删除暂存区", Toast.LENGTH_SHORT).show()
+            if (canUndo) IconButton(onClick = onUndo) { Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Moss) }
+            IconButton(onClick = onTrash) {
+                Box {
+                    Icon(Icons.Filled.DeleteOutline, "删除暂存区", tint = Moss)
+                    Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(16.dp)) {
+                        Box(contentAlignment = Alignment.Center) { Text(trashCount.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink) }
+                    }
                 }
-            }) { Icon(Icons.Filled.DeleteOutline, if (selecting) "暂存所选照片" else "删除暂存区", tint = Moss) }
+            }
         }
     }) { p ->
         Column(
@@ -1484,11 +1855,11 @@ private fun OrganizePhotosScreen(
                 }
         ) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("随机整理", "按月份整理").forEach { item ->
+                listOf(MODE_RANDOM, MODE_MONTH, MODE_ALL).forEach { item ->
                     TextButton(onClick = { mode = item }) { Text(item, color = if (mode == item) Moss else Muted, fontWeight = if (mode == item) FontWeight.Bold else FontWeight.Normal) }
                 }
             }
-            if (mode == "随机整理") {
+            if (mode == MODE_RANDOM) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("本次整理", style = MaterialTheme.typography.bodySmall, color = Muted)
                     OutlinedTextField(value = countText, onValueChange = { countText = it.filter(Char::isDigit).take(3) }, singleLine = true, modifier = Modifier.padding(start = 8.dp).width(72.dp).height(50.dp))
@@ -1503,9 +1874,24 @@ private fun OrganizePhotosScreen(
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (selecting) "已选 ${selected.size} 张" else "共 ${visiblePhotos.size} 张，点击照片查看", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.weight(1f))
+                if (selecting) {
+                    IconButton(onClick = {
+                        if (selected.isEmpty()) {
+                            Toast.makeText(context, "请先选择照片", Toast.LENGTH_SHORT).show()
+                        } else {
+                            val staged = visiblePhotos.filter { it.uri in selected }
+                            processedUris = processedUris + staged.map { it.uri }
+                            visiblePhotos = visiblePhotos.filterNot { it.uri in selected }
+                            onStageDelete(staged)
+                            selected = emptySet()
+                            selecting = false
+                            Toast.makeText(context, "已放入删除暂存区", Toast.LENGTH_SHORT).show()
+                        }
+                    }) { Icon(Icons.Filled.DeleteOutline, "暂存所选照片", tint = Moss) }
+                }
                 IconButton(onClick = { selecting = !selecting; selected = emptySet() }) { Icon(if (selecting) Icons.Filled.Close else Icons.Filled.CheckBox, if (selecting) "取消选择" else "选择照片", tint = Moss) }
             }
-            if (mode == "随机整理" && batchComplete && remainingCount > 0) {
+            if (mode == MODE_RANDOM) {
                 Button(
                     onClick = {
                         val nextBatch = sourcePhotos.filterNot { it.uri in processedUris }.shuffled().take(count)
@@ -1513,21 +1899,28 @@ private fun OrganizePhotosScreen(
                         visiblePhotos = nextBatch
                         selected = emptySet()
                     },
+                    enabled = remainingCount > 0,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).height(40.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 ) {
-                    Text("看下一组（展示 $nextBatchCount 张照片）", maxLines = 1)
+                    Text("\u4e0b\u4e00\u7ec4", maxLines = 1)
                 }
             }
             if (visiblePhotos.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到可整理的照片", color = Muted) }
-            else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(4.dp)) {
-                items(visiblePhotos, key = { it.uri.toString() }) { photo ->
-                    PhotoThumb(photo, photo.uri in selected, onClick = {
-                        if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
-                        else {
-                            viewerIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri }
-                        }
-                    }, onLongClick = { if (!selecting) viewerIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri } })
+            else Box(
+                Modifier.fillMaxSize()
+                    .onGloballyPositioned { selectionGridOrigin = it.positionInRoot() }
+                    .photoGridDragSelection(selecting, visiblePhotos, selected, selectionBounds, selectionGridOrigin) { uri, shouldSelect ->
+                        selected = if (shouldSelect) selected + uri else selected - uri
+                    },
+            ) {
+                LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(4.dp)) {
+                    items(visiblePhotos, key = { it.uri.toString() }) { photo ->
+                        PhotoThumb(photo, photo.uri in selected, onBoundsChanged = { rect -> if (rect == null) selectionBounds.remove(photo.uri) else selectionBounds[photo.uri] = rect }, onClick = {
+                            if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
+                            else viewerIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri }
+                        }, onLongClick = { if (!selecting) viewerIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri } })
+                    }
                 }
             }
         }
@@ -1544,10 +1937,24 @@ private fun OrganizePhotosScreen(
                 visiblePhotos = visiblePhotos.filterNot { it.uri == photo.uri }
                 onStageDelete(listOf(photo))
             },
-            onKeep = { photo -> processedUris = processedUris + photo.uri; onOrganized(1) },
-            onMove = { photo, target -> if (movePhoto(context, photo, target)) { onOrganized(1); viewerIndex = null } },
+            onKeep = { photo -> processedUris = processedUris + photo.uri; onSeen(listOf(photo)) },
+            onSeen = { photo ->
+                processedUris = processedUris + photo.uri
+                onSeen(listOf(photo))
+            },
+            onMove = { photo, target -> if (movePhoto(context, photo, target)) { processedUris = processedUris + photo.uri; onSeen(listOf(photo)); viewerIndex = null } },
             stagedCount = trashCount,
+            canUndo = canUndo,
+            onUndo = onUndo,
             autoPlayEnabled = true,
+        )
+    }
+    previewIndex?.let { index ->
+        PhotoPreviewScreen(
+            photos = visiblePhotos,
+            initialIndex = index,
+            onClose = { previewIndex = null },
+            onSeen = { photo -> processedUris = processedUris + photo.uri; onSeen(listOf(photo)) },
         )
     }
 }
@@ -1558,13 +1965,16 @@ private fun PhotoDeleteGameScreen(
     photos: List<PhotoItem>,
     categories: List<Category>,
     stagedCount: Int,
+    canUndo: Boolean,
+    onUndo: () -> Unit,
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
-    onOrganized: (Int) -> Unit,
+    onSeen: (Collection<PhotoItem>) -> Unit,
     onTrash: () -> Unit,
     onExitGame: () -> Unit,
 ) {
     val context = LocalContext.current
+    val gameScope = rememberCoroutineScope()
     var modeMenuExpanded by remember { mutableStateOf(false) }
     var previewIndex by remember { mutableStateOf<Int?>(null) }
     var roundSize by rememberSaveable { mutableStateOf(6) }
@@ -1576,50 +1986,48 @@ private fun PhotoDeleteGameScreen(
     var gameRootOrigin by remember { mutableStateOf(Offset.Zero) }
     var comboCount by remember { mutableStateOf(0) }
     var comboToken by remember { mutableStateOf(0) }
-    var flyingPhoto by remember { mutableStateOf<Pair<PhotoItem, Rect>?>(null) }
+    val flyingPhotos = remember { mutableStateMapOf<Uri, Pair<PhotoItem, Rect>>() }
 
-    fun stage(photo: PhotoItem) {
-        if (batch.none { it.uri == photo.uri }) return
-        remaining = remaining.filterNot { it.uri == photo.uri }
-        batch = batch.filterNot { it.uri == photo.uri }
-        onStageDelete(listOf(photo))
+    fun stage(photosToStage: Collection<PhotoItem>) {
+        val staged = photosToStage.distinctBy { it.uri }.filter { photo -> batch.any { it.uri == photo.uri } }
+        if (staged.isEmpty()) return
+        staged.forEach { photo -> cardBounds[photo.uri]?.let { bounds -> flyingPhotos[photo.uri] = photo to bounds } }
+        gameScope.launch {
+            delay(340)
+            staged.forEach { flyingPhotos.remove(it.uri) }
+        }
+        val stagedUris = staged.mapTo(mutableSetOf()) { it.uri }
+        remaining = remaining.filterNot { it.uri in stagedUris }
+        batch = batch.filterNot { it.uri in stagedUris }
+        onStageDelete(staged)
     }
+    val latestBatch = rememberUpdatedState(batch)
+    val latestStage = rememberUpdatedState<(Collection<PhotoItem>) -> Unit>({ photosToStage -> stage(photosToStage) })
+    val latestRootOrigin = rememberUpdatedState(gameRootOrigin)
 
     fun keep(photo: PhotoItem) {
         if (batch.none { it.uri == photo.uri }) return
         remaining = remaining.filterNot { it.uri == photo.uri }
         batch = batch.filterNot { it.uri == photo.uri }
-        onOrganized(1)
+        onSeen(listOf(photo))
     }
 
     fun move(photo: PhotoItem, target: Category) {
         if (movePhoto(context, photo, target)) {
             remaining = remaining.filterNot { it.uri == photo.uri }
             batch = batch.filterNot { it.uri == photo.uri }
-            onOrganized(1)
+            onSeen(listOf(photo))
             previewIndex = null
         }
     }
 
-    LaunchedEffect(batch, remaining, roundSize) {
-        if (batch.isEmpty() && remaining.isNotEmpty()) {
-            batch = remaining.shuffled().take(roundSize)
-        }
-    }
     LaunchedEffect(comboToken) {
         if (comboCount > 0) {
             delay(900)
             comboCount = 0
         }
     }
-    LaunchedEffect(flyingPhoto) {
-        if (flyingPhoto != null) {
-            delay(360)
-            flyingPhoto = null
-        }
-    }
-
-    BackHandler(onBack = onBack)
+BackHandler(onBack = onBack)
     Scaffold(containerColor = Color(0xFF10251D), topBar = {
         Row(
             Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp),
@@ -1639,6 +2047,7 @@ private fun PhotoDeleteGameScreen(
                 Text("游戏删照片", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("像切水果一样快速清理", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall)
             }
+            if (canUndo) IconButton(onClick = onUndo) { Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Color.White) }
             IconButton(onClick = onTrash) {
                 Box {
                     Icon(Icons.Filled.DeleteOutline, "打开删除暂存区", tint = Color.White)
@@ -1663,18 +2072,26 @@ private fun PhotoDeleteGameScreen(
             }
             if (batch.isEmpty()) {
                 Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Text(if (photos.isEmpty()) "没有可整理的照片" else "照片已全部清理", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                    if (stagedCount > 0) TextButton(onClick = onTrash) { Text("查看删除暂存区", color = Color(0xFFFFC107)) }
+                    if (remaining.isNotEmpty()) {
+                        Button(
+                            onClick = { batch = remaining.shuffled().take(roundSize) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107), contentColor = Ink),
+                            modifier = Modifier.padding(top = 12.dp),
+                        ) { Text("\u4e0b\u4e00\u7ec4") }
+                    }
+                    if (stagedCount > 0) TextButton(onClick = onTrash) { Text("\u67e5\u770b\u5220\u9664\u6682\u5b58\u533a", color = Color(0xFFFFC107)) }
                 }
             } else {
-                Text("点击照片或向上划过即可暂存删除", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
+                Text("单击暂存一张，按住划过多张连切，长按预览", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
                 Box(
                     Modifier
                         .fillMaxSize()
                         .onGloballyPositioned { gameRootOrigin = it.positionInRoot() }
-                        .pointerInput(batch) {
+                        .pointerInput(Unit) {
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
+                                val strokeBatch = latestBatch.value
+                                val photosHitThisStroke = linkedMapOf<Uri, PhotoItem>()
                                 cutThisStroke.clear()
                                 swipeTrail.clear()
                                 swipeTrail.add(down.position)
@@ -1686,21 +2103,22 @@ private fun PhotoDeleteGameScreen(
                                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                     val point = change.position
                                     if (change.pressed) {
-                                        if ((point - down.position).getDistance() > viewConfiguration.touchSlop) moved = true
+                                        if ((point - down.position).getDistance() > viewConfiguration.touchSlop) {
+                                            moved = true
+                                            change.consume()
+                                        }
                                         if (moved) {
-                                            swipeTrail.add(point)
-                                            val previousRoot = previous + gameRootOrigin
-                                            val pointRoot = point + gameRootOrigin
-                                            batch.forEach { photo ->
+                                            if ((point - (swipeTrail.lastOrNull() ?: down.position)).getDistance() >= 10.dp.toPx()) swipeTrail.add(point)
+                                            val previousRoot = previous + latestRootOrigin.value
+                                            val pointRoot = point + latestRootOrigin.value
+                                            strokeBatch.forEach { photo ->
                                                 if (photo.uri !in cutThisStroke) {
                                                     val bounds = cardBounds[photo.uri] ?: return@forEach
-                                                    val center = bounds.center
-                                                    if (distanceToSegment(center, previousRoot, pointRoot) < 42.dp.toPx()) {
+                                                    if (segmentIntersectsRect(previousRoot, pointRoot, bounds)) {
                                                         cutThisStroke.add(photo.uri)
                                                         comboCount += 1
                                                         comboToken++
-                                                        flyingPhoto = photo to bounds
-                                                        stage(photo)
+                                                        photosHitThisStroke[photo.uri] = photo
                                                     }
                                                 }
                                             }
@@ -1710,9 +2128,15 @@ private fun PhotoDeleteGameScreen(
                                     }
                                     previous = point
                                 }
-                                if (!moved && comboCount > 0) comboCount = 0
-                                delay(260)
-                                swipeTrail.clear()
+                                if (moved && photosHitThisStroke.isNotEmpty()) {
+                                    latestStage.value(photosHitThisStroke.values.toList())
+                                } else if (!moved && comboCount > 0) {
+                                    comboCount = 0
+                                }
+                                gameScope.launch {
+                                    delay(260)
+                                    swipeTrail.clear()
+                                }
                             }
                         },
                 ) {
@@ -1735,7 +2159,7 @@ private fun PhotoDeleteGameScreen(
                                     .aspectRatio(0.86f)
                                     .onGloballyPositioned { cardBounds[photo.uri] = it.boundsInRoot() }
                                     .combinedClickable(
-                                        onClick = { comboCount = 0; stage(photo) },
+                                        onClick = { comboCount = 0; stage(listOf(photo)) },
                                         onLongClick = { previewIndex = batch.indexOfFirst { it.uri == photo.uri } },
                                     ),
                             ) {
@@ -1769,11 +2193,17 @@ private fun PhotoDeleteGameScreen(
                             Text("${comboCount} 连击", color = Ink, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                         }
                     }
-                    flyingPhoto?.let { (photo, bounds) ->
+                    flyingPhotos.values.toList().forEach { (photo, bounds) ->
                         val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) {
                             value = loadPhotoBitmap(context, photo, 720)
                         }
-                        FlyingPhotoEffect(photo, bitmapState.value, bounds, gameRootOrigin)
+                        FlyingPhotoEffect(
+                            photo = photo,
+                            bitmap = bitmapState.value,
+                            bounds = bounds,
+                            rootOrigin = gameRootOrigin,
+                            onFinished = { flyingPhotos.remove(photo.uri) },
+                        )
                     }
                 }
             }
@@ -1786,26 +2216,46 @@ private fun PhotoDeleteGameScreen(
             categories = categories,
             onClose = { previewIndex = null },
             onOpenTrash = { previewIndex = null; onTrash() },
-            onStageDelete = { stage(it) },
+            onStageDelete = { stage(listOf(it)) },
             onKeep = { keep(it) },
+            onSeen = { photo -> onSeen(listOf(photo)) },
             onMove = { photo, target -> move(photo, target) },
             stagedCount = stagedCount,
+            canUndo = canUndo,
+            onUndo = onUndo,
         )
     }
 }
 
-private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float {
-    val segment = end - start
-    val lengthSquared = segment.x * segment.x + segment.y * segment.y
-    if (lengthSquared == 0f) return (point - start).getDistance()
-    val projection = (((point.x - start.x) * segment.x + (point.y - start.y) * segment.y) / lengthSquared).coerceIn(0f, 1f)
-    return (point - (start + segment * projection)).getDistance()
+private fun segmentIntersectsRect(start: Offset, end: Offset, bounds: Rect): Boolean {
+    var minimum = 0f
+    var maximum = 1f
+    val dx = end.x - start.x
+    val dy = end.y - start.y
+
+    fun clip(p: Float, q: Float): Boolean {
+        if (p == 0f) return q >= 0f
+        val ratio = q / p
+        if (p < 0f) {
+            if (ratio > maximum) return false
+            if (ratio > minimum) minimum = ratio
+        } else {
+            if (ratio < minimum) return false
+            if (ratio < maximum) maximum = ratio
+        }
+        return true
+    }
+
+    return clip(-dx, start.x - bounds.left) &&
+        clip(dx, bounds.right - start.x) &&
+        clip(-dy, start.y - bounds.top) &&
+        clip(dy, bounds.bottom - start.y)
 }
 
 @Composable
-private fun FlyingPhotoEffect(photo: PhotoItem, bitmap: Bitmap?, bounds: Rect, rootOrigin: Offset) {
+private fun FlyingPhotoEffect(photo: PhotoItem, bitmap: Bitmap?, bounds: Rect, rootOrigin: Offset, onFinished: () -> Unit) {
     val progress = remember(photo.uri) { Animatable(0f) }
-    LaunchedEffect(photo.uri) { progress.animateTo(1f, tween(320)) }
+    LaunchedEffect(photo.uri) { progress.animateTo(1f, tween(320)); onFinished() }
     val density = LocalDensity.current
     val width = with(density) { bounds.width.toDp() }
     val height = with(density) { bounds.height.toDp() }
@@ -1908,15 +2358,175 @@ private fun loadVideoThumbnail(context: Context, video: VideoItem): Bitmap? {
 }
 
 @Composable
+private fun VideoThumb(video: VideoItem, onClick: () -> Unit) {
+    val context = LocalContext.current
+    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = video.uri) {
+        value = withContext(Dispatchers.IO) { loadVideoThumbnail(context, video) }
+    }
+    Surface(
+        onClick = onClick,
+        color = Color(0xFF17211D),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().aspectRatio(0.82f),
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            bitmapState.value?.let { bitmap ->
+                Image(bitmap.asImageBitmap(), contentDescription = video.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            }
+            Surface(color = Color.Black.copy(alpha = .58f), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                Row(Modifier.padding(horizontal = 8.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Text(video.name, color = Color.White, maxLines = 1, style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f).padding(start = 4.dp))
+                    Text(formatDuration(video.durationMillis), color = Color.White.copy(alpha = .8f), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoOrganizerScreen(
+    videos: List<VideoItem>,
+    categories: List<Category>,
+    stagedCount: Int,
+    canUndo: Boolean,
+    onBack: () -> Unit,
+    onTrash: () -> Unit,
+    onUndo: () -> Unit,
+    onStageDelete: (VideoItem) -> Unit,
+    onKeep: (VideoItem) -> Unit,
+    onMove: (VideoItem, Category) -> VideoMoveResult,
+) {
+    val context = LocalContext.current
+    val sourceVideos = remember(videos) { videos }
+    var mode by rememberSaveable { mutableStateOf(MODE_RANDOM) }
+    var countText by rememberSaveable { mutableStateOf("20") }
+    var selectedMonth by remember { mutableStateOf<String?>(null) }
+    var visibleVideos by remember { mutableStateOf(sourceVideos.shuffled().take(20)) }
+    var processedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    val count = countText.toIntOrNull()?.coerceIn(1, 500) ?: 20
+    val monthOptions = remember(sourceVideos) {
+        sourceVideos.mapNotNull { if (it.dateMillis > 0) SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(it.dateMillis)) else null }.distinct()
+    }
+    LaunchedEffect(mode, countText, selectedMonth, sourceVideos) {
+        val available = sourceVideos.filterNot { it.uri in processedUris }
+        visibleVideos = when (mode) {
+            MODE_RANDOM -> available.shuffled().take(count)
+            MODE_ALL -> available
+            else -> available.filter { video -> selectedMonth == null || (video.dateMillis > 0 && SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(video.dateMillis)) == selectedMonth) }
+        }
+    }
+    val remainingCount = sourceVideos.count { it.uri !in processedUris }
+    BackHandler(onBack = onBack)
+    if (viewerIndex != null) {
+        VideoReviewScreen(
+            videos = visibleVideos,
+            categories = categories,
+            stagedCount = stagedCount,
+            canUndo = canUndo,
+            onBack = { viewerIndex = null },
+            onTrash = { viewerIndex = null; onTrash() },
+            onUndo = onUndo,
+            onStageDelete = { video ->
+                processedUris = processedUris + video.uri
+                visibleVideos = visibleVideos.filterNot { it.uri == video.uri }
+                onStageDelete(video)
+            },
+            onKeep = { video ->
+                processedUris = processedUris + video.uri
+                visibleVideos = visibleVideos.filterNot { it.uri == video.uri }
+                onKeep(video)
+            },
+            onMove = { video, target ->
+                val result = onMove(video, target)
+                if (result == VideoMoveResult.MOVED) {
+                    processedUris = processedUris + video.uri
+                    visibleVideos = visibleVideos.filterNot { it.uri == video.uri }
+                }
+                result
+            },
+        )
+        return
+    }
+    Scaffold(
+        containerColor = Paper,
+        topBar = {
+            Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+                Column(Modifier.weight(1f)) {
+                    Text("整理视频", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("本次 ${sourceVideos.size} 个", style = MaterialTheme.typography.labelSmall, color = Muted)
+                }
+                if (canUndo) IconButton(onClick = onUndo) { Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Moss) }
+                IconButton(onClick = onTrash) {
+                    Box {
+                        Icon(Icons.Filled.DeleteOutline, "打开删除暂存区", tint = Moss)
+                        if (stagedCount > 0) Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(16.dp)) {
+                            Box(contentAlignment = Alignment.Center) { Text(stagedCount.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink) }
+                        }
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(MODE_RANDOM, MODE_MONTH, MODE_ALL).forEach { item ->
+                    TextButton(onClick = { mode = item; selectedMonth = if (item == MODE_MONTH) selectedMonth else null }) {
+                        Text(item, color = if (mode == item) Moss else Muted, fontWeight = if (mode == item) FontWeight.Bold else FontWeight.Normal)
+                    }
+                }
+            }
+            if (mode == MODE_RANDOM) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("本次整理", style = MaterialTheme.typography.bodySmall, color = Muted)
+                    OutlinedTextField(value = countText, onValueChange = { countText = it.filter(Char::isDigit).take(3) }, singleLine = true, modifier = Modifier.padding(start = 8.dp).width(72.dp).height(50.dp))
+                    Text("个", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.padding(start = 6.dp))
+                }
+            } else if (mode == MODE_MONTH && monthOptions.isNotEmpty()) {
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(monthOptions) { month ->
+                        TextButton(onClick = { selectedMonth = month }) { Text(month, color = if (selectedMonth == month) Moss else Muted, fontWeight = if (selectedMonth == month) FontWeight.Bold else FontWeight.Normal) }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("共 ${visibleVideos.size} 个，点击视频预览", style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.weight(1f))
+                if (mode == MODE_RANDOM) {
+                    Button(
+                        onClick = { visibleVideos = sourceVideos.filterNot { it.uri in processedUris }.shuffled().take(count) },
+                        enabled = remainingCount > 0,
+                        modifier = Modifier.height(38.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    ) { Text(if (remainingCount > 0) "下一组" else "本轮已完成") }
+                }
+            }
+            if (visibleVideos.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到可整理的视频", color = Muted) }
+            } else {
+                LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(visibleVideos, key = { it.uri.toString() }) { video ->
+                        VideoThumb(video) { viewerIndex = visibleVideos.indexOfFirst { it.uri == video.uri } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun VideoReviewScreen(
     videos: List<VideoItem>,
     categories: List<Category>,
     stagedCount: Int,
+    canUndo: Boolean,
     onBack: () -> Unit,
     onTrash: () -> Unit,
+    onUndo: () -> Unit,
     onStageDelete: (VideoItem) -> Unit,
-    onKeep: () -> Unit,
-    onMove: (VideoItem, Category) -> Boolean,
+    onKeep: (VideoItem) -> Unit,
+    onMove: (VideoItem, Category) -> VideoMoveResult,
 ) {
     val context = LocalContext.current
     var currentUri by remember { mutableStateOf(videos.firstOrNull()?.uri) }
@@ -1926,7 +2536,6 @@ private fun VideoReviewScreen(
     var sliderPosition by remember { mutableStateOf(0f) }
     var isScrubbing by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
-    var renderedVideoUri by remember { mutableStateOf<Uri?>(null) }
     val swipeOffset = remember { Animatable(0f) }
     val swipeScope = rememberCoroutineScope()
     LaunchedEffect(currentUri, videos) {
@@ -1941,22 +2550,45 @@ private fun VideoReviewScreen(
     }
     val currentIndex = videos.indexOfFirst { it.uri == currentUri }
     val currentVideo = videos.getOrNull(currentIndex)
-    val player = remember { ExoPlayer.Builder(context).build() }
-    DisposableEffect(player, currentVideo?.uri) {
-        val expectedVideoUri = currentVideo?.uri
-        val listener = object : AnalyticsListener {
-            override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
-                val timeline = eventTime.timeline
-                if (eventTime.windowIndex in 0 until timeline.windowCount) {
-                    val renderedUri = timeline.getWindow(eventTime.windowIndex, Timeline.Window()).mediaItem.localConfiguration?.uri
-                    if (renderedUri == expectedVideoUri && player.currentMediaItem?.localConfiguration?.uri == expectedVideoUri) {
-                    renderedVideoUri = renderedUri
-                    }
+    val playingIndexState = rememberUpdatedState(currentIndex)
+    val targetPreloadStatusControl = remember(context) {
+        object : TargetPreloadStatusControl<Int> {
+            override fun getTargetPreloadStatus(index: Int): TargetPreloadStatusControl.PreloadStatus? {
+                return when (kotlin.math.abs(index - playingIndexState.value)) {
+                    1 -> DefaultPreloadManager.Status(DefaultPreloadManager.Status.STAGE_LOADED_FOR_DURATION_MS, 3_000L)
+                    2 -> DefaultPreloadManager.Status(DefaultPreloadManager.Status.STAGE_TRACKS_SELECTED)
+                    in 3..4 -> DefaultPreloadManager.Status(DefaultPreloadManager.Status.STAGE_SOURCE_PREPARED)
+                    else -> DefaultPreloadManager.Status(DefaultPreloadManager.Status.STAGE_SOURCE_PREPARED)
                 }
             }
         }
-        player.addAnalyticsListener(listener)
-        onDispose { player.removeAnalyticsListener(listener) }
+    }
+    val preloadManagerBuilder = remember(context) { DefaultPreloadManager.Builder(context, targetPreloadStatusControl) }
+    val preloadManager = remember(preloadManagerBuilder) { preloadManagerBuilder.build() }
+    val player = remember(preloadManagerBuilder) { preloadManagerBuilder.buildExoPlayer() }
+    val mediaItems = remember(videos) { videos.map { ExoMediaItem.fromUri(it.uri) } }
+    val managedMediaItems = remember(preloadManager) { mutableMapOf<Uri, Pair<Int, ExoMediaItem>>() }
+    LaunchedEffect(videos, currentIndex, mediaItems) {
+        if (currentIndex !in videos.indices) return@LaunchedEffect
+        val desiredIndices = (maxOf(0, currentIndex - 4)..minOf(videos.lastIndex, currentIndex + 4)).toSet()
+        val staleEntries = managedMediaItems.filter { (uri, entry) ->
+            val newIndex = videos.indexOfFirst { it.uri == uri }
+            newIndex !in desiredIndices || newIndex != entry.first
+        }
+        staleEntries.forEach { (uri, entry) ->
+            preloadManager.remove(entry.second)
+            managedMediaItems.remove(uri)
+        }
+        desiredIndices.forEach { index ->
+            val video = videos[index]
+            if (video.uri !in managedMediaItems) {
+                val mediaItem = mediaItems[index]
+                preloadManager.add(mediaItem, index)
+                managedMediaItems[video.uri] = index to mediaItem
+            }
+        }
+        preloadManager.setCurrentPlayingIndex(currentIndex)
+        preloadManager.invalidate()
     }
     fun togglePlayback() {
         if (player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
@@ -1975,8 +2607,18 @@ private fun VideoReviewScreen(
         playbackPosition = 0L
         playbackDuration = 0L
         sliderPosition = 0f
-        if (currentVideo != null) {
-            player.setMediaItem(ExoMediaItem.fromUri(currentVideo.uri))
+        if (currentVideo != null && currentIndex in mediaItems.indices) {
+            val mediaItem = mediaItems[currentIndex]
+            val registeredItem = managedMediaItems[currentVideo.uri]
+            if (registeredItem?.first != currentIndex || registeredItem.second != mediaItem) {
+                registeredItem?.let { preloadManager.remove(it.second) }
+                preloadManager.add(mediaItem, currentIndex)
+                managedMediaItems[currentVideo.uri] = currentIndex to mediaItem
+            }
+            preloadManager.setCurrentPlayingIndex(currentIndex)
+            preloadManager.invalidate()
+            val preloadedSource = preloadManager.getMediaSource(mediaItem)
+            if (preloadedSource != null) player.setMediaSource(preloadedSource) else player.setMediaItem(mediaItem)
             player.prepare()
             player.playWhenReady = true
         } else {
@@ -1996,7 +2638,7 @@ private fun VideoReviewScreen(
         }
         isPlaying = false
     }
-    DisposableEffect(player) { onDispose { player.release() } }
+    DisposableEffect(player, preloadManager) { onDispose { player.release(); preloadManager.release() } }
     BackHandler(onBack = onBack)
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
@@ -2093,12 +2735,15 @@ private fun VideoReviewScreen(
                                     else -> -1
                                 }
                                 if (nextIndex in videos.indices) {
+                                    val outgoingVideo = currentVideo
+                                    val targetVideo = videos[nextIndex]
                                     val finalOffset = if (totalVertical < 0f) -contentHeight else contentHeight
                                     swipeJob?.cancel()
                                     swipeScope.launch {
                                         swipeOffset.animateTo(finalOffset, tween(180))
-                                        currentUri = videos[nextIndex].uri
+                                        currentUri = targetVideo.uri
                                         swipeOffset.snapTo(0f)
+                                        outgoingVideo?.let(onKeep)
                                     }
                                 } else if (kotlin.math.abs(totalVertical) > viewConfiguration.touchSlop) {
                                     swipeJob?.cancel()
@@ -2110,17 +2755,6 @@ private fun VideoReviewScreen(
                         }
                         },
                 )
-            if (renderedVideoUri != currentVideo.uri) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .padding(top = 72.dp, bottom = 170.dp)
-                        .offset { IntOffset(0, swipeOffset.value.roundToInt()) }
-                        .zIndex(2f),
-                ) {
-                    VideoPoster(currentVideo)
-                }
-            }
             Column(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues()).zIndex(3f)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White) }
@@ -2129,6 +2763,7 @@ private fun VideoReviewScreen(
                         Text("${currentIndex + 1} / ${videos.size}", color = Color.White.copy(alpha = .75f), style = MaterialTheme.typography.labelSmall)
                         Text("上下滑动切换视频", color = Color.White.copy(alpha = .62f), style = MaterialTheme.typography.labelSmall)
                     }
+                    if (canUndo) IconButton(onClick = onUndo) { Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Color.White) }
                     IconButton(onClick = onTrash) {
                         Box {
                             Icon(Icons.Filled.DeleteOutline, "视频删除暂存区", tint = Color.White)
@@ -2148,11 +2783,11 @@ private fun VideoReviewScreen(
                             TextButton(
                                 onClick = {
                                     currentVideo?.let { video ->
-                                        if (onMove(video, target)) {
-                                            currentUri = videos.getOrNull(currentIndex + 1)?.uri
+                                        when (onMove(video, target)) {
+                                            VideoMoveResult.MOVED -> currentUri = videos.getOrNull(currentIndex + 1)?.uri
                                                 ?: videos.getOrNull(currentIndex - 1)?.uri
-                                        } else {
-                                            Toast.makeText(context, "视频移动失败，原视频已保留", Toast.LENGTH_SHORT).show()
+                                            VideoMoveResult.NEEDS_CONFIRMATION -> Unit
+                                            VideoMoveResult.FAILED -> Toast.makeText(context, "视频移动失败，原视频已保留", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 },
@@ -2185,14 +2820,15 @@ private fun VideoReviewScreen(
                             Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (isPlaying) "暂停视频" else "播放视频", tint = Color.White)
                         }
                         Button(onClick = {
-                            onKeep()
-                            currentUri = videos.getOrNull(currentIndex + 1)?.uri ?: videos.getOrNull(currentIndex - 1)?.uri
-                        }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("保留", maxLines = 1) }
+                            val nextVideo = videos.getOrNull(currentIndex + 1) ?: videos.getOrNull(currentIndex - 1)
+                            currentUri = nextVideo?.uri
+                            currentVideo?.let(onKeep)
+                        }, modifier = Modifier.width(80.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("淇濈暀", maxLines = 1) }
                         Button(onClick = {
                             val nextVideo = videos.getOrNull(currentIndex + 1) ?: videos.getOrNull(currentIndex - 1)
                             currentUri = nextVideo?.uri
                             onStageDelete(currentVideo)
-                        }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF343434), contentColor = Color.White)) {
+                        }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF343434), contentColor = Color.White)) {
                             Icon(Icons.Filled.DeleteOutline, null)
                             Text("  暂存删除")
                         }
@@ -2245,7 +2881,6 @@ private fun VideoTrashScreen(
     onDelete: (List<VideoItem>) -> Unit,
 ) {
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
-    var confirmDelete by remember { mutableStateOf(false) }
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Paper, topBar = {
         Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2256,7 +2891,7 @@ private fun VideoTrashScreen(
     }, bottomBar = {
         if (videos.isNotEmpty()) Row(Modifier.fillMaxWidth().background(Color.White).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 22.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
             TextButton(onClick = { onRestore(if (selected.isEmpty()) videos else videos.filter { it.uri in selected }); selected = emptySet() }) { Icon(Icons.Filled.Undo, null); Text("  恢复") }
-            TextButton(onClick = { confirmDelete = true }) { Icon(Icons.Filled.Delete, null); Text("  删除") }
+            TextButton(onClick = { onDelete(if (selected.isEmpty()) videos else videos.filter { it.uri in selected }); selected = emptySet() }) { Icon(Icons.Filled.Delete, null); Text("  删除") }
         }
     }) { padding ->
         if (videos.isEmpty()) Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Text("视频暂存区为空", color = Muted) }
@@ -2274,7 +2909,6 @@ private fun VideoTrashScreen(
             }
         }
     }
-    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("确认永久删除？") }, text = { Text(if (selected.isEmpty()) "将删除暂存区内的全部视频。" else "将删除已选择的 ${selected.size} 个视频。") }, confirmButton = { TextButton(onClick = { onDelete(if (selected.isEmpty()) videos else videos.filter { it.uri in selected }); selected = emptySet(); confirmDelete = false }) { Text("确认删除") } }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } })
 }
 
 private fun formatDuration(durationMillis: Long): String {
@@ -2495,37 +3129,24 @@ private fun movePhoto(context: Context, photo: PhotoItem, target: Category): Boo
     return true
 }
 
-private fun moveVideo(context: Context, video: VideoItem, target: Category): Boolean {
-    val targetKey = target.folderUri ?: "DCIM/${target.name}/"
-    if (video.sourceKey == targetKey) return true
-    val mimeType = context.contentResolver.getType(video.uri) ?: "video/mp4"
-    val targetUri = runCatching {
-        if (target.folderUri != null) {
-            DocumentsContract.createDocument(context.contentResolver, Uri.parse(target.folderUri), mimeType, video.name)
-        } else {
-            val values = ContentValues().apply {
-                put(MediaStore.Video.Media.DISPLAY_NAME, video.name)
-                put(MediaStore.Video.Media.MIME_TYPE, mimeType)
-                put(MediaStore.Video.Media.RELATIVE_PATH, targetKey)
-            }
-            context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-        }
-    }.getOrNull() ?: return false
-    val copied = runCatching {
-        context.contentResolver.openInputStream(video.uri)!!.use { input ->
-            context.contentResolver.openOutputStream(targetUri)!!.use { output -> input.copyTo(output) }
-        }
-        true
-    }.getOrDefault(false)
-    if (!copied) {
-        runCatching { deleteVideoUri(context, targetUri) }
-        return false
+private fun videoTargetRelativePath(target: Category): String? {
+    val relativePath = if (target.folderUri == null) {
+        "DCIM/${target.name}/"
+    } else {
+        runCatching {
+            val documentId = DocumentsContract.getTreeDocumentId(Uri.parse(target.folderUri))
+            val volumeAndPath = documentId.split(':', limit = 2)
+            if (volumeAndPath.size != 2 || volumeAndPath[0] !in setOf("primary", "external_primary")) return null
+            volumeAndPath[1].trim('/').let { if (it.isEmpty()) "" else "$it/" }
+        }.getOrNull() ?: return null
     }
-    if (!runCatching { deleteVideoUri(context, video.uri) }.getOrDefault(false)) {
-        runCatching { deleteVideoUri(context, targetUri) }
-        return false
-    }
-    return true
+    val topLevel = relativePath.trim('/').substringBefore('/')
+    return relativePath.takeIf { topLevel.equals("DCIM", ignoreCase = true) || topLevel.equals("Movies", ignoreCase = true) }
+}
+
+private fun moveVideoInPlace(context: Context, videoUri: Uri, targetPath: String): Boolean {
+    val values = ContentValues().apply { put(MediaStore.MediaColumns.RELATIVE_PATH, targetPath) }
+    return context.contentResolver.update(videoUri, values, null, null) > 0
 }
 
 private fun deleteVideoUri(context: Context, uri: Uri): Boolean = runCatching {

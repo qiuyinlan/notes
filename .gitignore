@@ -10,3 +10,9 @@ captures/
 *.apk
 *.aab
 keystore.properties
+
+license-work/
+.kotlin/
+.photoo-check/
+recovery-backups/
+patch.tmp
