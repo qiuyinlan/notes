@@ -4,11 +4,14 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.LruCache
 import android.provider.DocumentsContract
 import android.provider.MediaStore
@@ -26,6 +29,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -46,6 +50,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.LazyColumn
@@ -115,6 +120,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -151,9 +158,14 @@ private val Muted = Color(0xFF707A74)
 
 private data class Category(val name: String, val folderUri: String? = null)
 private data class ImportFolder(val name: String, val uri: Uri, val imageCount: Int)
-private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null, val dateMillis: Long = 0L)
-private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long)
-private data class MediaStorage(val photoBytes: Long = 0L, val videoBytes: Long = 0L)
+private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null, val dateMillis: Long = 0L, val sizeBytes: Long = 0L)
+private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long, val sizeBytes: Long = 0L)
+private data class MediaStorage(
+    val photoCount: Int = 0,
+    val videoCount: Int = 0,
+    val photoBytes: Long = 0L,
+    val videoBytes: Long = 0L,
+)
 
 private fun PhotoItem.belongsTo(category: Category): Boolean =
     sourceKey == (category.folderUri ?: "DCIM/${category.name}")
@@ -200,7 +212,14 @@ private fun AlbumCameraApp() {
     var videoTrash by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var organizedCount by remember { mutableStateOf(StatsStore.organized(context)) }
     var deletedCount by remember { mutableStateOf(StatsStore.deleted(context)) }
+    var clearedBytes by remember { mutableStateOf(StatsStore.deletedBytes(context)) }
     var loadingOrganize by remember { mutableStateOf(false) }
+    var photoCatalog by remember { mutableStateOf<List<PhotoItem>?>(null) }
+    var videoCatalog by remember { mutableStateOf<List<VideoItem>?>(null) }
+    var mediaStorage by remember { mutableStateOf(MediaStorage()) }
+    var mediaCatalogLoading by remember { mutableStateOf(false) }
+    var mediaChangeToken by remember { mutableStateOf(0) }
+    var openOrganizerWhenLoaded by remember { mutableStateOf(false) }
     var pendingPreview by remember { mutableStateOf<Category?>(null) }
     var pendingOrganize by remember { mutableStateOf(false) }
     var pendingCategoryName by remember { mutableStateOf("") }
@@ -216,16 +235,20 @@ private fun AlbumCameraApp() {
             organizedCount += amount
         }
     }
-    fun recordDeleted(amount: Int) {
+    fun recordDeleted(amount: Int, bytes: Long = 0L) {
         if (amount > 0) {
             StatsStore.addDeleted(context, amount)
             deletedCount += amount
+        }
+        if (bytes > 0L) {
+            StatsStore.addDeletedBytes(context, bytes)
+            clearedBytes += bytes
         }
     }
     val deleteRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             trash = trash.filterNot { item -> pendingSystemDelete.any { it.uri == item.uri } }
-            recordDeleted(pendingSystemDelete.size)
+            recordDeleted(pendingSystemDelete.size, pendingSystemDelete.sumOf { it.sizeBytes })
             Toast.makeText(context, "照片已删除", Toast.LENGTH_SHORT).show()
         }
         pendingSystemDelete = emptyList()
@@ -234,17 +257,76 @@ private fun AlbumCameraApp() {
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             videos = videos.filterNot { item -> pendingVideoDelete.any { it.uri == item.uri } }
             videoTrash = videoTrash.filterNot { item -> pendingVideoDelete.any { it.uri == item.uri } }
-            recordDeleted(pendingVideoDelete.size)
+            recordDeleted(pendingVideoDelete.size, pendingVideoDelete.sumOf { it.sizeBytes })
             Toast.makeText(context, "视频已删除", Toast.LENGTH_SHORT).show()
         }
         pendingVideoDelete = emptyList()
     }
     val photoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
     val videoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
+    suspend fun refreshMediaCatalog() {
+        val canReadPhotos = ContextCompat.checkSelfPermission(context, photoPermission) == PackageManager.PERMISSION_GRANTED
+        val canReadVideos = ContextCompat.checkSelfPermission(context, videoPermission) == PackageManager.PERMISSION_GRANTED
+        if (!canReadPhotos && !canReadVideos) {
+            photoCatalog = null
+            videoCatalog = null
+            mediaStorage = MediaStorage()
+            mediaCatalogLoading = false
+            return
+        }
+        mediaCatalogLoading = true
+        try {
+            coroutineScope {
+                val photos = async(Dispatchers.IO) {
+                    if (canReadPhotos) queryAllPhotos(context, categories) else emptyList()
+                }
+                val loadedVideos = async(Dispatchers.IO) {
+                    if (canReadVideos) queryAllVideos(context) else emptyList()
+                }
+                val loadedPhotos = photos.await()
+                val loadedVideoList = loadedVideos.await()
+                photoCatalog = if (canReadPhotos) loadedPhotos else null
+                videoCatalog = if (canReadVideos) loadedVideoList else null
+                mediaStorage = MediaStorage(
+                    photoCount = loadedPhotos.size,
+                    videoCount = loadedVideoList.size,
+                    photoBytes = loadedPhotos.sumOf { it.sizeBytes },
+                    videoBytes = loadedVideoList.sumOf { it.sizeBytes },
+                )
+            }
+        } finally {
+            mediaCatalogLoading = false
+        }
+    }
+
+    DisposableEffect(context) {
+        val handler = Handler(Looper.getMainLooper())
+        val observer = object : ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean, uri: Uri?) {
+                mediaChangeToken++
+            }
+        }
+        context.contentResolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, observer)
+        context.contentResolver.registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, observer)
+        onDispose { context.contentResolver.unregisterContentObserver(observer) }
+    }
+
+    LaunchedEffect(categories, mediaChangeToken) {
+        if (mediaChangeToken > 0) delay(300)
+        refreshMediaCatalog()
+        if (openOrganizerWhenLoaded && photoCatalog != null) {
+            organizePhotos = photoCatalog.orEmpty()
+            screen = AppScreen.ORGANIZE
+            loadingOrganize = false
+            openOrganizerWhenLoaded = false
+        }
+    }
+
     val videoPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted && pendingVideoReview) {
             screenScope.launch {
-                videos = withContext(Dispatchers.IO) { queryAllVideos(context) }
+                refreshMediaCatalog()
+                videos = videoCatalog.orEmpty()
                 screen = AppScreen.VIDEOS
             }
         } else if (!granted) {
@@ -259,7 +341,10 @@ private fun AlbumCameraApp() {
         } else if (granted && pendingOrganize) {
             loadingOrganize = true
             screenScope.launch {
-                runCatching { withContext(Dispatchers.IO) { queryAllPhotos(context, categories) } }
+                runCatching {
+                    refreshMediaCatalog()
+                    photoCatalog.orEmpty()
+                }
                     .onSuccess {
                         organizePhotos = it
                         screen = AppScreen.ORGANIZE
@@ -332,15 +417,28 @@ private fun AlbumCameraApp() {
                     pendingOrganize = true
                     photoPermissionLauncher.launch(photoPermission)
                 } else {
-                    loadingOrganize = true
-                    screenScope.launch {
-                        runCatching { withContext(Dispatchers.IO) { queryAllPhotos(context, categories) } }
-                            .onSuccess {
+                    val cachedPhotos = photoCatalog
+                    if (cachedPhotos != null && !mediaCatalogLoading) {
+                        organizePhotos = cachedPhotos
+                        screen = AppScreen.ORGANIZE
+                    } else if (mediaCatalogLoading) {
+                        openOrganizerWhenLoaded = true
+                        loadingOrganize = true
+                        Toast.makeText(context, "正在准备照片列表…", Toast.LENGTH_SHORT).show()
+                    } else {
+                        loadingOrganize = true
+                        screenScope.launch {
+                            runCatching {
+                                refreshMediaCatalog()
+                                photoCatalog.orEmpty()
+                            }.onSuccess {
                                 organizePhotos = it
                                 screen = AppScreen.ORGANIZE
+                            }.onFailure {
+                                Toast.makeText(context, "读取照片失败，请稍后重试", Toast.LENGTH_LONG).show()
                             }
-                            .onFailure { Toast.makeText(context, "读取照片失败，请稍后重试", Toast.LENGTH_LONG).show() }
-                        loadingOrganize = false
+                            loadingOrganize = false
+                        }
                     }
                 }
             },
@@ -348,9 +446,18 @@ private fun AlbumCameraApp() {
             onImport = { picturesPicker.launch(null) },
             onVideos = {
                 if (ContextCompat.checkSelfPermission(context, videoPermission) == PackageManager.PERMISSION_GRANTED) {
-                    screenScope.launch {
-                        videos = withContext(Dispatchers.IO) { queryAllVideos(context) }
+                    val cachedVideos = videoCatalog
+                    if (cachedVideos != null && !mediaCatalogLoading) {
+                        videos = cachedVideos
                         screen = AppScreen.VIDEOS
+                    } else if (mediaCatalogLoading) {
+                        Toast.makeText(context, "正在读取视频，请稍后重试", Toast.LENGTH_SHORT).show()
+                    } else {
+                        screenScope.launch {
+                            refreshMediaCatalog()
+                            videos = videoCatalog.orEmpty()
+                            screen = AppScreen.VIDEOS
+                        }
                     }
                 } else {
                     pendingVideoReview = true
@@ -362,6 +469,8 @@ private fun AlbumCameraApp() {
         AppScreen.MORE -> MoreScreen(
             organizedCount = organizedCount,
             deletedCount = deletedCount,
+            clearedBytes = clearedBytes,
+            storage = mediaStorage,
             onHome = { screen = AppScreen.HOME },
         )
         AppScreen.CATEGORY -> previewCategory?.let { category ->
@@ -395,7 +504,7 @@ private fun AlbumCameraApp() {
                 val removedDocuments = documentPhotos.filter { deletePhoto(context, it) }
                 if (removedDocuments.isNotEmpty()) {
                     trash = trash.filterNot { item -> removedDocuments.any { it.uri == item.uri } }
-                    recordDeleted(removedDocuments.size)
+                    recordDeleted(removedDocuments.size, removedDocuments.sumOf { it.sizeBytes })
                 }
                 if (removedDocuments.size < documentPhotos.size) {
                     Toast.makeText(context, "部分文件无法删除，仍保留在暂存区", Toast.LENGTH_LONG).show()
@@ -455,7 +564,7 @@ private fun AlbumCameraApp() {
                     val removed = deleted.filter { runCatching { context.contentResolver.delete(it.uri, null, null) > 0 }.getOrDefault(false) }
                     videos = videos.filterNot { item -> removed.any { it.uri == item.uri } }
                     videoTrash = videoTrash.filterNot { item -> removed.any { it.uri == item.uri } }
-                    recordDeleted(removed.size)
+                    recordDeleted(removed.size, removed.sumOf { it.sizeBytes })
                     if (removed.size < deleted.size) Toast.makeText(context, "部分视频删除失败，仍保留在暂存区", Toast.LENGTH_LONG).show()
                 }
             },
@@ -630,13 +739,10 @@ private fun HomeScreen(
 private fun MoreScreen(
     organizedCount: Int,
     deletedCount: Int,
+    clearedBytes: Long,
+    storage: MediaStorage,
     onHome: () -> Unit,
 ) {
-    val context = LocalContext.current
-    var storage by remember { mutableStateOf(MediaStorage()) }
-    LaunchedEffect(Unit) {
-        storage = withContext(Dispatchers.IO) { queryMediaStorage(context) }
-    }
     BackHandler(onBack = onHome)
     val totalBytes = storage.photoBytes + storage.videoBytes
     Scaffold(containerColor = Paper, bottomBar = {
@@ -662,13 +768,20 @@ private fun MoreScreen(
                             StatValue(label = "已整理", value = organizedCount.toString(), modifier = Modifier.weight(1f))
                             StatValue(label = "已删除", value = deletedCount.toString(), modifier = Modifier.weight(1f))
                         }
+                        Text("已清理空间", style = MaterialTheme.typography.labelMedium, color = Muted, modifier = Modifier.padding(top = 16.dp))
+                        Text(formatBytes(clearedBytes), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Moss, modifier = Modifier.padding(top = 4.dp))
                     }
                 }
             }
             item {
                 Surface(color = Color.White, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(18.dp)) {
-                        Text("相册占用空间", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink)
+                        Text("媒体总览", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink)
+                        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            StatValue(label = "照片数量", value = storage.photoCount.toString(), modifier = Modifier.weight(1f))
+                            StatValue(label = "视频数量", value = storage.videoCount.toString(), modifier = Modifier.weight(1f))
+                        }
+                        Text("相册占用空间", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Ink, modifier = Modifier.padding(top = 18.dp))
                         Text(formatBytes(totalBytes), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Moss, modifier = Modifier.padding(top = 12.dp))
                         Text("照片和视频合计", style = MaterialTheme.typography.labelMedium, color = Muted, modifier = Modifier.padding(top = 3.dp))
                         Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -959,10 +1072,13 @@ private object StatsStore {
     private const val PREFS = "organize_stats"
     private const val ORGANIZED = "organized_count"
     private const val DELETED = "deleted_count"
+    private const val DELETED_BYTES = "deleted_bytes"
 
     fun organized(context: Context): Int = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(ORGANIZED, 0)
 
     fun deleted(context: Context): Int = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(DELETED, 0)
+
+    fun deletedBytes(context: Context): Long = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(DELETED_BYTES, 0L)
 
     fun addOrganized(context: Context, amount: Int) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -972,6 +1088,12 @@ private object StatsStore {
     fun addDeleted(context: Context, amount: Int) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs.edit().putInt(DELETED, prefs.getInt(DELETED, 0) + amount).apply()
+    }
+
+    fun addDeletedBytes(context: Context, amount: Long) {
+        if (amount <= 0L) return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putLong(DELETED_BYTES, prefs.getLong(DELETED_BYTES, 0L) + amount).apply()
     }
 }
 
@@ -984,6 +1106,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(stagedPhotos) { photos = photos.filterNot { photo -> stagedPhotos.any { it.uri == photo.uri } } }
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Paper, topBar = {
@@ -1030,7 +1153,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                 PhotoThumb(photo, selected = photo.uri in selected, onClick = {
                     if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
                     else viewerIndex = photos.indexOfFirst { it.uri == photo.uri }
-                })
+                }, onLongClick = { previewIndex = photos.indexOfFirst { it.uri == photo.uri } })
             }
         }
     }
@@ -1055,19 +1178,63 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
             stagedCount = stagedPhotos.size,
         )
     }
+    previewIndex?.let { index ->
+        PhotoPreviewScreen(
+            photos = photos,
+            initialIndex = index,
+            onClose = { previewIndex = null },
+        )
+    }
 }
 
 @Composable
-private fun PhotoThumb(photo: PhotoItem, selected: Boolean = false, onClick: () -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun PhotoThumb(
+    photo: PhotoItem,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
     val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = loadPhotoBitmap(context, photo, 480) }
-    Box(Modifier.padding(2.dp).size(120.dp).clickable(onClick = onClick)) {
+    Box(Modifier.padding(2.dp).size(120.dp).combinedClickable(onClick = onClick, onLongClick = onLongClick)) {
         val bitmap: Bitmap? = bitmapState.value
         if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         if (selected) {
             Surface(color = Moss, shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp)) {
                 Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
             }
+        }
+    }
+}
+
+@Composable
+private fun PhotoPreviewScreen(
+    photos: List<PhotoItem>,
+    initialIndex: Int,
+    onClose: () -> Unit,
+) {
+    if (photos.isEmpty()) {
+        onClose()
+        return
+    }
+    val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, photos.lastIndex), pageCount = { photos.size })
+    BackHandler(onBack = onClose)
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
+            PhotoPageImage(photos[page])
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White) }
+            Text(
+                "${pagerState.currentPage + 1} / ${photos.size}",
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(start = 4.dp),
+            )
         }
     }
 }
@@ -1218,6 +1385,7 @@ private fun OrganizePhotosScreen(
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var selecting by remember { mutableStateOf(false) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
     var gameMode by rememberSaveable { mutableStateOf(false) }
     var modeMenuExpanded by remember { mutableStateOf(false) }
     var mode by remember { mutableStateOf("随机整理") }
@@ -1331,12 +1499,12 @@ private fun OrganizePhotosScreen(
             if (visiblePhotos.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到可整理的照片", color = Muted) }
             else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(4.dp)) {
                 items(visiblePhotos, key = { it.uri.toString() }) { photo ->
-                    PhotoThumb(photo, photo.uri in selected) {
+                    PhotoThumb(photo, photo.uri in selected, onClick = {
                         if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
                         else {
                             viewerIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri }
                         }
-                    }
+                    }, onLongClick = { previewIndex = visiblePhotos.indexOfFirst { it.uri == photo.uri } })
                 }
             }
         }
@@ -1359,9 +1527,17 @@ private fun OrganizePhotosScreen(
             autoPlayEnabled = true,
         )
     }
+    previewIndex?.let { index ->
+        PhotoPreviewScreen(
+            photos = visiblePhotos,
+            initialIndex = index,
+            onClose = { previewIndex = null },
+        )
+    }
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun PhotoDeleteGameScreen(
     photos: List<PhotoItem>,
     stagedCount: Int,
@@ -1372,6 +1548,7 @@ private fun PhotoDeleteGameScreen(
 ) {
     val context = LocalContext.current
     var modeMenuExpanded by remember { mutableStateOf(false) }
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
     var roundSize by rememberSaveable { mutableStateOf(6) }
     var remaining by remember(photos) { mutableStateOf(photos) }
     var batch by remember(photos, roundSize) { mutableStateOf(remaining.shuffled().take(roundSize)) }
@@ -1469,7 +1646,10 @@ private fun PhotoDeleteGameScreen(
                                         onDragCancel = { dragDistance = 0f },
                                     )
                                 }
-                                .clickable { stage(photo) },
+                                .combinedClickable(
+                                    onClick = { stage(photo) },
+                                    onLongClick = { previewIndex = batch.indexOfFirst { it.uri == photo.uri } },
+                                ),
                         ) {
                             Box(Modifier.fillMaxSize()) {
                                 bitmapState.value?.let { bitmap ->
@@ -1485,6 +1665,13 @@ private fun PhotoDeleteGameScreen(
             }
         }
     }
+    previewIndex?.let { index ->
+        PhotoPreviewScreen(
+            photos = batch,
+            initialIndex = index,
+            onClose = { previewIndex = null },
+        )
+    }
 }
 
 @Composable
@@ -1496,6 +1683,7 @@ private fun TrashScreen(
     onDelete: (List<PhotoItem>) -> Unit,
 ) {
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Paper, topBar = {
@@ -1512,8 +1700,18 @@ private fun TrashScreen(
     }) { p ->
         if (photos.isEmpty()) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { Text(if (categoryName == null) "暂存区为空" else "这个分类的暂存区为空", color = Muted) }
         else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize().padding(p), contentPadding = PaddingValues(4.dp)) {
-            items(photos, key = { it.uri.toString() }) { photo -> PhotoThumb(photo, photo.uri in selected) { selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri } }
+            items(photos, key = { it.uri.toString() }) { photo ->
+                PhotoThumb(
+                    photo,
+                    photo.uri in selected,
+                    onClick = { selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri },
+                    onLongClick = { previewIndex = photos.indexOfFirst { it.uri == photo.uri } },
+                )
+            }
         }
+    }
+    previewIndex?.let { index ->
+        PhotoPreviewScreen(photos = photos, initialIndex = index, onClose = { previewIndex = null })
     }
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("确认永久删除？") }, text = { Text(if (selected.isEmpty()) "将删除暂存区内的全部照片。" else "将删除已选择的 ${selected.size} 张照片。") }, confirmButton = { TextButton(onClick = { onDelete(if (selected.isEmpty()) photos else photos.filter { it.uri in selected }); selected = emptySet(); confirmDelete = false }) { Text("确认删除") } }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } })
 }
@@ -1807,13 +2005,14 @@ private fun queryPhotos(context: Context, category: Category): List<PhotoItem> {
         val folderUri = Uri.parse(category.folderUri)
         val folderDocumentId = DocumentsContract.getDocumentId(folderUri)
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(folderUri, folderDocumentId)
-        context.contentResolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use { c ->
+        context.contentResolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_LAST_MODIFIED, DocumentsContract.Document.COLUMN_SIZE), null, null, null)?.use { c ->
             while (c.moveToNext()) if (c.getString(2)?.startsWith("image/") == true) {
                 val id = c.getString(0)
-                uris += PhotoItem(DocumentsContract.buildDocumentUriUsingTree(folderUri, id), c.getString(1), category.folderUri, c.getLong(3))
+                val size = if (c.isNull(4)) 0L else c.getLong(4)
+                uris += PhotoItem(DocumentsContract.buildDocumentUriUsingTree(folderUri, id), c.getString(1), category.folderUri, c.getLong(3), size)
             }
         }
-    } else context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED), "${MediaStore.Images.Media.RELATIVE_PATH}=?", arrayOf("DCIM/${category.name}/"), "${MediaStore.Images.Media.DATE_ADDED} DESC")?.use { c -> while (c.moveToNext()) uris += PhotoItem(Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)), c.getString(1), "DCIM/${category.name}", c.getLong(2) * 1000L) }
+    } else context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED, MediaStore.MediaColumns.SIZE), "${MediaStore.Images.Media.RELATIVE_PATH}=?", arrayOf("DCIM/${category.name}/"), "${MediaStore.Images.Media.DATE_ADDED} DESC")?.use { c -> while (c.moveToNext()) uris += PhotoItem(Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)), c.getString(1), "DCIM/${category.name}", c.getLong(2) * 1000L, if (c.isNull(3)) 0L else c.getLong(3)) }
     return uris
 }
 
@@ -1855,7 +2054,7 @@ private fun queryAllPhotos(context: Context, categories: List<Category>): List<P
     runCatching {
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.RELATIVE_PATH),
+            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.RELATIVE_PATH, MediaStore.MediaColumns.SIZE),
             null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC",
         )?.use { c ->
             while (c.moveToNext()) {
@@ -1864,6 +2063,7 @@ private fun queryAllPhotos(context: Context, categories: List<Category>): List<P
                     c.getString(1),
                     c.getString(3),
                     c.getLong(2) * 1000L,
+                    if (c.isNull(4)) 0L else c.getLong(4),
                 )
                 byUri.putIfAbsent(item.uri.toString(), item)
             }
@@ -1880,7 +2080,7 @@ private fun queryAllVideos(context: Context): List<VideoItem> {
     runCatching {
         context.contentResolver.query(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_ADDED),
+            arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_ADDED, MediaStore.MediaColumns.SIZE),
             null, null, "${MediaStore.Video.Media.DATE_ADDED} DESC",
         )?.use { cursor ->
             while (cursor.moveToNext()) {
@@ -1889,6 +2089,7 @@ private fun queryAllVideos(context: Context): List<VideoItem> {
                     name = cursor.getString(1) ?: "video",
                     durationMillis = cursor.getLong(2),
                     dateMillis = cursor.getLong(3) * 1000L,
+                    sizeBytes = if (cursor.isNull(4)) 0L else cursor.getLong(4),
                 )
             }
         }
