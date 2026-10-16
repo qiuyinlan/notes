@@ -13,7 +13,6 @@ import android.os.Bundle
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.LruCache
 import android.provider.DocumentsContract
 import android.provider.MediaStore
@@ -160,9 +159,10 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem as ExoMediaItem
-import androidx.media3.common.Player
 import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.ui.PlayerView
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1926,8 +1926,7 @@ private fun VideoReviewScreen(
     var sliderPosition by remember { mutableStateOf(0f) }
     var isScrubbing by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
-    var showCurrentPoster by remember { mutableStateOf(true) }
-    var currentItemChangedAt by remember { mutableStateOf(0L) }
+    var renderedVideoUri by remember { mutableStateOf<Uri?>(null) }
     val swipeOffset = remember { Animatable(0f) }
     val swipeScope = rememberCoroutineScope()
     LaunchedEffect(currentUri, videos) {
@@ -1943,14 +1942,21 @@ private fun VideoReviewScreen(
     val currentIndex = videos.indexOfFirst { it.uri == currentUri }
     val currentVideo = videos.getOrNull(currentIndex)
     val player = remember { ExoPlayer.Builder(context).build() }
-    DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onRenderedFirstFrame() {
-                if (SystemClock.elapsedRealtime() - currentItemChangedAt >= 300L) showCurrentPoster = false
+    DisposableEffect(player, currentVideo?.uri) {
+        val expectedVideoUri = currentVideo?.uri
+        val listener = object : AnalyticsListener {
+            override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
+                val timeline = eventTime.timeline
+                if (eventTime.windowIndex in 0 until timeline.windowCount) {
+                    val renderedUri = timeline.getWindow(eventTime.windowIndex, Timeline.Window()).mediaItem.localConfiguration?.uri
+                    if (renderedUri == expectedVideoUri && player.currentMediaItem?.localConfiguration?.uri == expectedVideoUri) {
+                    renderedVideoUri = renderedUri
+                    }
+                }
             }
         }
-        player.addListener(listener)
-        onDispose { player.removeListener(listener) }
+        player.addAnalyticsListener(listener)
+        onDispose { player.removeAnalyticsListener(listener) }
     }
     fun togglePlayback() {
         if (player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
@@ -1964,8 +1970,6 @@ private fun VideoReviewScreen(
         isPlaying = player.playWhenReady && player.playbackState != androidx.media3.common.Player.STATE_ENDED
     }
     LaunchedEffect(currentVideo?.uri) {
-        showCurrentPoster = currentVideo != null
-        currentItemChangedAt = SystemClock.elapsedRealtime()
         player.setPlaybackParameters(PlaybackParameters(1f))
         heldSpeed = null
         playbackPosition = 0L
@@ -1975,10 +1979,6 @@ private fun VideoReviewScreen(
             player.setMediaItem(ExoMediaItem.fromUri(currentVideo.uri))
             player.prepare()
             player.playWhenReady = true
-            delay(450)
-            if (player.playbackState == Player.STATE_READY && player.currentMediaItem?.localConfiguration?.uri == currentVideo.uri) {
-                showCurrentPoster = false
-            }
         } else {
             player.stop()
             player.clearMediaItems()
@@ -2022,19 +2022,14 @@ private fun VideoReviewScreen(
         }
         if (currentVideo != null) {
             AndroidView(
-                factory = { ctx -> PlayerView(ctx).apply { useController = false; setKeepContentOnPlayerReset(false); resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
-                update = { it.player = player },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 72.dp, bottom = 170.dp)
-                    .offset { IntOffset(0, swipeOffset.value.roundToInt()) }
-                    .zIndex(1f)
-                    .graphicsLayer {
-                        val zoom = if (heldSpeed != null) 1.16f else 1f
-                        scaleX = zoom
-                        scaleY = zoom
-                    }
-                    .pointerInput(currentVideo.uri) {
+                    factory = { ctx -> PlayerView(ctx).apply { useController = false; setKeepContentOnPlayerReset(false); resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
+                    update = { it.player = player },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = 72.dp, bottom = 170.dp)
+                        .offset { IntOffset(0, swipeOffset.value.roundToInt()) }
+                        .zIndex(1f)
+                        .pointerInput(currentVideo.uri) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             var totalVertical = 0f
@@ -2113,9 +2108,9 @@ private fun VideoReviewScreen(
                                 }
                             }
                         }
-                    },
-            )
-            if (showCurrentPoster) {
+                        },
+                )
+            if (renderedVideoUri != currentVideo.uri) {
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -2206,31 +2201,25 @@ private fun VideoReviewScreen(
             }
             heldSpeed?.let { speed ->
                 Box(Modifier.fillMaxSize().zIndex(5f)) {
-                    Surface(
-                        color = Color.Black.copy(alpha = .78f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 104.dp),
+                    Row(
+                        Modifier.align(Alignment.TopCenter).padding(top = 104.dp),
+                        horizontalArrangement = Arrangement.spacedBy(9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(
-                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(9.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
-                                (1..5).forEach { level ->
-                                    val active = level == speed
-                                    Box(
-                                        Modifier
-                                            .width(if (active) 5.dp else 3.dp)
-                                            .height((7 + level * 3 + if (active) 4 else 0).dp)
-                                            .background(if (level <= speed) Color(0xFFFFC107) else Color.White.copy(alpha = .45f), RoundedCornerShape(2.dp))
-                                    )
-                                }
+                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+                            (1..5).forEach { level ->
+                                val active = level == speed
+                                Box(
+                                    Modifier
+                                        .width(if (active) 5.dp else 3.dp)
+                                        .height((7 + level * 3 + if (active) 4 else 0).dp)
+                                        .background(if (level <= speed) Color(0xFFFFC107) else Color.White.copy(alpha = .45f), RoundedCornerShape(2.dp))
+                                )
                             }
-                            Column {
-                                Text("${speed}x  倍速", color = Color(0xFFFFC107), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text("上下滑动改变播放速度", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                            }
+                        }
+                        Column {
+                            Text("x$speed", color = Color(0xFFFFC107), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, maxLines = 1)
+                            Text("上下滑动改变播放速度", color = Color.White, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                         }
                     }
                 }
