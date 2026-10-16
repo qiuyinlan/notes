@@ -103,6 +103,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -502,7 +503,10 @@ private fun AlbumCameraApp() {
             onCategoryChange = { selectedCategory = it },
             categories = categories,
         )
-    } else when (screen) {
+    } else {
+        val trashedPhotoUris = remember(trash) { trash.mapTo(HashSet()) { it.uri } }
+        val trashedVideoUris = remember(videoTrash) { videoTrash.mapTo(HashSet()) { it.uri } }
+        when (screen) {
         AppScreen.HOME -> HomeScreen(
             categories = categories,
             selectedCategory = selectedCategory,
@@ -604,7 +608,7 @@ private fun AlbumCameraApp() {
         }
         AppScreen.ORGANIZE -> OrganizePhotosScreen(
             photos = organizePhotos.filter { photo ->
-                trash.none { it.uri == photo.uri } &&
+                photo.uri !in trashedPhotoUris &&
                     (photo.uri.toString() !in reviewedPhotoKeys || restorePhotoGroupUris?.contains(photo.uri.toString()) == true)
             },
             categories = categories,
@@ -669,7 +673,7 @@ private fun AlbumCameraApp() {
         )
         AppScreen.VIDEOS -> VideoOrganizerScreen(
             videos = videos.filter { item ->
-                videoTrash.none { it.uri == item.uri } &&
+                item.uri !in trashedVideoUris &&
                     (item.uri.toString() !in reviewedVideoKeys || restoreVideoGroupUris?.contains(item.uri.toString()) == true)
             },
             categories = categories,
@@ -766,6 +770,7 @@ private fun AlbumCameraApp() {
                 }
             },
         )
+    }
     }
 
     if (showCreateDialog) {
@@ -1378,14 +1383,21 @@ private object ReviewedStore {
 @Composable
 private fun CategoryPhotosScreen(category: Category, categories: List<Category>, stagedPhotos: List<PhotoItem>, canUndo: Boolean, onUndo: () -> Unit, onBack: () -> Unit, onShoot: () -> Unit, onStageDelete: (List<PhotoItem>) -> Unit, onTrash: () -> Unit) {
     val context = LocalContext.current
-    var photos by remember(category) { mutableStateOf(queryPhotos(context, category)) }
+    var photos by remember(category) { mutableStateOf(emptyList<PhotoItem>()) }
+    var loadingPhotos by remember(category) { mutableStateOf(true) }
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
     var previewIndex by remember { mutableStateOf<Int?>(null) }
     val selectionBounds = remember { mutableStateMapOf<Uri, Rect>() }
     var selectionGridOrigin by remember { mutableStateOf(Offset.Zero) }
-    LaunchedEffect(stagedPhotos) { photos = queryPhotos(context, category).filterNot { photo -> stagedPhotos.any { it.uri == photo.uri } } }
+    val stagedPhotoUris = remember(stagedPhotos) { stagedPhotos.mapTo(HashSet()) { it.uri } }
+    LaunchedEffect(category, stagedPhotoUris) {
+        loadingPhotos = true
+        val loaded = withContext(Dispatchers.IO) { queryPhotos(context, category) }
+        photos = loaded.filterNot { it.uri in stagedPhotoUris }
+        loadingPhotos = false
+    }
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Paper, topBar = {
         Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1426,7 +1438,8 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
             TextButton(onClick = onShoot) { Text("拍摄") }
         }
     }) { p ->
-        if (photos.isEmpty()) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { Text("这个分类还没有照片", color = Muted) }
+        if (loadingPhotos) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Moss) }
+        else if (photos.isEmpty()) Box(Modifier.fillMaxSize().padding(p), contentAlignment = Alignment.Center) { Text("这个分类还没有照片", color = Muted) }
         else Box(
             Modifier.fillMaxSize().padding(p)
                 .onGloballyPositioned { selectionGridOrigin = it.positionInRoot() }
@@ -1672,41 +1685,42 @@ private fun PhotoViewerScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(categories, key = { it.name }) { target ->
-                            TextButton(onClick = {
-                                currentPhoto?.let { onMove(it, target) }
-                            }) {
+                            TextButton(onClick = { currentPhoto?.let { onMove(it, target) } }) {
                                 Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = Color(0xFFB9E7C8), modifier = Modifier.size(16.dp))
                                 Text(" ${target.name}", color = Color.White, maxLines = 1)
                             }
                         }
                     }
-                    Column(Modifier.fillMaxWidth().background(Color(0xFF111111)).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 14.dp, vertical = 6.dp)) {
-                        Text(formatMediaDate(currentPhoto?.dateMillis ?: 0L), color = Color.White.copy(alpha = .72f), maxLines = 1, style = MaterialTheme.typography.labelSmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
-                        Text(currentPhoto?.name.orEmpty(), color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (autoPlayEnabled) {
-                                IconButton(onClick = { autoPlaying = !autoPlaying }) {
-                                    Icon(if (autoPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (autoPlaying) "暂停自动播放" else "开始自动播放", tint = Color.White)
-                                }
+                }
+                Column(Modifier.fillMaxWidth().background(Color(0xFF111111)).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 14.dp, vertical = 6.dp)) {
+                    Text(formatMediaDate(currentPhoto?.dateMillis ?: 0L), color = Color.White.copy(alpha = .72f), maxLines = 1, style = MaterialTheme.typography.labelSmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
+                    Text(currentPhoto?.name.orEmpty(), color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (autoPlayEnabled) {
+                            IconButton(onClick = { autoPlaying = !autoPlaying }) {
+                                Icon(if (autoPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (autoPlaying) "暂停自动播放" else "开始自动播放", tint = Color.White)
                             }
-                            Button(onClick = {
-                                photos.getOrNull(pagerState.currentPage)?.let(onKeep)
-                                if (autoPlayEnabled && autoPlaying) {
-                                    autoPlaying = false
-                                } else {
-                                    autoPlaying = false
-                                    if (pagerState.currentPage < photos.lastIndex) scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } else onClose()
-                                }
-                            }, modifier = Modifier.width(80.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) {
-                                Text("保留", maxLines = 1)
-                            }
-                            Button(onClick = {
+                        }
+                        Button(onClick = {
+                            photos.getOrNull(pagerState.currentPage)?.let(onKeep)
+                            if (autoPlayEnabled && autoPlaying) {
                                 autoPlaying = false
-                                photos.getOrNull(pagerState.currentPage)?.let(onStageDelete)
-                            }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF343434), contentColor = Color.White)) {
-                                Icon(Icons.Filled.DeleteOutline, null)
-                                Text("  暂存删除", maxLines = 1, softWrap = false)
+                            } else if (pagerState.currentPage < photos.lastIndex) {
+                                autoPlaying = false
+                                scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                            } else {
+                                autoPlaying = false
+                                onClose()
                             }
+                        }, modifier = Modifier.width(80.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) {
+                            Text("保留", maxLines = 1)
+                        }
+                        Button(onClick = {
+                            autoPlaying = false
+                            photos.getOrNull(pagerState.currentPage)?.let(onStageDelete)
+                        }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF343434), contentColor = Color.White)) {
+                            Icon(Icons.Filled.DeleteOutline, null)
+                            Text("  暂存删除", maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -2006,7 +2020,7 @@ private fun OrganizePhotosScreen(
                 processedUris = processedUris + photo.uri
                 visiblePhotos = visiblePhotos.filterNot { it.uri == photo.uri }
                 onSeen(listOf(photo))
-                if (wasLast && trashCount > 0) {
+                if (wasLast) {
                     viewerIndex = null
                     onTrash(group)
                 }
@@ -2311,7 +2325,7 @@ BackHandler(onBack = onBack)
                 val group = batch
                 val wasLast = batch.size <= 1
                 keep(it)
-                if (wasLast && stagedCount > 0) {
+                if (wasLast) {
                     previewIndex = null
                     onTrash(group)
                 }
@@ -2559,7 +2573,7 @@ private fun VideoOrganizerScreen(
                 onKeep(video)
                 if (wasLast) {
                     viewerUri = null
-                    if (stagedCount > 0) onTrash(group)
+                    onTrash(group)
                 }
             },
             onMove = { video, target ->
