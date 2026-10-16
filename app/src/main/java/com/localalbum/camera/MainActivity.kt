@@ -1582,12 +1582,11 @@ private fun PhotoPreviewScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White) }
-            Text(
-                "${pagerState.currentPage + 1} / ${photos.size}",
-                color = Color.White,
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.padding(start = 4.dp),
-            )
+            Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                Text(currentPhoto?.name.orEmpty(), color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                Text(formatMediaDate(currentPhoto?.dateMillis ?: 0L), color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall)
+            }
+            Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, style = MaterialTheme.typography.labelLarge)
         }
     }
 }
@@ -1630,7 +1629,11 @@ private fun PhotoViewerScreen(
             }
             Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
-                Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, modifier = Modifier.weight(1f))
+                Column(Modifier.weight(1f)) {
+                    Text(currentPhoto?.name.orEmpty(), color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                    Text(formatMediaDate(currentPhoto?.dateMillis ?: 0L), color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall)
+                }
+                Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, style = MaterialTheme.typography.labelSmall)
                 IconButton(onClick = onUndo, enabled = canUndo, colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White)) {
                     Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Color.White)
                 }
@@ -2923,7 +2926,8 @@ private fun VideoReviewScreen(
                     }
                 }
                 Column(Modifier.fillMaxWidth().background(Color(0xFF111111)).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 14.dp, vertical = 6.dp)) {
-                    Text(currentVideo.name, color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
+                    Text(formatMediaDate(currentVideo.dateMillis), color = Color.White.copy(alpha = .72f), maxLines = 1, style = MaterialTheme.typography.labelSmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
+                    Text(currentVideo.name, color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(formatDuration(if (isScrubbing) (sliderPosition * playbackDuration).toLong() else playbackPosition), color = Color.White, style = MaterialTheme.typography.labelSmall)
                         Slider(
@@ -2947,7 +2951,7 @@ private fun VideoReviewScreen(
                             val nextVideo = videos.getOrNull(currentIndex + 1) ?: videos.getOrNull(currentIndex - 1)
                             currentUri = nextVideo?.uri
                             currentVideo?.let(onKeep)
-                        }, modifier = Modifier.width(80.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("淇濈暀", maxLines = 1) }
+                        }, modifier = Modifier.width(80.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("保留", maxLines = 1) }
                         Button(onClick = {
                             val nextVideo = videos.getOrNull(currentIndex + 1) ?: videos.getOrNull(currentIndex - 1)
                             currentUri = nextVideo?.uri
@@ -3039,6 +3043,9 @@ private fun formatDuration(durationMillis: Long): String {
     val seconds = durationMillis / 1000
     return "%d:%02d".format(seconds / 60, seconds % 60)
 }
+
+private fun formatMediaDate(dateMillis: Long): String =
+    if (dateMillis > 0L) SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(dateMillis)) else "日期未知"
 
 @Composable
 private fun ImportFoldersScreen(
