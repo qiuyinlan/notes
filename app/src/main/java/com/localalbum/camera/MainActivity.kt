@@ -186,7 +186,7 @@ private data class Category(val name: String, val folderUri: String? = null)
 private data class ImportFolder(val name: String, val uri: Uri, val imageCount: Int)
 private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null, val dateMillis: Long = 0L, val sizeBytes: Long = 0L)
 private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long, val sizeBytes: Long = 0L, val sourceKey: String? = null)
-private data class PendingVideoMove(val video: VideoItem, val targetPath: String, val targetName: String)
+private data class PendingVideoMove(val video: VideoItem, val target: Category)
 private enum class VideoMoveResult { MOVED, NEEDS_CONFIRMATION, FAILED }
 private data class MediaStorage(
     val photoCount: Int = 0,
@@ -247,6 +247,9 @@ private fun AlbumCameraApp() {
     var screen by rememberSaveable { mutableStateOf(AppScreen.HOME) }
     var previewCategory by remember { mutableStateOf<Category?>(null) }
     var trashCategory by remember { mutableStateOf<Category?>(null) }
+    var trashReturnScreen by rememberSaveable { mutableStateOf(AppScreen.HOME) }
+    var restorePhotoGroupUris by remember { mutableStateOf<List<String>?>(null) }
+    var restoreVideoGroupUris by remember { mutableStateOf<List<String>?>(null) }
     var organizePhotos by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
     var trash by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
     var videos by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
@@ -348,13 +351,13 @@ private fun AlbumCameraApp() {
         val move = pendingVideoMove
         if (move != null) {
             val moved = result.resultCode == android.app.Activity.RESULT_OK && runCatching {
-                moveVideoInPlace(context, move.video.uri, move.targetPath)
+                moveVideoToCategory(context, move.video, move.target)
             }.getOrDefault(false)
             if (moved) {
                 videos = videos.filterNot { it.uri == move.video.uri }
                 videoCatalog = videoCatalog?.filterNot { it.uri == move.video.uri }
                 markVideoReviewed(move.video)
-                Toast.makeText(context, "\u89c6\u9891\u5df2\u79fb\u52a8\u5230${move.targetName}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "\u89c6\u9891\u5df2\u79fb\u52a8\u5230${move.target.name}", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(context, "\u89c6\u9891\u4fdd\u7559\u5728\u539f\u5206\u7c7b", Toast.LENGTH_SHORT).show()
             }
@@ -522,6 +525,7 @@ private fun AlbumCameraApp() {
             onShoot = { screen = AppScreen.HOME; cameraOpen = true },
             onShootCategory = { category -> selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
             onOrganize = {
+                restorePhotoGroupUris = null
                 if (loadingOrganize) {
                     Toast.makeText(context, "正在读取照片，请稍候", Toast.LENGTH_SHORT).show()
                 } else if (ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
@@ -553,9 +557,10 @@ private fun AlbumCameraApp() {
                     }
                 }
             },
-            onTrash = { trashCategory = null; screen = AppScreen.TRASH },
+            onTrash = { trashCategory = null; trashReturnScreen = AppScreen.HOME; screen = AppScreen.TRASH },
             onImport = { picturesPicker.launch(null) },
             onVideos = {
+                restoreVideoGroupUris = null
                 if (ContextCompat.checkSelfPermission(context, videoPermission) == PackageManager.PERMISSION_GRANTED) {
                     val cachedVideos = videoCatalog
                     if (cachedVideos != null && !mediaCatalogLoading) {
@@ -575,7 +580,7 @@ private fun AlbumCameraApp() {
                     videoPermissionLauncher.launch(videoPermission)
                 }
             },
-            onVideoTrash = { screen = AppScreen.VIDEO_TRASH },
+            onVideoTrash = { trashCategory = null; trashReturnScreen = AppScreen.HOME; screen = AppScreen.VIDEO_TRASH },
         )
         AppScreen.MORE -> MoreScreen(
             organizedCount = organizedCount,
@@ -594,24 +599,32 @@ private fun AlbumCameraApp() {
                 onBack = { screen = AppScreen.HOME },
                 onShoot = { selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
                 onStageDelete = { photos -> undoableStages.add(UndoableStage.Photos(photos, emptyList())); trash = (trash + photos).distinctBy { it.uri } },
-                onTrash = { trashCategory = category; screen = AppScreen.TRASH },
+                onTrash = { trashCategory = category; trashReturnScreen = AppScreen.CATEGORY; screen = AppScreen.TRASH },
             )
         }
         AppScreen.ORGANIZE -> OrganizePhotosScreen(
-            photos = organizePhotos.filterNot { photo -> trash.any { it.uri == photo.uri } },
+            photos = organizePhotos.filterNot { photo ->
+                trash.any { it.uri == photo.uri } || photo.uri.toString() in reviewedPhotoKeys
+            },
             categories = categories,
-            onBack = { screen = AppScreen.HOME },
+            initialGroupUris = restorePhotoGroupUris,
+            onBack = { restorePhotoGroupUris = null; screen = AppScreen.HOME },
             onStageDelete = { photos -> undoableStages.add(UndoableStage.Photos(photos, markPhotosReviewed(photos))); trash = (trash + photos).distinctBy { it.uri } },
             onUndo = ::undoLastStage,
             canUndo = undoableStages.isNotEmpty(),
             onSeen = ::markPhotosReviewed,
-            onTrash = { trashCategory = null; screen = AppScreen.TRASH },
+            onTrash = { group ->
+                restorePhotoGroupUris = group.map { it.uri.toString() }
+                trashCategory = null
+                trashReturnScreen = AppScreen.ORGANIZE
+                screen = AppScreen.TRASH
+            },
             trashCount = trash.size,
         )
         AppScreen.TRASH -> TrashScreen(
             photos = trashCategory?.let { category -> trash.filter { it.belongsTo(category) } } ?: trash,
             categoryName = trashCategory?.name,
-            onBack = { screen = if (trashCategory != null) AppScreen.CATEGORY else AppScreen.HOME; trashCategory = null },
+            onBack = { screen = trashReturnScreen; trashCategory = null },
             onRestore = { restored -> trash = trash.filterNot { item -> restored.any { it.uri == item.uri } } },
             onDelete = { deleted ->
                 val mediaPhotos = if (Build.VERSION.SDK_INT >= 30) deleted.filter { isMediaStorePhoto(context, it) } else emptyList()
@@ -654,21 +667,31 @@ private fun AlbumCameraApp() {
             },
         )
         AppScreen.VIDEOS -> VideoOrganizerScreen(
-            videos = videos.filterNot { item -> videoTrash.any { it.uri == item.uri } },
+            videos = videos.filterNot { item ->
+                videoTrash.any { it.uri == item.uri } || item.uri.toString() in reviewedVideoKeys
+            },
             categories = categories,
+            initialGroupUris = restoreVideoGroupUris,
             stagedCount = videoTrash.size,
             canUndo = undoableStages.isNotEmpty(),
-            onBack = { screen = AppScreen.HOME },
-            onTrash = { screen = AppScreen.VIDEO_TRASH },
+            onBack = { restoreVideoGroupUris = null; screen = AppScreen.HOME },
+            onTrash = { group ->
+                restoreVideoGroupUris = group.map { it.uri.toString() }
+                trashCategory = null
+                trashReturnScreen = AppScreen.VIDEOS
+                screen = AppScreen.VIDEO_TRASH
+            },
             onStageDelete = { video -> undoableStages.add(UndoableStage.Video(video, if (markVideoReviewed(video)) 1 else 0)); videoTrash = (videoTrash + video).distinctBy { it.uri } },
             onUndo = ::undoLastStage,
             onKeep = ::markVideoReviewed,
             onMove = { video, target ->
-                val targetPath = videoTargetRelativePath(target)
-                if (targetPath == null) {
-                    Toast.makeText(context, "\u76ee\u6807\u6587\u4ef6\u5939\u4e0d\u652f\u6301\u76f4\u63a5\u79fb\u52a8\u89c6\u9891", Toast.LENGTH_SHORT).show()
+                val targetFolder = mediaStoreTarget(target)
+                val sourceVolume = runCatching { MediaStore.getVolumeName(video.uri) }.getOrNull()
+                val alreadyInTarget = targetFolder != null && sourceVolume.equals(targetFolder.volumeName, ignoreCase = true) && video.sourceKey?.trim('/') == targetFolder.relativePath.trim('/')
+                if (targetFolder == null && target.folderUri == null) {
+                    Toast.makeText(context, "\u5206\u7c7b\u4fdd\u5b58\u4f4d\u7f6e\u65e0\u6548\uff0c\u89c6\u9891\u4ecd\u4fdd\u7559\u5728\u539f\u4f4d\u7f6e", Toast.LENGTH_SHORT).show()
                     VideoMoveResult.FAILED
-                } else if (video.sourceKey == targetPath) {
+                } else if (alreadyInTarget) {
                     videos = videos.filterNot { it.uri == video.uri }
                     videoCatalog = videoCatalog?.filterNot { it.uri == video.uri }
                     markVideoReviewed(video)
@@ -676,7 +699,7 @@ private fun AlbumCameraApp() {
                 } else if (pendingVideoMove != null) {
                     VideoMoveResult.FAILED
                 } else {
-                    val pending = PendingVideoMove(video, targetPath, target.name)
+                    val pending = PendingVideoMove(video, target)
                     fun requestVideoWritePermission(): VideoMoveResult {
                         pendingVideoMove = pending
                         return runCatching {
@@ -690,7 +713,7 @@ private fun AlbumCameraApp() {
                     }
                     if (Build.VERSION.SDK_INT >= 30) {
                         try {
-                            if (moveVideoInPlace(context, video.uri, targetPath)) {
+                            if (moveVideoToCategory(context, video, target)) {
                                 videos = videos.filterNot { it.uri == video.uri }
                                 videoCatalog = videoCatalog?.filterNot { it.uri == video.uri }
                                 markVideoReviewed(video)
@@ -701,7 +724,7 @@ private fun AlbumCameraApp() {
                         }
                     } else {
                         try {
-                            if (moveVideoInPlace(context, video.uri, targetPath)) {
+                            if (moveVideoToCategory(context, video, target)) {
                                 videos = videos.filterNot { it.uri == video.uri }
                                 videoCatalog = videoCatalog?.filterNot { it.uri == video.uri }
                                 markVideoReviewed(video)
@@ -720,7 +743,7 @@ private fun AlbumCameraApp() {
         )
         AppScreen.VIDEO_TRASH -> VideoTrashScreen(
             videos = videoTrash,
-            onBack = { screen = AppScreen.VIDEOS },
+            onBack = { screen = trashReturnScreen },
             onRestore = { restored -> videoTrash = videoTrash.filterNot { item -> restored.any { it.uri == item.uri } } },
             onDelete = { deleted ->
                 if (Build.VERSION.SDK_INT >= 30 && deleted.isNotEmpty()) {
@@ -1434,10 +1457,9 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
             onMove = { photo, target ->
                 if (movePhoto(context, photo, target)) {
                     photos = photos.filterNot { it.uri == photo.uri }
-                    viewerIndex = null
                 }
             },
-            stagedCount = stagedPhotos.size,
+            stagedCount = stagedPhotos.size
             canUndo = canUndo,
             onUndo = onUndo,
         )
@@ -1762,12 +1784,13 @@ private fun decodePhotoBitmap(context: Context, photo: PhotoItem, maxDimension: 
 private fun OrganizePhotosScreen(
     photos: List<PhotoItem>,
     categories: List<Category>,
+    initialGroupUris: List<String>?,
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
     canUndo: Boolean,
     onUndo: () -> Unit,
     onSeen: (Collection<PhotoItem>) -> Unit,
-    onTrash: () -> Unit,
+    onTrash: (List<PhotoItem>) -> Unit,
     trashCount: Int,
 ) {
     val context = LocalContext.current
@@ -1785,13 +1808,19 @@ private fun OrganizePhotosScreen(
     var countText by remember { mutableStateOf("20") }
     var selectedMonth by remember { mutableStateOf<String?>(null) }
     val count = countText.toIntOrNull()?.coerceIn(1, 500) ?: 20
-    var batchPhotos by remember { mutableStateOf(sourcePhotos.shuffled().take(count)) }
+    val restoredPhotos = initialGroupUris?.let { ids -> sourcePhotos.filter { it.uri.toString() in ids } }.orEmpty()
+    var batchPhotos by remember { mutableStateOf(restoredPhotos.ifEmpty { sourcePhotos.shuffled().take(count) }) }
     var visiblePhotos by remember { mutableStateOf(batchPhotos) }
     var processedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var restoredGroupPending by remember { mutableStateOf(initialGroupUris != null) }
     val monthOptions = remember(sourcePhotos) {
         sourcePhotos.mapNotNull { if (it.dateMillis > 0) SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(it.dateMillis)) else null }.distinct()
     }
     LaunchedEffect(mode, countText, selectedMonth) {
+        if (restoredGroupPending) {
+            restoredGroupPending = false
+            return@LaunchedEffect
+        }
         val available = sourcePhotos.filterNot { it.uri in processedUris }
         val nextBatch = when (mode) {
             MODE_RANDOM -> available.shuffled().take(count)
@@ -1833,7 +1862,7 @@ private fun OrganizePhotosScreen(
                 }
             }
             if (canUndo) IconButton(onClick = onUndo) { Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Moss) }
-            IconButton(onClick = onTrash) {
+            IconButton(onClick = { onTrash(visiblePhotos) }) {
                 Box {
                     Icon(Icons.Filled.DeleteOutline, "删除暂存区", tint = Moss)
                     Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(16.dp)) {
@@ -1931,18 +1960,44 @@ private fun OrganizePhotosScreen(
             initialIndex = index,
             categories = categories,
             onClose = { viewerIndex = null },
-            onOpenTrash = { viewerIndex = null; onTrash() },
+            onOpenTrash = { viewerIndex = null; onTrash(visiblePhotos) },
             onStageDelete = { photo ->
+                val group = visiblePhotos
+                val wasLast = visiblePhotos.size <= 1
                 processedUris = processedUris + photo.uri
                 visiblePhotos = visiblePhotos.filterNot { it.uri == photo.uri }
                 onStageDelete(listOf(photo))
+                if (wasLast) {
+                    viewerIndex = null
+                    onTrash(group)
+                }
             },
-            onKeep = { photo -> processedUris = processedUris + photo.uri; onSeen(listOf(photo)) },
+            onKeep = { photo ->
+                val group = visiblePhotos
+                val wasLast = visiblePhotos.size <= 1
+                processedUris = processedUris + photo.uri
+                visiblePhotos = visiblePhotos.filterNot { it.uri == photo.uri }
+                onSeen(listOf(photo))
+                if (wasLast && trashCount > 0) {
+                    viewerIndex = null
+                    onTrash(group)
+                }
+            },
             onSeen = { photo ->
                 processedUris = processedUris + photo.uri
                 onSeen(listOf(photo))
             },
-            onMove = { photo, target -> if (movePhoto(context, photo, target)) { processedUris = processedUris + photo.uri; onSeen(listOf(photo)); viewerIndex = null } },
+            onMove = { photo, target ->
+                val group = visiblePhotos
+                val wasLast = visiblePhotos.size <= 1
+                if (movePhoto(context, photo, target)) {
+                    processedUris = processedUris + photo.uri
+                    visiblePhotos = visiblePhotos.filterNot { it.uri == photo.uri }
+                    onSeen(listOf(photo))
+                    viewerIndex = null
+                    if (wasLast && trashCount > 0) onTrash(group)
+                }
+            },
             stagedCount = trashCount,
             canUndo = canUndo,
             onUndo = onUndo,
@@ -1970,7 +2025,7 @@ private fun PhotoDeleteGameScreen(
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
     onSeen: (Collection<PhotoItem>) -> Unit,
-    onTrash: () -> Unit,
+    onTrash: (List<PhotoItem>) -> Unit,
     onExitGame: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -2017,7 +2072,6 @@ private fun PhotoDeleteGameScreen(
             remaining = remaining.filterNot { it.uri == photo.uri }
             batch = batch.filterNot { it.uri == photo.uri }
             onSeen(listOf(photo))
-            previewIndex = null
         }
     }
 
@@ -2048,7 +2102,7 @@ BackHandler(onBack = onBack)
                 Text("像切水果一样快速清理", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall)
             }
             if (canUndo) IconButton(onClick = onUndo) { Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Color.White) }
-            IconButton(onClick = onTrash) {
+            IconButton(onClick = { onTrash(batch) }) {
                 Box {
                     Icon(Icons.Filled.DeleteOutline, "打开删除暂存区", tint = Color.White)
                     if (stagedCount > 0) Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(17.dp)) {
@@ -2079,7 +2133,7 @@ BackHandler(onBack = onBack)
                             modifier = Modifier.padding(top = 12.dp),
                         ) { Text("\u4e0b\u4e00\u7ec4") }
                     }
-                    if (stagedCount > 0) TextButton(onClick = onTrash) { Text("\u67e5\u770b\u5220\u9664\u6682\u5b58\u533a", color = Color(0xFFFFC107)) }
+                    if (stagedCount > 0) TextButton(onClick = { onTrash(batch) }) { Text("\u67e5\u770b\u5220\u9664\u6682\u5b58\u533a", color = Color(0xFFFFC107)) }
                 }
             } else {
                 Text("单击暂存一张，按住划过多张连切，长按预览", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
@@ -2215,11 +2269,32 @@ BackHandler(onBack = onBack)
             initialIndex = index,
             categories = categories,
             onClose = { previewIndex = null },
-            onOpenTrash = { previewIndex = null; onTrash() },
-            onStageDelete = { stage(listOf(it)) },
-            onKeep = { keep(it) },
+            onOpenTrash = { previewIndex = null; onTrash(batch) },
+            onStageDelete = {
+                val group = batch
+                val wasLast = batch.size <= 1
+                stage(listOf(it))
+                if (wasLast) {
+                    previewIndex = null
+                    onTrash(group)
+                }
+            },
+            onKeep = {
+                val group = batch
+                val wasLast = batch.size <= 1
+                keep(it)
+                if (wasLast && stagedCount > 0) {
+                    previewIndex = null
+                    onTrash(group)
+                }
+            },
             onSeen = { photo -> onSeen(listOf(photo)) },
-            onMove = { photo, target -> move(photo, target) },
+            onMove = { photo, target ->
+                val group = batch
+                val wasLast = batch.size <= 1
+                move(photo, target)
+                if (wasLast && stagedCount > 0) onTrash(group)
+            },
             stagedCount = stagedCount,
             canUndo = canUndo,
             onUndo = onUndo,
@@ -2388,10 +2463,11 @@ private fun VideoThumb(video: VideoItem, onClick: () -> Unit) {
 private fun VideoOrganizerScreen(
     videos: List<VideoItem>,
     categories: List<Category>,
+    initialGroupUris: List<String>?,
     stagedCount: Int,
     canUndo: Boolean,
     onBack: () -> Unit,
-    onTrash: () -> Unit,
+    onTrash: (List<VideoItem>) -> Unit,
     onUndo: () -> Unit,
     onStageDelete: (VideoItem) -> Unit,
     onKeep: (VideoItem) -> Unit,
@@ -2402,14 +2478,20 @@ private fun VideoOrganizerScreen(
     var mode by rememberSaveable { mutableStateOf(MODE_RANDOM) }
     var countText by rememberSaveable { mutableStateOf("20") }
     var selectedMonth by remember { mutableStateOf<String?>(null) }
-    var visibleVideos by remember { mutableStateOf(sourceVideos.shuffled().take(20)) }
+    val restoredVideos = initialGroupUris?.let { ids -> sourceVideos.filter { it.uri.toString() in ids } }.orEmpty()
+    var visibleVideos by remember { mutableStateOf(restoredVideos.ifEmpty { sourceVideos.shuffled().take(20) }) }
     var processedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
-    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var restoredGroupPending by remember { mutableStateOf(initialGroupUris != null) }
+    var viewerUri by remember { mutableStateOf<Uri?>(null) }
     val count = countText.toIntOrNull()?.coerceIn(1, 500) ?: 20
     val monthOptions = remember(sourceVideos) {
         sourceVideos.mapNotNull { if (it.dateMillis > 0) SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(it.dateMillis)) else null }.distinct()
     }
     LaunchedEffect(mode, countText, selectedMonth, sourceVideos) {
+        if (restoredGroupPending) {
+            restoredGroupPending = false
+            return@LaunchedEffect
+        }
         val available = sourceVideos.filterNot { it.uri in processedUris }
         visibleVideos = when (mode) {
             MODE_RANDOM -> available.shuffled().take(count)
@@ -2419,31 +2501,50 @@ private fun VideoOrganizerScreen(
     }
     val remainingCount = sourceVideos.count { it.uri !in processedUris }
     BackHandler(onBack = onBack)
-    if (viewerIndex != null) {
+    val selectedViewerUri = viewerUri
+    if (selectedViewerUri != null) {
         VideoReviewScreen(
             videos = visibleVideos,
-            initialUri = visibleVideos.getOrNull(viewerIndex)?.uri,
+            initialUri = selectedViewerUri,
             categories = categories,
             stagedCount = stagedCount,
             canUndo = canUndo,
-            onBack = { viewerIndex = null },
-            onTrash = { viewerIndex = null; onTrash() },
+            onBack = { viewerUri = null },
+            onTrash = { viewerUri = null; onTrash(visibleVideos) },
             onUndo = onUndo,
             onStageDelete = { video ->
+                val group = visibleVideos
+                val wasLast = visibleVideos.size <= 1
                 processedUris = processedUris + video.uri
                 visibleVideos = visibleVideos.filterNot { it.uri == video.uri }
                 onStageDelete(video)
+                if (wasLast) {
+                    viewerUri = null
+                    onTrash(group)
+                }
             },
             onKeep = { video ->
+                val group = visibleVideos
+                val wasLast = visibleVideos.size <= 1
                 processedUris = processedUris + video.uri
                 visibleVideos = visibleVideos.filterNot { it.uri == video.uri }
                 onKeep(video)
+                if (wasLast) {
+                    viewerUri = null
+                    if (stagedCount > 0) onTrash(group)
+                }
             },
             onMove = { video, target ->
+                val group = visibleVideos
+                val wasLast = visibleVideos.size <= 1
                 val result = onMove(video, target)
                 if (result == VideoMoveResult.MOVED) {
                     processedUris = processedUris + video.uri
                     visibleVideos = visibleVideos.filterNot { it.uri == video.uri }
+                    if (wasLast) {
+                        viewerUri = null
+                        if (stagedCount > 0) onTrash(group)
+                    }
                 }
                 result
             },
@@ -2460,7 +2561,7 @@ private fun VideoOrganizerScreen(
                     Text("本次 ${sourceVideos.size} 个", style = MaterialTheme.typography.labelSmall, color = Muted)
                 }
                 if (canUndo) IconButton(onClick = onUndo) { Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Moss) }
-                IconButton(onClick = onTrash) {
+                IconButton(onClick = { onTrash(visibleVideos) }) {
                     Box {
                         Icon(Icons.Filled.DeleteOutline, "打开删除暂存区", tint = Moss)
                         if (stagedCount > 0) Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(16.dp)) {
@@ -2508,7 +2609,7 @@ private fun VideoOrganizerScreen(
             } else {
                 LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(visibleVideos, key = { it.uri.toString() }) { video ->
-                        VideoThumb(video) { viewerIndex = visibleVideos.indexOfFirst { it.uri == video.uri } }
+                        VideoThumb(video) { viewerUri = video.uri }
                     }
                 }
             }
@@ -3035,53 +3136,60 @@ private fun countImagesInTree(context: Context, treeUri: Uri, documentId: String
 
 private fun queryAllPhotos(context: Context, categories: List<Category>): List<PhotoItem> {
     val byUri = LinkedHashMap<String, PhotoItem>()
-    runCatching {
-        context.contentResolver.query(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.RELATIVE_PATH, MediaStore.MediaColumns.SIZE),
-            null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC",
-        )?.use { c ->
-            while (c.moveToNext()) {
-                val item = PhotoItem(
-                    Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)),
-                    c.getString(1),
-                    c.getString(3),
-                    c.getLong(2) * 1000L,
-                    if (c.isNull(4)) 0L else c.getLong(4),
-                )
-                byUri.putIfAbsent(item.uri.toString(), item)
+    val volumes = runCatching { MediaStore.getExternalVolumeNames(context) }.getOrDefault(emptySet())
+    (volumes.ifEmpty { setOf("external_primary") }).forEach { volumeName ->
+        val collection = MediaStore.Images.Media.getContentUri(volumeName)
+        runCatching {
+            context.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.RELATIVE_PATH, MediaStore.MediaColumns.SIZE),
+                null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC",
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val item = PhotoItem(
+                        Uri.withAppendedPath(collection, cursor.getString(0)),
+                        cursor.getString(1),
+                        cursor.getString(3),
+                        cursor.getLong(2) * 1000L,
+                        if (cursor.isNull(4)) 0L else cursor.getLong(4),
+                    )
+                    byUri.putIfAbsent(item.uri.toString(), item)
+                }
             }
         }
     }
     categories.forEach { category ->
         queryPhotos(context, category).forEach { item -> byUri.putIfAbsent(item.uri.toString(), item) }
     }
-    return byUri.values.toList()
+    return byUri.values.sortedByDescending { it.dateMillis }
 }
 
 private fun queryAllVideos(context: Context): List<VideoItem> {
     val videos = mutableListOf<VideoItem>()
-    runCatching {
-        context.contentResolver.query(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_ADDED, MediaStore.MediaColumns.SIZE, MediaStore.Video.Media.RELATIVE_PATH),
-            null, null, "${MediaStore.Video.Media.DATE_ADDED} DESC",
-        )?.use { cursor ->
-            while (cursor.moveToNext()) {
-                videos += VideoItem(
-                    uri = Uri.withAppendedPath(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cursor.getString(0)),
-                    name = cursor.getString(1) ?: "video",
-                    durationMillis = cursor.getLong(2),
-                    dateMillis = cursor.getLong(3) * 1000L,
-                    sizeBytes = if (cursor.isNull(4)) 0L else cursor.getLong(4),
-                    sourceKey = cursor.getString(5),
-                )
+    val volumes = runCatching { MediaStore.getExternalVolumeNames(context) }.getOrDefault(emptySet())
+    (volumes.ifEmpty { setOf("external_primary") }).forEach { volumeName ->
+        val collection = MediaStore.Video.Media.getContentUri(volumeName)
+        runCatching {
+            context.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_ADDED, MediaStore.MediaColumns.SIZE, MediaStore.Video.Media.RELATIVE_PATH),
+                null, null, "${MediaStore.Video.Media.DATE_ADDED} DESC",
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    videos += VideoItem(
+                        uri = Uri.withAppendedPath(collection, cursor.getString(0)),
+                        name = cursor.getString(1) ?: "video",
+                        durationMillis = cursor.getLong(2),
+                        dateMillis = cursor.getLong(3) * 1000L,
+                        sizeBytes = if (cursor.isNull(4)) 0L else cursor.getLong(4),
+                        sourceKey = cursor.getString(5),
+                    )
+                }
             }
         }
     }
-    return videos
+    return videos.sortedByDescending { it.dateMillis }
 }
-
 private fun queryMediaStorage(context: Context): MediaStorage = MediaStorage(
     photoBytes = queryMediaBytes(context, MediaStore.Images.Media.EXTERNAL_CONTENT_URI),
     videoBytes = queryMediaBytes(context, MediaStore.Video.Media.EXTERNAL_CONTENT_URI),
@@ -3123,55 +3231,112 @@ private fun deletePhoto(context: Context, photo: PhotoItem): Boolean = runCatchi
     else context.contentResolver.delete(photo.uri, null, null) > 0
 }.getOrDefault(false)
 
+private data class MediaStoreTarget(val volumeName: String, val relativePath: String)
+
+private fun mediaStoreTarget(target: Category): MediaStoreTarget? {
+    if (target.folderUri == null) return MediaStoreTarget("external_primary", "DCIM/${target.name}/")
+    val targetUri = Uri.parse(target.folderUri)
+    val documentId = runCatching { DocumentsContract.getDocumentId(targetUri) }
+        .getOrElse { runCatching { DocumentsContract.getTreeDocumentId(targetUri) }.getOrNull() }
+        ?: return null
+    val volumeAndPath = documentId.split(':', limit = 2)
+    if (volumeAndPath.size != 2) return null
+    val volumeName = when (volumeAndPath[0].lowercase(Locale.ROOT)) {
+        "primary", "external_primary" -> "external_primary"
+        else -> volumeAndPath[0]
+    }
+    val path = volumeAndPath[1].trim('/')
+    return MediaStoreTarget(volumeName, if (path.isEmpty()) "" else "$path/")
+}
+
+private fun moveMediaStoreItem(context: Context, uri: Uri, target: Category): Boolean? {
+    if (uri.authority != "media") return null
+    val destination = mediaStoreTarget(target) ?: return null
+    val sourceVolume = runCatching { MediaStore.getVolumeName(uri) }.getOrNull() ?: return null
+    if (!sourceVolume.equals(destination.volumeName, ignoreCase = true)) return null
+    val values = ContentValues().apply { put(MediaStore.MediaColumns.RELATIVE_PATH, destination.relativePath) }
+    return context.contentResolver.update(uri, values, null, null) > 0
+}
+
 private fun movePhoto(context: Context, photo: PhotoItem, target: Category): Boolean {
     val targetKey = target.folderUri ?: "DCIM/${target.name}"
     if (photo.sourceKey == targetKey) return true
+    val resolver = context.contentResolver
+    if (target.folderUri != null && DocumentsContract.isDocumentUri(context, photo.uri) && photo.sourceKey != null) {
+        val sourceParent = Uri.parse(photo.sourceKey)
+        val targetParent = Uri.parse(target.folderUri)
+        if (sourceParent.authority == targetParent.authority) {
+            val movedUri = runCatching {
+                DocumentsContract.moveDocument(resolver, photo.uri, sourceParent, targetParent)
+            }.getOrNull()
+            if (movedUri != null) return true
+        }
+    }
+    val directMove = moveMediaStoreItem(context, photo.uri, target)
+    if (directMove != null) return directMove
     val targetUri = runCatching {
         if (target.folderUri != null) {
-            DocumentsContract.createDocument(context.contentResolver, Uri.parse(target.folderUri), "image/jpeg", photo.name)
+            DocumentsContract.createDocument(resolver, Uri.parse(target.folderUri), resolver.getType(photo.uri) ?: "image/jpeg", photo.name)
         } else {
+            val destination = mediaStoreTarget(target) ?: return false
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, photo.name)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/${target.name}")
+                put(MediaStore.Images.Media.MIME_TYPE, resolver.getType(photo.uri) ?: "image/jpeg")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, destination.relativePath)
             }
-            context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            resolver.insert(MediaStore.Images.Media.getContentUri(destination.volumeName), values)
         }
     }.getOrNull() ?: return false
     val copied = runCatching {
-        context.contentResolver.openInputStream(photo.uri)!!.use { input ->
-            context.contentResolver.openOutputStream(targetUri)!!.use { output -> input.copyTo(output) }
-        }
+        resolver.openInputStream(photo.uri)?.use { input ->
+            resolver.openOutputStream(targetUri, "w")?.use { output -> input.copyTo(output) }
+                ?: error("Unable to open destination photo")
+        } ?: error("Unable to open source photo")
         true
     }.getOrDefault(false)
-    if (!copied) {
+    if (!copied || !deletePhoto(context, photo)) {
         runCatching { deletePhoto(context, PhotoItem(targetUri, photo.name)) }
         return false
     }
-    deletePhoto(context, photo)
     return true
 }
-
-private fun videoTargetRelativePath(target: Category): String? {
-    val relativePath = if (target.folderUri == null) {
-        "DCIM/${target.name}/"
-    } else {
-        runCatching {
-            val documentId = DocumentsContract.getTreeDocumentId(Uri.parse(target.folderUri))
-            val volumeAndPath = documentId.split(':', limit = 2)
-            if (volumeAndPath.size != 2 || volumeAndPath[0] !in setOf("primary", "external_primary")) return null
-            volumeAndPath[1].trim('/').let { if (it.isEmpty()) "" else "$it/" }
-        }.getOrNull() ?: return null
+private fun moveVideoToCategory(context: Context, video: VideoItem, target: Category): Boolean {
+    val directMove = moveMediaStoreItem(context, video.uri, target)
+    if (directMove != null) return directMove
+    val resolver = context.contentResolver
+    val destination = mediaStoreTarget(target)
+    val targetUri = runCatching {
+        if (target.folderUri != null) {
+            DocumentsContract.createDocument(
+                resolver,
+                Uri.parse(target.folderUri),
+                resolver.getType(video.uri) ?: "video/mp4",
+                video.name,
+            )
+        } else {
+            val folder = destination ?: return false
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, video.name)
+                put(MediaStore.Video.Media.MIME_TYPE, resolver.getType(video.uri) ?: "video/mp4")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, folder.relativePath)
+            }
+            resolver.insert(MediaStore.Video.Media.getContentUri(folder.volumeName), values)
+        }
+    }.getOrNull() ?: return false
+    val copied = runCatching {
+        resolver.openInputStream(video.uri)?.use { source ->
+            resolver.openOutputStream(targetUri, "w")?.use { destinationStream ->
+                source.copyTo(destinationStream)
+            } ?: error("Unable to open destination video")
+        } ?: error("Unable to open source video")
+        true
+    }.getOrDefault(false)
+    if (!copied || !deleteVideoUri(context, video.uri)) {
+        runCatching { deleteVideoUri(context, targetUri) }
+        return false
     }
-    val topLevel = relativePath.trim('/').substringBefore('/')
-    return relativePath.takeIf { topLevel.equals("DCIM", ignoreCase = true) || topLevel.equals("Movies", ignoreCase = true) }
+    return true
 }
-
-private fun moveVideoInPlace(context: Context, videoUri: Uri, targetPath: String): Boolean {
-    val values = ContentValues().apply { put(MediaStore.MediaColumns.RELATIVE_PATH, targetPath) }
-    return context.contentResolver.update(videoUri, values, null, null) > 0
-}
-
 private fun deleteVideoUri(context: Context, uri: Uri): Boolean = runCatching {
     if (DocumentsContract.isDocumentUri(context, uri)) DocumentsContract.deleteDocument(context.contentResolver, uri)
     else context.contentResolver.delete(uri, null, null) > 0
