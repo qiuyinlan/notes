@@ -51,6 +51,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.shape.CircleShape
@@ -197,6 +198,7 @@ private fun AlbumCameraApp() {
     var videoTrash by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var organizedCount by remember { mutableStateOf(StatsStore.organized(context)) }
     var deletedCount by remember { mutableStateOf(StatsStore.deleted(context)) }
+    var loadingOrganize by remember { mutableStateOf(false) }
     var pendingPreview by remember { mutableStateOf<Category?>(null) }
     var pendingOrganize by remember { mutableStateOf(false) }
     var pendingCategoryName by remember { mutableStateOf("") }
@@ -253,8 +255,16 @@ private fun AlbumCameraApp() {
             previewCategory = pendingPreview
             screen = AppScreen.CATEGORY
         } else if (granted && pendingOrganize) {
-            organizePhotos = queryAllPhotos(context, categories)
-            screen = AppScreen.ORGANIZE
+            loadingOrganize = true
+            screenScope.launch {
+                runCatching { withContext(Dispatchers.IO) { queryAllPhotos(context, categories) } }
+                    .onSuccess {
+                        organizePhotos = it
+                        screen = AppScreen.ORGANIZE
+                    }
+                    .onFailure { Toast.makeText(context, "读取照片失败，请稍后重试", Toast.LENGTH_LONG).show() }
+                loadingOrganize = false
+            }
         }
         pendingPreview = null
         pendingOrganize = false
@@ -297,6 +307,7 @@ private fun AlbumCameraApp() {
             selectedCategory = selectedCategory,
             trashCount = trash.size,
             videoTrashCount = videoTrash.size,
+            organizeLoading = loadingOrganize,
             onMore = { screen = AppScreen.MORE },
             onSelect = { category ->
                 selectedCategory = category.name
@@ -313,12 +324,22 @@ private fun AlbumCameraApp() {
             onShoot = { screen = AppScreen.HOME; cameraOpen = true },
             onShootCategory = { category -> selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
             onOrganize = {
-                if (ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
+                if (loadingOrganize) {
+                    Toast.makeText(context, "正在读取照片，请稍候", Toast.LENGTH_SHORT).show()
+                } else if (ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
                     pendingOrganize = true
                     photoPermissionLauncher.launch(photoPermission)
                 } else {
-                    organizePhotos = queryAllPhotos(context, categories)
-                    screen = AppScreen.ORGANIZE
+                    loadingOrganize = true
+                    screenScope.launch {
+                        runCatching { withContext(Dispatchers.IO) { queryAllPhotos(context, categories) } }
+                            .onSuccess {
+                                organizePhotos = it
+                                screen = AppScreen.ORGANIZE
+                            }
+                            .onFailure { Toast.makeText(context, "读取照片失败，请稍后重试", Toast.LENGTH_LONG).show() }
+                        loadingOrganize = false
+                    }
                 }
             },
             onTrash = { trashCategory = null; screen = AppScreen.TRASH },
@@ -485,6 +506,7 @@ private fun HomeScreen(
     selectedCategory: String,
     trashCount: Int,
     videoTrashCount: Int,
+    organizeLoading: Boolean,
     onMore: () -> Unit,
     onSelect: (Category) -> Unit,
     onAdd: () -> Unit,
@@ -526,9 +548,9 @@ private fun HomeScreen(
                 }
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = onOrganize, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107), contentColor = Ink)) {
+                        Button(onClick = onOrganize, enabled = !organizeLoading, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107), contentColor = Ink)) {
                             Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Text("  整理照片")
+                            Text(if (organizeLoading) "  正在读取照片..." else "  整理照片")
                         }
                         if (trashCount > 0) {
                             IconButton(onClick = onTrash, modifier = Modifier.size(48.dp)) {
@@ -1176,6 +1198,8 @@ private fun OrganizePhotosScreen(
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var selecting by remember { mutableStateOf(false) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var gameMode by rememberSaveable { mutableStateOf(false) }
+    var modeMenuExpanded by remember { mutableStateOf(false) }
     var mode by remember { mutableStateOf("随机整理") }
     var countText by remember { mutableStateOf("20") }
     var selectedMonth by remember { mutableStateOf<String?>(null) }
@@ -1197,8 +1221,21 @@ private fun OrganizePhotosScreen(
     val nextBatchCount = minOf(count, remainingCount)
     val batchComplete = batchPhotos.isNotEmpty() && batchPhotos.all { it.uri in processedUris }
     BackHandler(onBack = onBack)
+    // ORGANIZE_MODE_SWITCH
+    if (gameMode) {
+        PhotoDeleteGameScreen(
+            photos = sourcePhotos,
+            stagedCount = trashCount,
+            onBack = onBack,
+            onStageDelete = onStageDelete,
+            onTrash = onTrash,
+            onExitGame = { gameMode = false },
+        )
+        return
+    }
     Scaffold(containerColor = Paper, topBar = {
         Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { gameMode = true }) { Icon(Icons.Filled.SwapHoriz, "鍒囨崲鍒版父鎴忓垹鐓х墖", tint = Moss) }
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
             Column(Modifier.weight(1f)) { Text("整理照片", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("本次 ${photos.size} 张", style = MaterialTheme.typography.labelSmall, color = Muted) }
             if (trashCount > 0 || selecting) IconButton(onClick = {
