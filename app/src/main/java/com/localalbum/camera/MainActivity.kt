@@ -1459,7 +1459,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                     photos = photos.filterNot { it.uri == photo.uri }
                 }
             },
-            stagedCount = stagedPhotos.size
+            stagedCount = stagedPhotos.size,
             canUndo = canUndo,
             onUndo = onUndo,
         )
