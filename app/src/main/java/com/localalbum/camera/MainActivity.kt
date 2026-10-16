@@ -133,6 +133,7 @@ import kotlinx.coroutines.Job
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1746,20 +1747,34 @@ private fun TrashScreen(
 private fun VideoPoster(video: VideoItem) {
     val context = LocalContext.current
     val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = video.uri) {
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                MediaMetadataRetriever().use { retriever ->
-                    retriever.setDataSource(context, video.uri)
-                    retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                }
-            }.getOrNull()
-        }
+        value = withContext(Dispatchers.IO) { loadVideoThumbnail(context, video) }
     }
     Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
         bitmapState.value?.let { bitmap ->
             Image(bitmap.asImageBitmap(), contentDescription = video.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
         }
     }
+}
+
+private object VideoThumbnailCache {
+    private val cache = object : LruCache<String, Bitmap>(6) {}
+
+    fun get(key: String): Bitmap? = synchronized(cache) { cache.get(key) }
+
+    fun put(key: String, bitmap: Bitmap) {
+        synchronized(cache) { cache.put(key, bitmap) }
+    }
+}
+
+private fun loadVideoThumbnail(context: Context, video: VideoItem): Bitmap? {
+    val key = video.uri.toString()
+    VideoThumbnailCache.get(key)?.let { return it }
+    return runCatching {
+        MediaMetadataRetriever().use { retriever ->
+            retriever.setDataSource(context, video.uri)
+            retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        }
+    }.getOrNull()?.also { VideoThumbnailCache.put(key, it) }
 }
 
 @Composable
@@ -1784,6 +1799,11 @@ private fun VideoReviewScreen(
     val swipeOffset = remember { Animatable(0f) }
     val swipeScope = rememberCoroutineScope()
     LaunchedEffect(videos) {
+        withContext(Dispatchers.IO) {
+            videos.take(4).forEach { loadVideoThumbnail(context, it) }
+        }
+    }
+    LaunchedEffect(videos) {
         if (videos.none { it.uri == currentUri }) currentUri = videos.firstOrNull()?.uri
     }
     val currentIndex = videos.indexOfFirst { it.uri == currentUri }
@@ -1793,12 +1813,12 @@ private fun VideoReviewScreen(
         if (player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
             player.seekTo(0L)
             player.play()
-        } else if (player.isPlaying) {
+        } else if (player.isPlaying || player.playWhenReady) {
             player.pause()
         } else {
             player.play()
         }
-        isPlaying = player.isPlaying
+        isPlaying = player.playWhenReady && player.playbackState != androidx.media3.common.Player.STATE_ENDED
     }
     LaunchedEffect(currentVideo?.uri) {
         player.setPlaybackParameters(PlaybackParameters(1f))
@@ -1843,6 +1863,7 @@ private fun VideoReviewScreen(
             Box(
                 Modifier
                     .fillMaxSize()
+                    .padding(top = 72.dp, bottom = 170.dp)
                     .offset { IntOffset(0, targetPlacement.roundToInt()) }
                     .zIndex(0f),
             ) {
@@ -1851,12 +1872,18 @@ private fun VideoReviewScreen(
         }
         if (currentVideo != null) {
             AndroidView(
-                factory = { ctx -> PlayerView(ctx).apply { useController = false; resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
+                factory = { ctx -> PlayerView(ctx).apply { useController = false; setKeepContentOnPlayerReset(true); resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
                 update = { it.player = player },
                 modifier = Modifier
                     .fillMaxSize()
+                    .padding(top = 72.dp, bottom = 170.dp)
                     .offset { IntOffset(0, swipeOffset.value.roundToInt()) }
                     .zIndex(1f)
+                    .graphicsLayer {
+                        val zoom = if (heldSpeed != null) 1.16f else 1f
+                        scaleX = zoom
+                        scaleY = zoom
+                    }
                     .pointerInput(currentVideo.uri) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
@@ -1938,7 +1965,7 @@ private fun VideoReviewScreen(
                         }
                     },
             )
-            Column(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues())) {
+            Column(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues()).zIndex(3f)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White) }
                     Column(Modifier.weight(1f)) {
