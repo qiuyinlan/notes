@@ -1633,69 +1633,81 @@ private fun PhotoViewerScreen(
     BackHandler(onBack = onClose)
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Box(Modifier.fillMaxWidth().weight(1f)) {
-                HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier.fillMaxSize().padding(top = 72.dp).padding(if (expandedImage) 0.dp else 12.dp),
-                    beyondViewportPageCount = 1,
-                ) { page ->
-                    ZoomablePhotoPageImage(photos[page], onLongPress = { expandedImage = true })
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = 72.dp, bottom = 170.dp)
+                    .padding(if (expandedImage) 0.dp else 12.dp),
+                beyondViewportPageCount = 1,
+            ) { page ->
+                ZoomablePhotoPageImage(photos[page], onLongPress = { expandedImage = true })
             }
-            Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).background(Color.Black).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
-                Column(Modifier.weight(1f)) {
-                    Text(currentPhoto?.name.orEmpty(), color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall)
-                    Text(formatMediaDate(currentPhoto?.dateMillis ?: 0L), color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall)
-                }
-                Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, style = MaterialTheme.typography.labelSmall)
-                IconButton(onClick = onUndo, enabled = canUndo, colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White)) {
-                    Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Color.White)
-                }
-                IconButton(onClick = onOpenTrash) {
-                    Box(Modifier.size(40.dp)) {
-                        Icon(Icons.Filled.DeleteOutline, "打开删除暂存区", tint = Color.White, modifier = Modifier.align(Alignment.Center))
-                        Surface(
-                            color = Color(0xFFFFC107),
-                            shape = CircleShape,
-                            modifier = Modifier.align(Alignment.TopEnd).size(16.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(stagedCount.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink, maxLines = 1)
+            Column(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues()).zIndex(3f)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "返回", tint = Color.White) }
+                    Column(Modifier.weight(1f)) {
+                        Text("整理照片", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White.copy(alpha = .75f), style = MaterialTheme.typography.labelSmall)
+                        Text("左右滑动切换照片", color = Color.White.copy(alpha = .62f), style = MaterialTheme.typography.labelSmall)
+                    }
+                    IconButton(onClick = onUndo, enabled = canUndo) {
+                        Icon(Icons.Filled.Undo, "撤回上一次暂存删除", tint = Color.White)
+                    }
+                    IconButton(onClick = onOpenTrash) {
+                        Box {
+                            Icon(Icons.Filled.DeleteOutline, "照片删除暂存区", tint = Color.White)
+                            Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(16.dp)) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(stagedCount.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink, maxLines = 1)
+                                }
                             }
                         }
                     }
                 }
-            }
-        }
-        Surface(color = Color(0xFF111111), modifier = Modifier.fillMaxWidth().zIndex(10f)) {
-            Column(Modifier.padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 18.dp, vertical = 10.dp)) {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 2.dp)) {
-                    items(categories, key = { it.name }) { target ->
-                        Surface(onClick = { onMove(photos[pagerState.currentPage], target) }, color = Color(0xFF303030), shape = RoundedCornerShape(18.dp)) {
-                            Text(target.name, color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                Spacer(Modifier.weight(1f))
+                Surface(color = Color(0xFF111111).copy(alpha = .92f), modifier = Modifier.fillMaxWidth()) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(categories, key = { it.name }) { target ->
+                            TextButton(onClick = {
+                                currentPhoto?.let { onMove(it, target) }
+                            }) {
+                                Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = Color(0xFFB9E7C8), modifier = Modifier.size(16.dp))
+                                Text(" ${target.name}", color = Color.White, maxLines = 1)
+                            }
                         }
                     }
-                }
-                Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (autoPlayEnabled) {
-                        IconButton(onClick = { autoPlaying = !autoPlaying }, colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White)) {
-                            Icon(if (autoPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (autoPlaying) "暂停自动播放" else "开始自动播放")
+                    Column(Modifier.fillMaxWidth().background(Color(0xFF111111)).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 14.dp, vertical = 6.dp)) {
+                        Text(formatMediaDate(currentPhoto?.dateMillis ?: 0L), color = Color.White.copy(alpha = .72f), maxLines = 1, style = MaterialTheme.typography.labelSmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
+                        Text(currentPhoto?.name.orEmpty(), color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (autoPlayEnabled) {
+                                IconButton(onClick = { autoPlaying = !autoPlaying }) {
+                                    Icon(if (autoPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (autoPlaying) "暂停自动播放" else "开始自动播放", tint = Color.White)
+                                }
+                            }
+                            Button(onClick = {
+                                photos.getOrNull(pagerState.currentPage)?.let(onKeep)
+                                if (autoPlayEnabled && autoPlaying) {
+                                    autoPlaying = false
+                                } else {
+                                    autoPlaying = false
+                                    if (pagerState.currentPage < photos.lastIndex) scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } else onClose()
+                                }
+                            }, modifier = Modifier.width(80.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) {
+                                Text("保留", maxLines = 1)
+                            }
+                            Button(onClick = {
+                                autoPlaying = false
+                                photos.getOrNull(pagerState.currentPage)?.let(onStageDelete)
+                            }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF343434), contentColor = Color.White)) {
+                                Icon(Icons.Filled.DeleteOutline, null)
+                                Text("  暂存删除", maxLines = 1, softWrap = false)
+                            }
                         }
-                    }
-                    Button(onClick = {
-                        photos.getOrNull(pagerState.currentPage)?.let(onKeep)
-                        if (autoPlayEnabled && autoPlaying) {
-                            autoPlaying = false
-                        } else {
-                            autoPlaying = false
-                            if (pagerState.currentPage < photos.lastIndex) scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } else onClose()
-                        }
-                    }, modifier = Modifier.width(72.dp), contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("保留", maxLines = 1) }
-                    Button(onClick = {
-                        autoPlaying = false
-                        photos.getOrNull(pagerState.currentPage)?.let(onStageDelete)
-                    }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A), contentColor = Color.White)) {
-                        Icon(Icons.Filled.DeleteOutline, null)
-                        Text("暂存删除", maxLines = 1, softWrap = false, modifier = Modifier.padding(start = 4.dp))
                     }
                 }
             }
