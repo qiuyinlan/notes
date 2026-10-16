@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
@@ -33,6 +34,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -43,6 +45,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -126,6 +129,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.Job
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
@@ -137,6 +143,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.unit.IntOffset
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem as ExoMediaItem
@@ -1727,6 +1734,26 @@ private fun TrashScreen(
 }
 
 @Composable
+private fun VideoPoster(video: VideoItem) {
+    val context = LocalContext.current
+    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = video.uri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                MediaMetadataRetriever().use { retriever ->
+                    retriever.setDataSource(context, video.uri)
+                    retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                }
+            }.getOrNull()
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+        bitmapState.value?.let { bitmap ->
+            Image(bitmap.asImageBitmap(), contentDescription = video.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        }
+    }
+}
+
+@Composable
 private fun VideoReviewScreen(
     videos: List<VideoItem>,
     stagedCount: Int,
@@ -1743,6 +1770,8 @@ private fun VideoReviewScreen(
     var sliderPosition by remember { mutableStateOf(0f) }
     var isScrubbing by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
+    val swipeOffset = remember { Animatable(0f) }
+    val swipeScope = rememberCoroutineScope()
     LaunchedEffect(videos) {
         if (videos.none { it.uri == currentUri }) currentUri = videos.firstOrNull()?.uri
     }
@@ -1779,12 +1808,33 @@ private fun VideoReviewScreen(
     DisposableEffect(player) { onDispose { player.release() } }
     BackHandler(onBack = onBack)
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+        val viewportHeight = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+        val swipeTargetIndex = when {
+            swipeOffset.value < 0f -> currentIndex + 1
+            swipeOffset.value > 0f -> currentIndex - 1
+            else -> -1
+        }
+        if (swipeOffset.value != 0f && swipeTargetIndex in videos.indices) {
+            val targetVideo = videos[swipeTargetIndex]
+            val targetPlacement = swipeOffset.value + if (swipeOffset.value < 0f) viewportHeight else -viewportHeight
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .offset { IntOffset(0, targetPlacement.roundToInt()) }
+                    .zIndex(0f),
+            ) {
+                VideoPoster(targetVideo)
+            }
+        }
         if (currentVideo != null) {
             AndroidView(
                 factory = { ctx -> PlayerView(ctx).apply { useController = false; resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
                 update = { it.player = player },
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .offset { IntOffset(0, swipeOffset.value.roundToInt()) }
+                    .zIndex(1f)
                     .pointerInput(currentVideo.uri) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
@@ -1826,12 +1876,43 @@ private fun VideoReviewScreen(
                                 }
                                 player.setPlaybackParameters(PlaybackParameters(1f))
                                 heldSpeed = null
-                            } else if (kotlin.math.abs(totalVertical) > 80f) {
-                                val nextIndex = if (totalVertical < 0f) currentIndex + 1 else currentIndex - 1
-                                currentUri = videos.getOrNull(nextIndex)?.uri ?: currentUri
-                            } else if (releasedChange != null && kotlin.math.hypot(totalVertical.toDouble(), totalHorizontal.toDouble()).toFloat() < viewConfiguration.touchSlop) {
-                                if (player.isPlaying) player.pause() else player.play()
-                                isPlaying = player.isPlaying
+                            } else {
+                                var released = releasedChange != null
+                                var swipeJob: Job? = null
+                                while (!released) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    totalVertical += change.position.y - change.previousPosition.y
+                                    totalHorizontal += change.position.x - change.previousPosition.x
+                                    if (kotlin.math.abs(totalVertical) > kotlin.math.abs(totalHorizontal) && kotlin.math.abs(totalVertical) > viewConfiguration.touchSlop) {
+                                        val dragOffset = totalVertical.coerceIn(-viewportHeight, viewportHeight)
+                                        swipeJob?.cancel()
+                                        swipeJob = swipeScope.launch { swipeOffset.snapTo(dragOffset) }
+                                        change.consume()
+                                    }
+                                    released = !change.pressed
+                                }
+                                val swipeThreshold = viewportHeight * 0.22f
+                                val nextIndex = when {
+                                    totalVertical < -swipeThreshold -> currentIndex + 1
+                                    totalVertical > swipeThreshold -> currentIndex - 1
+                                    else -> -1
+                                }
+                                if (nextIndex in videos.indices) {
+                                    val finalOffset = if (totalVertical < 0f) -viewportHeight else viewportHeight
+                                    swipeJob?.cancel()
+                                    swipeScope.launch {
+                                        swipeOffset.animateTo(finalOffset, tween(180))
+                                        currentUri = videos[nextIndex].uri
+                                        swipeOffset.snapTo(0f)
+                                    }
+                                } else if (kotlin.math.abs(totalVertical) > viewConfiguration.touchSlop) {
+                                    swipeJob?.cancel()
+                                    swipeScope.launch { swipeOffset.animateTo(0f, tween(180)) }
+                                } else if (releasedChange != null) {
+                                    if (player.isPlaying) player.pause() else player.play()
+                                    isPlaying = player.isPlaying
+                                }
                             }
                         }
                     },
@@ -1895,7 +1976,10 @@ private fun VideoReviewScreen(
                         IconButton(onClick = { if (player.isPlaying) player.pause() else player.play(); isPlaying = player.isPlaying }) {
                             Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (isPlaying) "暂停视频" else "播放视频", tint = Color.White)
                         }
-                        TextButton(onClick = { onKeep(); currentUri = videos.getOrNull(currentIndex + 1)?.uri }, modifier = Modifier.weight(1f)) { Text("保留并下一个", color = Color.White) }
+                        Button(onClick = {
+                            onKeep()
+                            currentUri = videos.getOrNull(currentIndex + 1)?.uri ?: videos.getOrNull(currentIndex - 1)?.uri
+                        }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Ink)) { Text("保留", maxLines = 1) }
                         Button(onClick = {
                             val nextVideo = videos.getOrNull(currentIndex + 1) ?: videos.getOrNull(currentIndex - 1)
                             currentUri = nextVideo?.uri
