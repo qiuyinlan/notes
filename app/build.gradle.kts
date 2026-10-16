@@ -25,8 +25,8 @@ android {
         applicationId = "com.localalbum.camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.11.1"
+        versionCode = 19
+        versionName = "0.11.2"
     }
 
     signingConfigs {

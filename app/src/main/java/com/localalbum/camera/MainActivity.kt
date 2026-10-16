@@ -9,6 +9,7 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
+import android.util.LruCache
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.widget.Toast
@@ -26,6 +27,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -1058,7 +1060,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
 @Composable
 private fun PhotoThumb(photo: PhotoItem, selected: Boolean = false, onClick: () -> Unit) {
     val context = LocalContext.current
-    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = withContext(Dispatchers.IO) { decodePhotoBitmap(context, photo, 480) } }
+    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = loadPhotoBitmap(context, photo, 480) }
     Box(Modifier.padding(2.dp).size(120.dp).clickable(onClick = onClick)) {
         val bitmap: Bitmap? = bitmapState.value
         if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -1161,11 +1163,29 @@ private fun PhotoViewerScreen(
 @Composable
 private fun PhotoPageImage(photo: PhotoItem) {
     val context = LocalContext.current
-    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = withContext(Dispatchers.IO) { decodePhotoBitmap(context, photo, 2048) } }
+    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) { value = loadPhotoBitmap(context, photo, 2048) }
     val bitmap: Bitmap? = bitmapState.value
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = photo.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
     }
+}
+
+private object PhotoBitmapCache {
+    private const val MAX_BYTES = 48 * 1024 * 1024
+    private val cache = object : LruCache<String, Bitmap>(MAX_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
+    }
+
+    fun get(key: String): Bitmap? = synchronized(cache) { cache.get(key) }
+
+    fun put(key: String, bitmap: Bitmap) {
+        synchronized(cache) { cache.put(key, bitmap) }
+    }
+}
+
+private suspend fun loadPhotoBitmap(context: Context, photo: PhotoItem, maxDimension: Int): Bitmap? = withContext(Dispatchers.IO) {
+    val key = "${photo.uri}|$maxDimension"
+    PhotoBitmapCache.get(key) ?: decodePhotoBitmap(context, photo, maxDimension)?.also { PhotoBitmapCache.put(key, it) }
 }
 
 private fun decodePhotoBitmap(context: Context, photo: PhotoItem, maxDimension: Int): Bitmap? = runCatching {
@@ -1235,7 +1255,13 @@ private fun OrganizePhotosScreen(
     }
     Scaffold(containerColor = Paper, topBar = {
         Row(Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { gameMode = true }) { Icon(Icons.Filled.SwapHoriz, "鍒囨崲鍒版父鎴忓垹鐓х墖", tint = Moss) }
+            Box {
+                IconButton(onClick = { modeMenuExpanded = true }) { Icon(Icons.Filled.SwapHoriz, "鍒囨崲鏁寸悊妯″紡", tint = Moss) }
+                DropdownMenu(expanded = modeMenuExpanded, onDismissRequest = { modeMenuExpanded = false }) {
+                    DropdownMenuItem(text = { Text("普通整理") }, onClick = { modeMenuExpanded = false })
+                    DropdownMenuItem(text = { Text("游戏删照片") }, onClick = { gameMode = true; modeMenuExpanded = false })
+                }
+            }
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
             Column(Modifier.weight(1f)) { Text("整理照片", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("本次 ${photos.size} 张", style = MaterialTheme.typography.labelSmall, color = Muted) }
             if (trashCount > 0 || selecting) IconButton(onClick = {
@@ -1332,6 +1358,132 @@ private fun OrganizePhotosScreen(
             stagedCount = trashCount,
             autoPlayEnabled = true,
         )
+    }
+}
+
+@Composable
+private fun PhotoDeleteGameScreen(
+    photos: List<PhotoItem>,
+    stagedCount: Int,
+    onBack: () -> Unit,
+    onStageDelete: (List<PhotoItem>) -> Unit,
+    onTrash: () -> Unit,
+    onExitGame: () -> Unit,
+) {
+    val context = LocalContext.current
+    var modeMenuExpanded by remember { mutableStateOf(false) }
+    var roundSize by rememberSaveable { mutableStateOf(6) }
+    var remaining by remember(photos) { mutableStateOf(photos) }
+    var batch by remember(photos, roundSize) { mutableStateOf(remaining.shuffled().take(roundSize)) }
+
+    fun stage(photo: PhotoItem) {
+        if (batch.none { it.uri == photo.uri }) return
+        remaining = remaining.filterNot { it.uri == photo.uri }
+        batch = batch.filterNot { it.uri == photo.uri }
+        onStageDelete(listOf(photo))
+    }
+
+    LaunchedEffect(batch, remaining, roundSize) {
+        if (batch.isEmpty() && remaining.isNotEmpty()) {
+            batch = remaining.shuffled().take(roundSize)
+        }
+    }
+
+    BackHandler(onBack = onBack)
+    Scaffold(containerColor = Color(0xFF10251D), topBar = {
+        Row(
+            Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White) }
+            Box {
+                IconButton(onClick = { modeMenuExpanded = true }) {
+                    Icon(Icons.Filled.SwapHoriz, "切换整理模式", tint = Color(0xFFB9E7C8))
+                }
+                DropdownMenu(expanded = modeMenuExpanded, onDismissRequest = { modeMenuExpanded = false }) {
+                    DropdownMenuItem(text = { Text("普通整理") }, onClick = { onExitGame(); modeMenuExpanded = false })
+                    DropdownMenuItem(text = { Text("游戏删照片") }, onClick = { modeMenuExpanded = false })
+                }
+            }
+            Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                Text("游戏删照片", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("像切水果一样快速清理", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall)
+            }
+            IconButton(onClick = onTrash) {
+                Box {
+                    Icon(Icons.Filled.DeleteOutline, "打开删除暂存区", tint = Color.White)
+                    if (stagedCount > 0) Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(17.dp)) {
+                        Box(contentAlignment = Alignment.Center) { Text(stagedCount.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink) }
+                    }
+                }
+            }
+        }
+    }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("本轮 ${batch.size} 张", color = Color.White, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                listOf(4, 6, 8).forEach { size ->
+                    TextButton(onClick = { roundSize = size }) {
+                        Text("${size}张", color = if (roundSize == size) Color(0xFFFFC107) else Color.White.copy(alpha = .7f), fontWeight = if (roundSize == size) FontWeight.Bold else FontWeight.Normal)
+                    }
+                }
+            }
+            if (batch.isEmpty()) {
+                Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                    Text(if (photos.isEmpty()) "没有可整理的照片" else "照片已全部清理", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    if (stagedCount > 0) TextButton(onClick = onTrash) { Text("查看删除暂存区", color = Color(0xFFFFC107)) }
+                }
+            } else {
+                Text("点击照片或向上划过即可暂存删除", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(batch, key = { it.uri.toString() }) { photo ->
+                        val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) {
+                            value = loadPhotoBitmap(context, photo, 720)
+                        }
+                        var dragDistance by remember(photo.uri) { mutableStateOf(0f) }
+                        Surface(
+                            color = Color(0xFF234A39),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(0.86f)
+                                .pointerInput(photo.uri) {
+                                    detectDragGestures(
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragDistance += dragAmount.y
+                                        },
+                                        onDragEnd = {
+                                            if (dragDistance < -48f) stage(photo)
+                                            dragDistance = 0f
+                                        },
+                                        onDragCancel = { dragDistance = 0f },
+                                    )
+                                }
+                                .clickable { stage(photo) },
+                        ) {
+                            Box(Modifier.fillMaxSize()) {
+                                bitmapState.value?.let { bitmap ->
+                                    Image(bitmap.asImageBitmap(), contentDescription = photo.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                                }
+                                Surface(color = Color.Black.copy(alpha = .58f), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                                    Text(photo.name, color = Color.White, maxLines = 1, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1699,22 +1851,28 @@ private fun countImagesInTree(context: Context, treeUri: Uri, documentId: String
 }
 
 private fun queryAllPhotos(context: Context, categories: List<Category>): List<PhotoItem> {
-    val all = mutableListOf<PhotoItem>()
+    val byUri = LinkedHashMap<String, PhotoItem>()
     runCatching {
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.RELATIVE_PATH),
             null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC",
         )?.use { c ->
-            while (c.moveToNext()) all += PhotoItem(
-                Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)),
-                c.getString(1),
-                c.getString(3),
-                c.getLong(2) * 1000L,
-            )
+            while (c.moveToNext()) {
+                val item = PhotoItem(
+                    Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getString(0)),
+                    c.getString(1),
+                    c.getString(3),
+                    c.getLong(2) * 1000L,
+                )
+                byUri.putIfAbsent(item.uri.toString(), item)
+            }
         }
     }
-    return (all + categories.flatMap { queryPhotos(context, it) }).distinctBy { it.uri }
+    categories.forEach { category ->
+        queryPhotos(context, category).forEach { item -> byUri.putIfAbsent(item.uri.toString(), item) }
+    }
+    return byUri.values.toList()
 }
 
 private fun queryAllVideos(context: Context): List<VideoItem> {
