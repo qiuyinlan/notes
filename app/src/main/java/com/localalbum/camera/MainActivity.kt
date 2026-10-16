@@ -603,8 +603,9 @@ private fun AlbumCameraApp() {
             )
         }
         AppScreen.ORGANIZE -> OrganizePhotosScreen(
-            photos = organizePhotos.filterNot { photo ->
-                trash.any { it.uri == photo.uri } || photo.uri.toString() in reviewedPhotoKeys
+            photos = organizePhotos.filter { photo ->
+                trash.none { it.uri == photo.uri } &&
+                    (photo.uri.toString() !in reviewedPhotoKeys || restorePhotoGroupUris?.contains(photo.uri.toString()) == true)
             },
             categories = categories,
             initialGroupUris = restorePhotoGroupUris,
@@ -667,8 +668,9 @@ private fun AlbumCameraApp() {
             },
         )
         AppScreen.VIDEOS -> VideoOrganizerScreen(
-            videos = videos.filterNot { item ->
-                videoTrash.any { it.uri == item.uri } || item.uri.toString() in reviewedVideoKeys
+            videos = videos.filter { item ->
+                videoTrash.none { it.uri == item.uri } &&
+                    (item.uri.toString() !in reviewedVideoKeys || restoreVideoGroupUris?.contains(item.uri.toString()) == true)
             },
             categories = categories,
             initialGroupUris = restoreVideoGroupUris,
@@ -1409,7 +1411,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
             }) {
                 Box {
                     Icon(Icons.Filled.DeleteOutline, if (selecting) "暂存所选照片" else "${category.name} 删除暂存区", tint = Moss)
-                    if (!selecting && stagedPhotos.isNotEmpty()) {
+                    if (!selecting) {
                         Surface(color = Color(0xFFFFC107), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(16.dp)) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(stagedPhotos.size.coerceAtMost(99).toString(), style = MaterialTheme.typography.labelSmall, color = Ink)
@@ -1436,7 +1438,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                 items(photos, key = { it.uri.toString() }) { photo ->
                     PhotoThumb(photo, selected = photo.uri in selected, onBoundsChanged = { rect -> if (rect == null) selectionBounds.remove(photo.uri) else selectionBounds[photo.uri] = rect }, onClick = {
                         if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
-                        else previewIndex = photos.indexOfFirst { it.uri == photo.uri }
+                        else viewerIndex = photos.indexOfFirst { it.uri == photo.uri }
                     }, onLongClick = { if (!selecting) viewerIndex = photos.indexOfFirst { it.uri == photo.uri } })
                 }
             }
@@ -1571,12 +1573,11 @@ private fun PhotoPreviewScreen(
     }
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, photos.lastIndex), pageCount = { photos.size })
     val currentPhoto = photos.getOrNull(pagerState.currentPage)
+    var expandedImage by remember { mutableStateOf(false) }
     LaunchedEffect(currentPhoto?.uri) { currentPhoto?.let(onSeen) }
     BackHandler(onBack = onClose)
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
-            ZoomablePhotoPageImage(photos[page])
-        }
+    Column(Modifier.fillMaxSize().background(Color.Black)) {
+        Surface(color = Color.Black, modifier = Modifier.fillMaxWidth()) {
         Row(
             Modifier.fillMaxWidth().padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1587,6 +1588,12 @@ private fun PhotoPreviewScreen(
                 Text(formatMediaDate(currentPhoto?.dateMillis ?: 0L), color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall)
             }
             Text("${pagerState.currentPage + 1} / ${photos.size}", color = Color.White, style = MaterialTheme.typography.labelLarge)
+        }
+        }
+        Box(Modifier.fillMaxWidth().weight(1f).padding(if (expandedImage) 0.dp else 12.dp), contentAlignment = Alignment.Center) {
+            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
+                ZoomablePhotoPageImage(photos[page], onLongPress = { expandedImage = true })
+            }
         }
     }
 }
@@ -1611,8 +1618,10 @@ private fun PhotoViewerScreen(
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, photos.lastIndex), pageCount = { photos.size })
     val scope = rememberCoroutineScope()
     var autoPlaying by remember { mutableStateOf(false) }
+    var expandedImage by remember { mutableStateOf(false) }
     val currentPhoto = photos.getOrNull(pagerState.currentPage)
     LaunchedEffect(currentPhoto?.uri) {
+        expandedImage = false
         currentPhoto?.let(onSeen)
     }
     LaunchedEffect(autoPlayEnabled, autoPlaying, currentPhoto?.uri) {
@@ -1624,10 +1633,14 @@ private fun PhotoViewerScreen(
     BackHandler(onBack = onClose)
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Box(Modifier.fillMaxWidth().weight(1f)) {
-                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
-                    ZoomablePhotoPageImage(photos[page])
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize().padding(top = 72.dp).padding(if (expandedImage) 0.dp else 12.dp),
+                    beyondViewportPageCount = 1,
+                ) { page ->
+                    ZoomablePhotoPageImage(photos[page], onLongPress = { expandedImage = true })
             }
-            Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).background(Color.Black).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
                 Column(Modifier.weight(1f)) {
                     Text(currentPhoto?.name.orEmpty(), color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall)
@@ -1701,7 +1714,7 @@ private fun PhotoPageImage(photo: PhotoItem) {
 }
 
 @Composable
-private fun ZoomablePhotoPageImage(photo: PhotoItem) {
+private fun ZoomablePhotoPageImage(photo: PhotoItem, onLongPress: (() -> Unit)? = null) {
     val context = LocalContext.current
     val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) {
         value = loadPhotoBitmap(context, photo, 4096)
@@ -1726,7 +1739,7 @@ private fun ZoomablePhotoPageImage(photo: PhotoItem) {
                 }
             }
             .pointerInput(photo.uri) {
-                detectTapGestures(onDoubleTap = {
+                detectTapGestures(onLongPress = onLongPress?.let { callback -> { _: Offset -> callback() } }, onDoubleTap = {
                     scale = if (scale > 1.05f) 1f else 2f
                     if (scale == 1f) translation = Offset.Zero
                 })
@@ -1812,7 +1825,7 @@ private fun OrganizePhotosScreen(
     var selectedMonth by remember { mutableStateOf<String?>(null) }
     val count = countText.toIntOrNull()?.coerceIn(1, 500) ?: 20
     val restoredPhotos = initialGroupUris?.let { ids -> sourcePhotos.filter { it.uri.toString() in ids } }.orEmpty()
-    var batchPhotos by remember { mutableStateOf(restoredPhotos.ifEmpty { sourcePhotos.shuffled().take(count) }) }
+    var batchPhotos by remember { mutableStateOf(if (initialGroupUris != null) restoredPhotos else sourcePhotos.shuffled().take(count)) }
     var visiblePhotos by remember { mutableStateOf(batchPhotos) }
     var processedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var restoredGroupPending by remember { mutableStateOf(initialGroupUris != null) }
@@ -2482,7 +2495,7 @@ private fun VideoOrganizerScreen(
     var countText by rememberSaveable { mutableStateOf("20") }
     var selectedMonth by remember { mutableStateOf<String?>(null) }
     val restoredVideos = initialGroupUris?.let { ids -> sourceVideos.filter { it.uri.toString() in ids } }.orEmpty()
-    var visibleVideos by remember { mutableStateOf(restoredVideos.ifEmpty { sourceVideos.shuffled().take(20) }) }
+    var visibleVideos by remember { mutableStateOf(if (initialGroupUris != null) restoredVideos else sourceVideos.shuffled().take(20)) }
     var processedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var restoredGroupPending by remember { mutableStateOf(initialGroupUris != null) }
     var viewerUri by remember { mutableStateOf<Uri?>(null) }
