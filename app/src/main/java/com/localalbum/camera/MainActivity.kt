@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.LruCache
 import android.provider.DocumentsContract
 import android.provider.MediaStore
@@ -29,6 +30,7 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +48,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -116,6 +123,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -138,7 +147,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -148,6 +160,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem as ExoMediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -1557,6 +1570,13 @@ private fun PhotoDeleteGameScreen(
     var roundSize by rememberSaveable { mutableStateOf(6) }
     var remaining by remember(photos) { mutableStateOf(photos) }
     var batch by remember(photos, roundSize) { mutableStateOf(remaining.shuffled().take(roundSize)) }
+    val cardBounds = remember { mutableStateMapOf<Uri, Rect>() }
+    val swipeTrail = remember { mutableStateListOf<Offset>() }
+    val cutThisStroke = remember { mutableSetOf<Uri>() }
+    var gameRootOrigin by remember { mutableStateOf(Offset.Zero) }
+    var comboCount by remember { mutableStateOf(0) }
+    var comboToken by remember { mutableStateOf(0) }
+    var flyingPhoto by remember { mutableStateOf<Pair<PhotoItem, Rect>?>(null) }
 
     fun stage(photo: PhotoItem) {
         if (batch.none { it.uri == photo.uri }) return
@@ -1584,6 +1604,18 @@ private fun PhotoDeleteGameScreen(
     LaunchedEffect(batch, remaining, roundSize) {
         if (batch.isEmpty() && remaining.isNotEmpty()) {
             batch = remaining.shuffled().take(roundSize)
+        }
+    }
+    LaunchedEffect(comboToken) {
+        if (comboCount > 0) {
+            delay(900)
+            comboCount = 0
+        }
+    }
+    LaunchedEffect(flyingPhoto) {
+        if (flyingPhoto != null) {
+            delay(360)
+            flyingPhoto = null
         }
     }
 
@@ -1636,51 +1668,112 @@ private fun PhotoDeleteGameScreen(
                 }
             } else {
                 Text("点击照片或向上划过即可暂存删除", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned { gameRootOrigin = it.positionInRoot() }
+                        .pointerInput(batch) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                cutThisStroke.clear()
+                                swipeTrail.clear()
+                                swipeTrail.add(down.position)
+                                var previous = down.position
+                                var moved = false
+                                var released = false
+                                while (!released) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    val point = change.position
+                                    if (change.pressed) {
+                                        if ((point - down.position).getDistance() > viewConfiguration.touchSlop) moved = true
+                                        if (moved) {
+                                            swipeTrail.add(point)
+                                            val previousRoot = previous + gameRootOrigin
+                                            val pointRoot = point + gameRootOrigin
+                                            batch.forEach { photo ->
+                                                if (photo.uri !in cutThisStroke) {
+                                                    val bounds = cardBounds[photo.uri] ?: return@forEach
+                                                    val center = bounds.center
+                                                    if (distanceToSegment(center, previousRoot, pointRoot) < 42.dp.toPx()) {
+                                                        cutThisStroke.add(photo.uri)
+                                                        comboCount += 1
+                                                        comboToken++
+                                                        flyingPhoto = photo to bounds
+                                                        stage(photo)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        released = true
+                                    }
+                                    previous = point
+                                }
+                                if (!moved && comboCount > 0) comboCount = 0
+                                delay(260)
+                                swipeTrail.clear()
+                            }
+                        },
                 ) {
-                    items(batch, key = { it.uri.toString() }) { photo ->
-                        val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) {
-                            value = loadPhotoBitmap(context, photo, 720)
-                        }
-                        var dragDistance by remember(photo.uri) { mutableStateOf(0f) }
-                        Surface(
-                            color = Color(0xFF234A39),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(0.86f)
-                                .pointerInput(photo.uri) {
-                                    detectDragGestures(
-                                        onDrag = { change, dragAmount ->
-                                            change.consume()
-                                            dragDistance += dragAmount.y
-                                        },
-                                        onDragEnd = {
-                                            if (dragDistance < -48f) stage(photo)
-                                            dragDistance = 0f
-                                        },
-                                        onDragCancel = { dragDistance = 0f },
-                                    )
-                                }
-                                .combinedClickable(
-                                    onClick = { stage(photo) },
-                                    onLongClick = { previewIndex = batch.indexOfFirst { it.uri == photo.uri } },
-                                ),
-                        ) {
-                            Box(Modifier.fillMaxSize()) {
-                                bitmapState.value?.let { bitmap ->
-                                    Image(bitmap.asImageBitmap(), contentDescription = photo.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                                }
-                                Surface(color = Color.Black.copy(alpha = .58f), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
-                                    Text(photo.name, color = Color.White, maxLines = 1, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(batch, key = { it.uri.toString() }) { photo ->
+                            val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) {
+                                value = loadPhotoBitmap(context, photo, 720)
+                            }
+                            Surface(
+                                color = Color(0xFF234A39),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(0.86f)
+                                    .onGloballyPositioned { cardBounds[photo.uri] = it.boundsInRoot() }
+                                    .combinedClickable(
+                                        onClick = { comboCount = 0; stage(photo) },
+                                        onLongClick = { previewIndex = batch.indexOfFirst { it.uri == photo.uri } },
+                                    ),
+                            ) {
+                                Box(Modifier.fillMaxSize()) {
+                                    bitmapState.value?.let { bitmap ->
+                                        Image(bitmap.asImageBitmap(), contentDescription = photo.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                                    }
+                                    Surface(color = Color.Black.copy(alpha = .58f), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                                        Text(photo.name, color = Color.White, maxLines = 1, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
+                                    }
                                 }
                             }
                         }
+                    }
+                    Canvas(Modifier.fillMaxSize().zIndex(2f)) {
+                        if (swipeTrail.size > 1) {
+                            val path = Path().apply {
+                                moveTo(swipeTrail.first().x, swipeTrail.first().y)
+                                swipeTrail.drop(1).forEach { lineTo(it.x, it.y) }
+                            }
+                            drawPath(path, Color(0xFFFFE082), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round))
+                            drawPath(path, Color.White.copy(alpha = .8f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+                        }
+                    }
+                    if (comboCount > 1) {
+                        Surface(
+                            color = Color(0xFFFFC107),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp).zIndex(3f),
+                        ) {
+                            Text("${comboCount} 连击", color = Ink, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        }
+                    }
+                    flyingPhoto?.let { (photo, bounds) ->
+                        val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = photo.uri) {
+                            value = loadPhotoBitmap(context, photo, 720)
+                        }
+                        FlyingPhotoEffect(photo, bitmapState.value, bounds, gameRootOrigin)
                     }
                 }
             }
@@ -1698,6 +1791,43 @@ private fun PhotoDeleteGameScreen(
             onMove = { photo, target -> move(photo, target) },
             stagedCount = stagedCount,
         )
+    }
+}
+
+private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float {
+    val segment = end - start
+    val lengthSquared = segment.x * segment.x + segment.y * segment.y
+    if (lengthSquared == 0f) return (point - start).getDistance()
+    val projection = (((point.x - start.x) * segment.x + (point.y - start.y) * segment.y) / lengthSquared).coerceIn(0f, 1f)
+    return (point - (start + segment * projection)).getDistance()
+}
+
+@Composable
+private fun FlyingPhotoEffect(photo: PhotoItem, bitmap: Bitmap?, bounds: Rect, rootOrigin: Offset) {
+    val progress = remember(photo.uri) { Animatable(0f) }
+    LaunchedEffect(photo.uri) { progress.animateTo(1f, tween(320)) }
+    val density = LocalDensity.current
+    val width = with(density) { bounds.width.toDp() }
+    val height = with(density) { bounds.height.toDp() }
+    Box(
+        Modifier
+            .offset {
+                IntOffset(
+                    x = (bounds.left - rootOrigin.x + progress.value * 48.dp.toPx()).roundToInt(),
+                    y = (bounds.top - rootOrigin.y - progress.value * 100.dp.toPx()).roundToInt(),
+                )
+            }
+            .size(width, height)
+            .graphicsLayer {
+                alpha = 1f - progress.value
+                scaleX = 1f - progress.value * .25f
+                scaleY = 1f - progress.value * .25f
+                rotationZ = progress.value * 18f
+            }
+            .zIndex(4f),
+    ) {
+        if (bitmap != null) Image(bitmap.asImageBitmap(), contentDescription = photo.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        else Surface(Modifier.fillMaxSize(), color = Moss, shape = RoundedCornerShape(14.dp)) {}
     }
 }
 
@@ -1749,7 +1879,7 @@ private fun VideoPoster(video: VideoItem) {
     val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = video.uri) {
         value = withContext(Dispatchers.IO) { loadVideoThumbnail(context, video) }
     }
-    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().background(Color(0xFF17211D)), contentAlignment = Alignment.Center) {
         bitmapState.value?.let { bitmap ->
             Image(bitmap.asImageBitmap(), contentDescription = video.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
         }
@@ -1796,11 +1926,15 @@ private fun VideoReviewScreen(
     var sliderPosition by remember { mutableStateOf(0f) }
     var isScrubbing by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
+    var showCurrentPoster by remember { mutableStateOf(true) }
+    var currentItemChangedAt by remember { mutableStateOf(0L) }
     val swipeOffset = remember { Animatable(0f) }
     val swipeScope = rememberCoroutineScope()
-    LaunchedEffect(videos) {
+    LaunchedEffect(currentUri, videos) {
         withContext(Dispatchers.IO) {
-            videos.take(4).forEach { loadVideoThumbnail(context, it) }
+            val index = videos.indexOfFirst { it.uri == currentUri }
+            listOfNotNull(videos.getOrNull(index - 1), videos.getOrNull(index + 1))
+                .forEach { loadVideoThumbnail(context, it) }
         }
     }
     LaunchedEffect(videos) {
@@ -1809,6 +1943,15 @@ private fun VideoReviewScreen(
     val currentIndex = videos.indexOfFirst { it.uri == currentUri }
     val currentVideo = videos.getOrNull(currentIndex)
     val player = remember { ExoPlayer.Builder(context).build() }
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onRenderedFirstFrame() {
+                if (SystemClock.elapsedRealtime() - currentItemChangedAt >= 300L) showCurrentPoster = false
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
     fun togglePlayback() {
         if (player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
             player.seekTo(0L)
@@ -1821,6 +1964,8 @@ private fun VideoReviewScreen(
         isPlaying = player.playWhenReady && player.playbackState != androidx.media3.common.Player.STATE_ENDED
     }
     LaunchedEffect(currentVideo?.uri) {
+        showCurrentPoster = currentVideo != null
+        currentItemChangedAt = SystemClock.elapsedRealtime()
         player.setPlaybackParameters(PlaybackParameters(1f))
         heldSpeed = null
         playbackPosition = 0L
@@ -1830,6 +1975,10 @@ private fun VideoReviewScreen(
             player.setMediaItem(ExoMediaItem.fromUri(currentVideo.uri))
             player.prepare()
             player.playWhenReady = true
+            delay(450)
+            if (player.playbackState == Player.STATE_READY && player.currentMediaItem?.localConfiguration?.uri == currentVideo.uri) {
+                showCurrentPoster = false
+            }
         } else {
             player.stop()
             player.clearMediaItems()
@@ -1852,6 +2001,7 @@ private fun VideoReviewScreen(
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
         val viewportHeight = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+        val contentHeight = (viewportHeight - with(LocalDensity.current) { 242.dp.toPx() }).coerceAtLeast(1f)
         val swipeTargetIndex = when {
             swipeOffset.value < 0f -> currentIndex + 1
             swipeOffset.value > 0f -> currentIndex - 1
@@ -1859,7 +2009,7 @@ private fun VideoReviewScreen(
         }
         if (swipeOffset.value != 0f && swipeTargetIndex in videos.indices) {
             val targetVideo = videos[swipeTargetIndex]
-            val targetPlacement = swipeOffset.value + if (swipeOffset.value < 0f) viewportHeight else -viewportHeight
+            val targetPlacement = swipeOffset.value + if (swipeOffset.value < 0f) contentHeight else -contentHeight
             Box(
                 Modifier
                     .fillMaxSize()
@@ -1872,7 +2022,7 @@ private fun VideoReviewScreen(
         }
         if (currentVideo != null) {
             AndroidView(
-                factory = { ctx -> PlayerView(ctx).apply { useController = false; setKeepContentOnPlayerReset(true); resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
+                factory = { ctx -> PlayerView(ctx).apply { useController = false; setKeepContentOnPlayerReset(false); resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
                 update = { it.player = player },
                 modifier = Modifier
                     .fillMaxSize()
@@ -1934,21 +2084,21 @@ private fun VideoReviewScreen(
                                     totalVertical += change.position.y - change.previousPosition.y
                                     totalHorizontal += change.position.x - change.previousPosition.x
                                     if (kotlin.math.abs(totalVertical) > kotlin.math.abs(totalHorizontal) && kotlin.math.abs(totalVertical) > viewConfiguration.touchSlop) {
-                                        val dragOffset = totalVertical.coerceIn(-viewportHeight, viewportHeight)
+                                        val dragOffset = totalVertical.coerceIn(-contentHeight, contentHeight)
                                         swipeJob?.cancel()
                                         swipeJob = swipeScope.launch { swipeOffset.snapTo(dragOffset) }
                                         change.consume()
                                     }
                                     released = !change.pressed
                                 }
-                                val swipeThreshold = viewportHeight * 0.22f
+                                val swipeThreshold = contentHeight * 0.22f
                                 val nextIndex = when {
                                     totalVertical < -swipeThreshold -> currentIndex + 1
                                     totalVertical > swipeThreshold -> currentIndex - 1
                                     else -> -1
                                 }
                                 if (nextIndex in videos.indices) {
-                                    val finalOffset = if (totalVertical < 0f) -viewportHeight else viewportHeight
+                                    val finalOffset = if (totalVertical < 0f) -contentHeight else contentHeight
                                     swipeJob?.cancel()
                                     swipeScope.launch {
                                         swipeOffset.animateTo(finalOffset, tween(180))
@@ -1965,6 +2115,17 @@ private fun VideoReviewScreen(
                         }
                     },
             )
+            if (showCurrentPoster) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(top = 72.dp, bottom = 170.dp)
+                        .offset { IntOffset(0, swipeOffset.value.roundToInt()) }
+                        .zIndex(2f),
+                ) {
+                    VideoPoster(currentVideo)
+                }
+            }
             Column(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues()).zIndex(3f)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White) }
@@ -2007,27 +2168,6 @@ private fun VideoReviewScreen(
                         }
                     }
                 }
-                heldSpeed?.let { speed ->
-                    Surface(color = Color.Black.copy(alpha = .72f), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                        Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
-                                (1..5).forEach { level ->
-                                    val active = level == speed
-                                    Box(
-                                        Modifier
-                                            .width(if (active) 5.dp else 3.dp)
-                                            .height((7 + level * 3 + if (active) 4 else 0).dp)
-                                            .background(if (level <= speed) Color(0xFFFFC107) else Color.White.copy(alpha = .45f), RoundedCornerShape(2.dp))
-                                    )
-                                }
-                            }
-                            Column(horizontalAlignment = Alignment.Start) {
-                                Text("${speed}x", color = Color(0xFFFFC107), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text("倍速", color = Color.White, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                            }
-                        }
-                    }
-                }
                 Column(Modifier.fillMaxWidth().background(Color(0xFF111111)).padding(WindowInsets.safeDrawing.asPaddingValues()).padding(horizontal = 14.dp, vertical = 6.dp)) {
                     Text(currentVideo.name, color = Color.White, maxLines = 1, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2060,6 +2200,37 @@ private fun VideoReviewScreen(
                         }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF343434), contentColor = Color.White)) {
                             Icon(Icons.Filled.DeleteOutline, null)
                             Text("  暂存删除")
+                        }
+                    }
+                }
+            }
+            heldSpeed?.let { speed ->
+                Box(Modifier.fillMaxSize().zIndex(5f)) {
+                    Surface(
+                        color = Color.Black.copy(alpha = .78f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 104.dp),
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+                                (1..5).forEach { level ->
+                                    val active = level == speed
+                                    Box(
+                                        Modifier
+                                            .width(if (active) 5.dp else 3.dp)
+                                            .height((7 + level * 3 + if (active) 4 else 0).dp)
+                                            .background(if (level <= speed) Color(0xFFFFC107) else Color.White.copy(alpha = .45f), RoundedCornerShape(2.dp))
+                                    )
+                                }
+                            }
+                            Column {
+                                Text("${speed}x  倍速", color = Color(0xFFFFC107), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, maxLines = 1)
+                                Text("上下滑动改变播放速度", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                            }
                         }
                     }
                 }
