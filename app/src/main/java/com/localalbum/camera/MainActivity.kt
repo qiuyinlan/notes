@@ -2422,6 +2422,7 @@ private fun VideoOrganizerScreen(
     if (viewerIndex != null) {
         VideoReviewScreen(
             videos = visibleVideos,
+            initialUri = visibleVideos.getOrNull(viewerIndex)?.uri,
             categories = categories,
             stagedCount = stagedCount,
             canUndo = canUndo,
@@ -2518,6 +2519,7 @@ private fun VideoOrganizerScreen(
 @Composable
 private fun VideoReviewScreen(
     videos: List<VideoItem>,
+    initialUri: Uri?,
     categories: List<Category>,
     stagedCount: Int,
     canUndo: Boolean,
@@ -2529,7 +2531,7 @@ private fun VideoReviewScreen(
     onMove: (VideoItem, Category) -> VideoMoveResult,
 ) {
     val context = LocalContext.current
-    var currentUri by remember { mutableStateOf(videos.firstOrNull()?.uri) }
+    var currentUri by remember(initialUri) { mutableStateOf(initialUri ?: videos.firstOrNull()?.uri) }
     var heldSpeed by remember { mutableStateOf<Int?>(null) }
     var playbackPosition by remember { mutableStateOf(0L) }
     var playbackDuration by remember { mutableStateOf(0L) }
@@ -2566,6 +2568,7 @@ private fun VideoReviewScreen(
     val preloadManagerBuilder = remember(context) { DefaultPreloadManager.Builder(context, targetPreloadStatusControl) }
     val preloadManager = remember(preloadManagerBuilder) { preloadManagerBuilder.build() }
     val player = remember(preloadManagerBuilder) { preloadManagerBuilder.buildExoPlayer() }
+    var renderedVideoUri by remember(player) { mutableStateOf<Uri?>(null) }
     val mediaItems = remember(videos) { videos.map { ExoMediaItem.fromUri(it.uri) } }
     val managedMediaItems = remember(preloadManager) { mutableMapOf<Uri, Pair<Int, ExoMediaItem>>() }
     LaunchedEffect(videos, currentIndex, mediaItems) {
@@ -2601,7 +2604,17 @@ private fun VideoReviewScreen(
         }
         isPlaying = player.playWhenReady && player.playbackState != androidx.media3.common.Player.STATE_ENDED
     }
+    DisposableEffect(player) {
+        val listener = object : androidx.media3.common.Player.Listener {
+            override fun onRenderedFirstFrame() {
+                renderedVideoUri = player.currentMediaItem?.localConfiguration?.uri
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
     LaunchedEffect(currentVideo?.uri) {
+        renderedVideoUri = null
         player.setPlaybackParameters(PlaybackParameters(1f))
         heldSpeed = null
         playbackPosition = 0L
@@ -2755,6 +2768,16 @@ private fun VideoReviewScreen(
                         }
                         },
                 )
+            if (renderedVideoUri != currentVideo.uri) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(top = 72.dp, bottom = 170.dp)
+                        .zIndex(2f),
+                ) {
+                    VideoPoster(currentVideo)
+                }
+            }
             Column(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues()).zIndex(3f)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White) }
