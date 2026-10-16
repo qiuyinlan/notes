@@ -166,7 +166,7 @@ private val Muted = Color(0xFF707A74)
 private data class Category(val name: String, val folderUri: String? = null)
 private data class ImportFolder(val name: String, val uri: Uri, val imageCount: Int)
 private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null, val dateMillis: Long = 0L, val sizeBytes: Long = 0L)
-private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long, val sizeBytes: Long = 0L)
+private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long, val sizeBytes: Long = 0L, val sourceKey: String? = null)
 private data class MediaStorage(
     val photoCount: Int = 0,
     val videoCount: Int = 0,
@@ -547,11 +547,20 @@ private fun AlbumCameraApp() {
         )
         AppScreen.VIDEOS -> VideoReviewScreen(
             videos = videos.filterNot { item -> videoTrash.any { it.uri == item.uri } },
+            categories = categories,
             stagedCount = videoTrash.size,
             onBack = { screen = AppScreen.HOME },
             onTrash = { screen = AppScreen.VIDEO_TRASH },
             onStageDelete = { video -> recordOrganized(1); videoTrash = (videoTrash + video).distinctBy { it.uri } },
             onKeep = { recordOrganized(1) },
+            onMove = { video, target ->
+                if (moveVideo(context, video, target)) {
+                    videos = videos.filterNot { it.uri == video.uri }
+                    videoCatalog = videoCatalog?.filterNot { it.uri == video.uri }
+                    recordOrganized(1)
+                    true
+                } else false
+            },
         )
         AppScreen.VIDEO_TRASH -> VideoTrashScreen(
             videos = videoTrash,
@@ -1756,11 +1765,13 @@ private fun VideoPoster(video: VideoItem) {
 @Composable
 private fun VideoReviewScreen(
     videos: List<VideoItem>,
+    categories: List<Category>,
     stagedCount: Int,
     onBack: () -> Unit,
     onTrash: () -> Unit,
     onStageDelete: (VideoItem) -> Unit,
     onKeep: () -> Unit,
+    onMove: (VideoItem, Category) -> Boolean,
 ) {
     val context = LocalContext.current
     var currentUri by remember { mutableStateOf(videos.firstOrNull()?.uri) }
@@ -1778,6 +1789,17 @@ private fun VideoReviewScreen(
     val currentIndex = videos.indexOfFirst { it.uri == currentUri }
     val currentVideo = videos.getOrNull(currentIndex)
     val player = remember { ExoPlayer.Builder(context).build() }
+    fun togglePlayback() {
+        if (player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
+            player.seekTo(0L)
+            player.play()
+        } else if (player.isPlaying) {
+            player.pause()
+        } else {
+            player.play()
+        }
+        isPlaying = player.isPlaying
+    }
     LaunchedEffect(currentVideo?.uri) {
         player.setPlaybackParameters(PlaybackParameters(1f))
         heldSpeed = null
@@ -1910,8 +1932,7 @@ private fun VideoReviewScreen(
                                     swipeJob?.cancel()
                                     swipeScope.launch { swipeOffset.animateTo(0f, tween(180)) }
                                 } else if (releasedChange != null) {
-                                    if (player.isPlaying) player.pause() else player.play()
-                                    isPlaying = player.isPlaying
+                                    togglePlayback()
                                 }
                             }
                         }
@@ -1923,6 +1944,7 @@ private fun VideoReviewScreen(
                     Column(Modifier.weight(1f)) {
                         Text("整理视频", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text("${currentIndex + 1} / ${videos.size}", color = Color.White.copy(alpha = .75f), style = MaterialTheme.typography.labelSmall)
+                        Text("上下滑动切换视频", color = Color.White.copy(alpha = .62f), style = MaterialTheme.typography.labelSmall)
                     }
                     IconButton(onClick = onTrash) {
                         Box {
@@ -1934,6 +1956,30 @@ private fun VideoReviewScreen(
                     }
                 }
                 Spacer(Modifier.weight(1f))
+                Surface(color = Color(0xFF111111).copy(alpha = .92f), modifier = Modifier.fillMaxWidth()) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(categories, key = { it.name }) { target ->
+                            TextButton(
+                                onClick = {
+                                    currentVideo?.let { video ->
+                                        if (onMove(video, target)) {
+                                            currentUri = videos.getOrNull(currentIndex + 1)?.uri
+                                                ?: videos.getOrNull(currentIndex - 1)?.uri
+                                        } else {
+                                            Toast.makeText(context, "视频移动失败，原视频已保留", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                            ) {
+                                Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = Color(0xFFB9E7C8), modifier = Modifier.size(16.dp))
+                                Text(" ${target.name}", color = Color.White, maxLines = 1)
+                            }
+                        }
+                    }
+                }
                 heldSpeed?.let { speed ->
                     Surface(color = Color.Black.copy(alpha = .72f), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.CenterHorizontally)) {
                         Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1973,7 +2019,7 @@ private fun VideoReviewScreen(
                         Text(formatDuration(playbackDuration), color = Color.White, style = MaterialTheme.typography.labelSmall)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { if (player.isPlaying) player.pause() else player.play(); isPlaying = player.isPlaying }) {
+                        IconButton(onClick = { togglePlayback() }) {
                             Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (isPlaying) "暂停视频" else "播放视频", tint = Color.White)
                         }
                         Button(onClick = {
@@ -2174,7 +2220,7 @@ private fun queryAllVideos(context: Context): List<VideoItem> {
     runCatching {
         context.contentResolver.query(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_ADDED, MediaStore.MediaColumns.SIZE),
+            arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_ADDED, MediaStore.MediaColumns.SIZE, MediaStore.Video.Media.RELATIVE_PATH),
             null, null, "${MediaStore.Video.Media.DATE_ADDED} DESC",
         )?.use { cursor ->
             while (cursor.moveToNext()) {
@@ -2184,6 +2230,7 @@ private fun queryAllVideos(context: Context): List<VideoItem> {
                     durationMillis = cursor.getLong(2),
                     dateMillis = cursor.getLong(3) * 1000L,
                     sizeBytes = if (cursor.isNull(4)) 0L else cursor.getLong(4),
+                    sourceKey = cursor.getString(5),
                 )
             }
         }
@@ -2260,6 +2307,44 @@ private fun movePhoto(context: Context, photo: PhotoItem, target: Category): Boo
     deletePhoto(context, photo)
     return true
 }
+
+private fun moveVideo(context: Context, video: VideoItem, target: Category): Boolean {
+    val targetKey = target.folderUri ?: "DCIM/${target.name}/"
+    if (video.sourceKey == targetKey) return true
+    val mimeType = context.contentResolver.getType(video.uri) ?: "video/mp4"
+    val targetUri = runCatching {
+        if (target.folderUri != null) {
+            DocumentsContract.createDocument(context.contentResolver, Uri.parse(target.folderUri), mimeType, video.name)
+        } else {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, video.name)
+                put(MediaStore.Video.Media.MIME_TYPE, mimeType)
+                put(MediaStore.Video.Media.RELATIVE_PATH, targetKey)
+            }
+            context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+        }
+    }.getOrNull() ?: return false
+    val copied = runCatching {
+        context.contentResolver.openInputStream(video.uri)!!.use { input ->
+            context.contentResolver.openOutputStream(targetUri)!!.use { output -> input.copyTo(output) }
+        }
+        true
+    }.getOrDefault(false)
+    if (!copied) {
+        runCatching { deleteVideoUri(context, targetUri) }
+        return false
+    }
+    if (!runCatching { deleteVideoUri(context, video.uri) }.getOrDefault(false)) {
+        runCatching { deleteVideoUri(context, targetUri) }
+        return false
+    }
+    return true
+}
+
+private fun deleteVideoUri(context: Context, uri: Uri): Boolean = runCatching {
+    if (DocumentsContract.isDocumentUri(context, uri)) DocumentsContract.deleteDocument(context.contentResolver, uri)
+    else context.contentResolver.delete(uri, null, null) > 0
+}.getOrDefault(false)
 
 private fun safeFolderName(value: String): String = value
     .trim()
