@@ -3,12 +3,16 @@ package com.qiuyinlan.suixinji
 import android.Manifest
 import android.app.DatePickerDialog
 import android.content.Context
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.provider.MediaStore
+import android.os.Environment
 import android.graphics.BitmapFactory
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
@@ -184,9 +188,17 @@ private data class NotesState(
 private object NotesStore {
     private const val PREF = "suixin_notes"
     private const val KEY = "state"
+    private const val BACKUP_NAME = "suixinji-notes-backup.json"
 
-    fun load(context: Context): NotesState = runCatching {
-        val root = JSONObject(context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getString(KEY, "{}") ?: "{}")
+    fun load(context: Context): NotesState {
+        val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        val local = prefs.getString(KEY, null)
+        val backup = if (local.isNullOrBlank()) readBackup(context) else null
+        return parse(local ?: backup ?: "{}")
+    }
+
+    private fun parse(raw: String): NotesState = runCatching {
+        val root = JSONObject(raw)
         NotesState(
             notes = root.optJSONArray("notes").toList { item ->
                 QuickNote(
@@ -211,7 +223,7 @@ private object NotesStore {
     }.getOrDefault(NotesState())
 
     fun save(context: Context, state: NotesState) {
-        val root = JSONObject().apply {
+        val raw = JSONObject().apply {
             put("notes", JSONArray().apply {
                 state.notes.forEach { note -> put(JSONObject().apply {
                     put("id", note.id); put("content", note.content); put("createdAt", note.createdAt); put("updatedAt", note.updatedAt)
@@ -223,8 +235,38 @@ private object NotesStore {
             put("categories", JSONArray().apply { state.categories.forEach { put(JSONObject().apply { put("id", it.id); put("name", it.name); put("parentId", it.parentId); put("path", it.path); put("color", it.color) }) } })
             put("diaries", JSONArray().apply { state.diaries.forEach { put(JSONObject().apply { put("id", it.id); put("title", it.title); put("markdown", it.markdown); put("date", it.date) }) } })
             put("letters", JSONArray().apply { state.letters.forEach { put(JSONObject().apply { put("id", it.id); put("title", it.title); put("content", it.content); put("deliverDate", it.deliverDate); put("shown", it.shown) }) } })
+        }.toString()
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString(KEY, raw).apply()
+        writeBackup(context, raw)
+    }
+
+    private fun backupUri(context: Context): android.net.Uri? = runCatching {
+        context.contentResolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Downloads._ID),
+            "${MediaStore.Downloads.DISPLAY_NAME}=?",
+            arrayOf(BACKUP_NAME),
+            "${MediaStore.Downloads.DATE_MODIFIED} DESC",
+        )?.use { cursor -> if (cursor.moveToFirst()) ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0)) else null }
+    }.getOrNull()
+
+    private fun readBackup(context: Context): String? = runCatching {
+        val uri = backupUri(context) ?: return@runCatching null
+        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+    }.getOrNull()
+
+    private fun writeBackup(context: Context, raw: String) {
+        runCatching {
+            val resolver = context.contentResolver
+            val uri = backupUri(context) ?: resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, BACKUP_NAME)
+                put(MediaStore.Downloads.MIME_TYPE, "application/json")
+                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOCUMENTS}/随心记")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }) ?: return
+            resolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use { it.write(raw) }
+            if (ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }.let { resolver.update(uri, it, null, null) } == 0) Unit
         }
-        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString(KEY, root.toString()).apply()
     }
 }
 
