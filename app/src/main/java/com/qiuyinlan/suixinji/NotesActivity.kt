@@ -34,9 +34,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -104,6 +106,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -503,24 +506,23 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
     val longText = note.content.length > 180 || note.content.count { it == '\n' } > 6
     Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(Modifier.padding(16.dp)) {
-            CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE)
+            CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, showEye = false)
             if (longText) Text(if (expanded) "点击收起 · 双击编辑" else "点击展开 · 双击编辑", color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall); note.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }; Text(" · ${moodLabel(note.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall); Spacer(Modifier.weight(1f)); IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
             val paths = note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }
             if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
-            if (note.comments.isNotEmpty()) CommentPreview(note.comments, onToggleComment, Modifier.padding(top = 10.dp))
         }
     }
 }
 
 @Composable
-private fun CommentPreview(comments: List<NoteComment>, onToggle: (Int) -> Unit, modifier: Modifier = Modifier) {
-    Column(modifier) { comments.forEachIndexed { index, comment -> Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth().clickable { onToggle(index) }.padding(vertical = 3.dp)) { Icon(if (comment.expanded) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "展开或隐藏评论", tint = NoteAccent, modifier = Modifier.size(17.dp)); Icon(Icons.Filled.ChatBubbleOutline, "评论", tint = NoteAccent, modifier = Modifier.size(16.dp).padding(start = 2.dp)); if (comment.expanded && comment.text.isNotBlank()) Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 7.dp)) { Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) } } } }
+private fun CommentPreview(comments: List<NoteComment>, onToggle: (Int) -> Unit, showEye: Boolean = true, modifier: Modifier = Modifier) {
+    Column(modifier) { comments.forEachIndexed { index, comment -> Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth().clickable(enabled = showEye) { onToggle(index) }.padding(vertical = 3.dp)) { if (showEye) Icon(if (comment.expanded) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "展开或隐藏评论", tint = NoteAccent, modifier = Modifier.size(17.dp)); Icon(Icons.Filled.ChatBubbleOutline, "评论", tint = NoteAccent, modifier = Modifier.size(16.dp).padding(start = 2.dp)); if ((!showEye || comment.expanded) && comment.text.isNotBlank()) Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 7.dp)) { Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) } } } }
 }
 
 @Composable
-private fun CommentedNotePreview(content: String, comments: List<NoteComment>, onToggle: (Int) -> Unit, maxLines: Int = Int.MAX_VALUE, modifier: Modifier = Modifier) {
-    if (comments.isEmpty()) Text(markdownInline(content), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+private fun CommentedNotePreview(content: String, comments: List<NoteComment>, onToggle: (Int) -> Unit, maxLines: Int = Int.MAX_VALUE, showEye: Boolean = true, modifier: Modifier = Modifier) {
+    if (comments.isEmpty()) Text(markdownInline(content), modifier = modifier, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
     else {
         val sorted = comments.withIndex().sortedBy { it.value.position.coerceIn(0, content.length) }
         Column(modifier) {
@@ -528,7 +530,7 @@ private fun CommentedNotePreview(content: String, comments: List<NoteComment>, o
             sorted.forEach { indexed ->
                 val position = indexed.value.position.coerceIn(cursor, content.length)
                 if (position > cursor) Text(markdownInline(content.substring(cursor, position)), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
-                CommentPreview(listOf(indexed.value), { onToggle(indexed.index) }, Modifier.padding(vertical = 2.dp))
+                CommentPreview(listOf(indexed.value), { onToggle(indexed.index) }, showEye = showEye, modifier = Modifier.padding(vertical = 2.dp))
                 cursor = position
             }
             if (cursor < content.length) Text(markdownInline(content.substring(cursor)), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
@@ -744,7 +746,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                             }
                             val paths = current.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }
                             if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
-                            if (current.comments.isNotEmpty()) CommentedNotePreview(current.content, current.comments, {}, modifier = Modifier.padding(top = 12.dp))
+                            if (current.comments.isNotEmpty()) CommentedNotePreview(current.content, current.comments, {}, showEye = false, modifier = Modifier.padding(top = 12.dp))
                         }
                     }
                 }
@@ -839,6 +841,8 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
                     ToolButton(Icons.Filled.PhotoLibrary, "图片", false) { imageLauncher.launch(arrayOf("image/*")) }
                 }
+                val inlineTags = NoteTagRegex.findAll(text.text).map { it.groupValues[1] }.distinct().toList()
+                if (inlineTags.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { inlineTags.forEach { Text("#$it", color = NoteTagColor, fontSize = 12.sp, fontWeight = FontWeight.Medium) } }
                 location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 6.dp)) }
                 Text("创建时间：${prettyTime(createdAt)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
                 if (imageUris.isNotEmpty()) {
@@ -848,12 +852,19 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                         }
                     }
                 }
-                OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp))
-                activeComment?.let { index ->
-                    OutlinedTextField(commentDraft, { commentDraft = it; comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = it, expanded = true) else comment } }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("评论 · 文字位置 ${comments.getOrNull(index)?.position ?: text.text.length}") }, trailingIcon = { IconButton(onClick = { activeComment = null }) { Icon(Icons.Filled.Close, "隐藏评论编辑") } })
-                }
+                OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp), colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White))
+                if (comments.isNotEmpty()) CommentedNotePreview(text.text, comments, { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } }, showEye = true, modifier = Modifier.fillMaxWidth().heightIn(max = 128.dp).padding(top = 8.dp).verticalScroll(rememberScrollState()))
             }
         }
+    }
+    activeComment?.let { index ->
+        CommentComposer(
+            draft = commentDraft,
+            position = comments.getOrNull(index)?.position ?: text.text.length,
+            onDraftChange = { value -> commentDraft = value; comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = value, expanded = true) else comment } },
+            onDismiss = { activeComment = null },
+            onSave = { comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = commentDraft.trim(), expanded = true) else comment }; activeComment = null },
+        )
     }
     if (showTimeDialog) {
         LaunchedEffect(Unit) {
@@ -886,6 +897,29 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         dismissButton = { TextButton(onClick = { showTagDialog = false }) { Text("取消") } },
     )
     previewUri?.let { uri -> ImagePreviewDialog(context, uri, onDismiss = { previewUri = null }) }
+}
+
+@Composable
+private fun CommentComposer(draft: String, position: Int, onDraftChange: (String) -> Unit, onDismiss: () -> Unit, onSave: () -> Unit) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) { focusRequester.requestFocus(); keyboardController?.show() }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)).clickable(onClick = onDismiss), contentAlignment = Alignment.BottomCenter) {
+            Surface(color = NotePaper, shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp), modifier = Modifier.fillMaxWidth().fillMaxHeight(0.52f).clickable(onClick = {})) {
+                Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("添加评论", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.weight(1f))
+                        IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, "关闭评论") }
+                    }
+                    Text("插入位置：正文第 $position 个字符之后", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 10.dp))
+                    OutlinedTextField(draft, onDraftChange, Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester), placeholder = { Text("写下你的想法…") }, maxLines = 8, colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White))
+                    Button(onClick = onSave, enabled = draft.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) { Icon(Icons.AutoMirrored.Filled.Send, null); Spacer(Modifier.width(6.dp)); Text("保存评论") }
+                }
+            }
+        }
+    }
 }
 
 private fun insertTagAtCursor(tag: String, value: TextFieldValue, onChange: (TextFieldValue) -> Unit) {
@@ -938,8 +972,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             ) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
                     Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
-                    MarkdownPreview(current.content, Modifier.fillMaxWidth().padding(top = 16.dp))
-                    if (current.comments.isNotEmpty()) CommentedNotePreview(current.content, current.comments, {}, modifier = Modifier.padding(top = 18.dp))
+                    CommentedNotePreview(current.content, current.comments, {}, showEye = false, modifier = Modifier.fillMaxWidth().padding(top = 16.dp))
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -993,7 +1026,7 @@ private fun DiaryPage(state: NotesState, padding: PaddingValues, onEdit: (Diary)
             }
         }
         item { Text("随记评论预览", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp)) }
-        items(state.notes.filter { it.comments.isNotEmpty() }, key = { "comments-${it.id}" }) { note -> Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(note.content, maxLines = 2, overflow = TextOverflow.Ellipsis); CommentPreview(note.comments, {}, Modifier.padding(top = 6.dp)) } } }
+        items(state.notes.filter { it.comments.isNotEmpty() }, key = { "comments-${it.id}" }) { note -> Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { CommentedNotePreview(note.content, note.comments, {}, maxLines = 2, showEye = false, modifier = Modifier.padding(top = 6.dp)) } } }
     }
     if (showMonthPicker) AlertDialog(onDismissRequest = { showMonthPicker = false }, title = { Text("按月份筛选") }, text = { Column { TextButton(onClick = { monthFilter = "全部月份"; showMonthPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("全部月份") }; months.forEach { month -> TextButton(onClick = { monthFilter = month; showMonthPicker = false }, modifier = Modifier.fillMaxWidth()) { Text(month) } } } }, confirmButton = { TextButton(onClick = { showMonthPicker = false }) { Text("取消") } })
     if (showCategoryPicker) AlertDialog(onDismissRequest = { showCategoryPicker = false }, title = { Text("按分类筛选") }, text = { Column { TextButton(onClick = { categoryFilter = "全部分类"; showCategoryPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("全部分类") }; categories.forEach { category -> TextButton(onClick = { categoryFilter = category; showCategoryPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("#$category") } } } }, confirmButton = { TextButton(onClick = { showCategoryPicker = false }) { Text("取消") } })
@@ -1254,7 +1287,7 @@ private fun markdownInline(value: String) = buildAnnotatedString {
             match.groupValues[3].isNotEmpty() -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(match.groupValues[3]) }
             match.groupValues[4].isNotEmpty() -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)) { append(match.groupValues[4]) }
             match.groupValues[5].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[5]) }
-            match.value.startsWith("#") -> withStyle(SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium)) { append(match.value) }
+            match.value.startsWith("#") -> withStyle(SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium, fontSize = 12.sp)) { append(match.value) }
         }
         cursor = match.range.last + 1
     }
