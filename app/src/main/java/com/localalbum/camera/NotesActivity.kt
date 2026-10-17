@@ -120,6 +120,12 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.Image
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -873,7 +879,7 @@ private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit:
                     Text("当前范围第 ${index + 1} / ${diaries.size} 篇", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
                     Text(current.title.ifBlank { "无标题日记" }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp))
                     Text(current.date, color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
-                    Text(current.markdown, modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 20.dp), style = MaterialTheme.typography.bodyLarge)
+                    MarkdownPreview(current.markdown, Modifier.fillMaxWidth().weight(1f).padding(top = 20.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(onClick = { if (index > 0) index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null); Spacer(Modifier.width(4.dp)); Text("上一篇") }
                         TextButton(onClick = { onEdit(current) }) { Icon(Icons.Filled.Edit, null); Spacer(Modifier.width(4.dp)); Text("继续编辑") }
@@ -895,7 +901,96 @@ private fun LetterPage(state: NotesState, due: List<FutureLetter>, padding: Padd
 private fun QuickNoteEditorPreview() = Unit
 
 @Composable
-private fun DiaryEditor(diary: Diary, onDismiss: () -> Unit, onSave: (Diary) -> Unit) { var title by remember { mutableStateOf(diary.title) }; var text by remember { mutableStateOf(diary.markdown) }; Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) { Surface(Modifier.fillMaxSize(), color = NotePaper) { Column(Modifier.padding(18.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text("编辑日记", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = { onSave(diary.copy(title = title, markdown = text)) }) { Text("保存") } }; OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题") }); Spacer(Modifier.height(10.dp)); OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("Markdown") }, maxLines = 30) } } } }
+private fun DiaryEditor(diary: Diary, onDismiss: () -> Unit, onSave: (Diary) -> Unit) {
+    var title by remember { mutableStateOf(diary.title) }
+    var text by remember { mutableStateOf(diary.markdown) }
+    var preview by rememberSaveable(diary.id) { mutableStateOf(false) }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = NotePaper) {
+            Column(Modifier.padding(18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("编辑日记", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { preview = !preview }) { Text(if (preview) "编辑" else "预览") }
+                    TextButton(onClick = { onSave(diary.copy(title = title, markdown = text)) }) { Text("保存") }
+                }
+                OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题") })
+                Spacer(Modifier.height(10.dp))
+                if (preview) {
+                    MarkdownPreview(text, Modifier.fillMaxWidth().weight(1f))
+                } else {
+                    OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("Markdown") }, maxLines = 30)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
+    val lines = remember(markdown) { markdown.replace("\r\n", "\n").split('\n') }
+    var inCodeBlock = false
+    Column(modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        if (markdown.isBlank()) {
+            Text("暂无内容", color = NoteMuted)
+        }
+        lines.forEach { rawLine ->
+            val line = rawLine.trimEnd()
+            if (line.trimStart().startsWith("```")) {
+                inCodeBlock = !inCodeBlock
+                if (inCodeBlock) Spacer(Modifier.height(4.dp))
+            } else if (inCodeBlock) {
+                Surface(color = NoteSoft, shape = RoundedCornerShape(4.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text(line, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontFamily = FontFamily.Monospace, color = NoteInk)
+                }
+            } else {
+                val heading = Regex("^(#{1,6})\\s+(.+)$").find(line)
+                val bullet = Regex("^\\s*[-*+]\\s+(.+)$").find(line)
+                val numbered = Regex("^\\s*(\\d+)[.)]\\s+(.+)$").find(line)
+                when {
+                    line.isBlank() -> Spacer(Modifier.height(2.dp))
+                    line.matches(Regex("^\\s*([-*_])(?:\\s*\\1){2,}\\s*$")) -> Divider(color = NoteSoft)
+                    heading != null -> {
+                        val level = heading.groupValues[1].length
+                        val style = when (level) {
+                            1 -> MaterialTheme.typography.headlineMedium
+                            2 -> MaterialTheme.typography.headlineSmall
+                            3 -> MaterialTheme.typography.titleLarge
+                            else -> MaterialTheme.typography.titleMedium
+                        }
+                        Text(markdownInline(heading.groupValues[2]), style = style, fontWeight = FontWeight.Bold, color = NoteInk)
+                    }
+                    bullet != null -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                        Text("•", modifier = Modifier.padding(end = 8.dp), fontWeight = FontWeight.Bold, color = NoteAccent)
+                        Text(markdownInline(bullet.groupValues[1]), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, color = NoteInk)
+                    }
+                    numbered != null -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                        Text("${numbered.groupValues[1]}. ", modifier = Modifier.padding(end = 4.dp), fontWeight = FontWeight.Bold, color = NoteAccent)
+                        Text(markdownInline(numbered.groupValues[2]), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, color = NoteInk)
+                    }
+                    line.trimStart().startsWith("> ") -> Text(markdownInline(line.trimStart().removePrefix("> ")), modifier = Modifier.fillMaxWidth().padding(start = 12.dp), style = MaterialTheme.typography.bodyLarge.copy(fontStyle = FontStyle.Italic), color = NoteMuted)
+                    else -> Text(markdownInline(line), modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge, color = NoteInk)
+                }
+            }
+        }
+    }
+}
+
+private fun markdownInline(value: String) = buildAnnotatedString {
+    val pattern = Regex("""(\*\*|__)(.+?)\1|(?<!\*)\*([^*]+)\*|`([^`]+)`|\[([^]]+)]\([^)]+\)""")
+    var cursor = 0
+    pattern.findAll(value).forEach { match ->
+        append(value.substring(cursor, match.range.first))
+        when {
+            match.groupValues[1].isNotEmpty() -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(match.groupValues[2]) }
+            match.groupValues[3].isNotEmpty() -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(match.groupValues[3]) }
+            match.groupValues[4].isNotEmpty() -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)) { append(match.groupValues[4]) }
+            match.groupValues[5].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[5]) }
+        }
+        cursor = match.range.last + 1
+    }
+    append(value.substring(cursor))
+}
 @Composable
 private fun LetterEditor(letter: FutureLetter, onDismiss: () -> Unit, onSave: (FutureLetter) -> Unit) { var title by remember { mutableStateOf(letter.title) }; var text by remember { mutableStateOf(letter.content) }; var date by remember { mutableStateOf(letter.deliverDate) }; Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) { Surface(Modifier.fillMaxSize(), color = NotePaper) { Column(Modifier.padding(18.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text("写给未来的自己", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = { if (date.isNotBlank()) onSave(letter.copy(title = title, content = text, deliverDate = date)) }) { Text("保存") } }; OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题（可选）") }); OutlinedTextField(date, { date = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("展示日期 YYYY-MM-DD") }); Spacer(Modifier.height(10.dp)); OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("正文") }, maxLines = 30) } } } }
 
