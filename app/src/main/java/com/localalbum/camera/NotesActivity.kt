@@ -193,8 +193,17 @@ private object NotesStore {
     fun load(context: Context): NotesState {
         val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         val local = prefs.getString(KEY, null)
-        val backup = if (local.isNullOrBlank()) readBackup(context) else null
-        return parse(local ?: backup ?: "{}")
+        if (!local.isNullOrBlank()) {
+            // Migrate data created by older builds before a possible uninstall.
+            if (backupUri(context) == null) writeBackup(context, local)
+            return parse(local)
+        }
+        val backup = readBackup(context)
+        if (!backup.isNullOrBlank()) {
+            prefs.edit().putString(KEY, backup).apply()
+            return parse(backup)
+        }
+        return NotesState()
     }
 
     private fun parse(raw: String): NotesState = runCatching {
