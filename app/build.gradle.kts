@@ -13,7 +13,7 @@ val signingProperties = Properties().apply {
 val releaseKeystorePath = signingProperties.getProperty("storeFile")
 
 android {
-    namespace = "com.localalbum.camera"
+    namespace = "com.qiuyinlan.suixinji"
     compileSdk = 35
 
     compileOptions {
@@ -22,11 +22,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.localalbum.camera"
+        applicationId = "com.qiuyinlan.suixinji"
         minSdk = 29
         targetSdk = 35
-        versionCode = 28
-        versionName = "0.11.11"
+        versionCode = 29
+        versionName = "0.1.1"
     }
 
     signingConfigs {

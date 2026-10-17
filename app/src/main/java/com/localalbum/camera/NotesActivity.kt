@@ -1,4 +1,4 @@
-package com.localalbum.camera
+package com.qiuyinlan.suixinji
 
 import android.content.Context
 import android.os.Bundle
