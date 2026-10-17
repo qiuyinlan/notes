@@ -305,12 +305,13 @@ private fun DrawerItem(label: String, icon: androidx.compose.ui.graphics.vector.
 
 @Composable
 private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit) {
-    val draft = remember { QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), emptyList()) }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Text("随心记", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp, bottom = 10.dp))
-            OutlinedTextField(value = "", onValueChange = {}, readOnly = true, modifier = Modifier.fillMaxWidth().height(112.dp).clickable { onCapture(draft) }, placeholder = { Text("点击开始记录…") }, shape = RoundedCornerShape(16.dp), trailingIcon = { Icon(Icons.AutoMirrored.Filled.Send, "开始记录", tint = NotePrimary) })
+            Box(Modifier.fillMaxWidth().height(112.dp).clickable { val now = System.currentTimeMillis(); onCapture(QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList())) }) {
+                OutlinedTextField(value = "", onValueChange = {}, enabled = false, modifier = Modifier.fillMaxSize(), placeholder = { Text("点击开始记录…") }, shape = RoundedCornerShape(16.dp), trailingIcon = { Icon(Icons.AutoMirrored.Filled.Send, "开始记录", tint = NotePrimary) })
+            }
         }
         item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); SummaryCard("今日的信", due.size, Icons.Filled.MailOutline, onLetters) } }
         item { Row(verticalAlignment = Alignment.CenterVertically) { Text("时间线", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("日记") } } }
