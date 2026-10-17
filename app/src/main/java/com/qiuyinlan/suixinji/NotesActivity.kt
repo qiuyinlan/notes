@@ -82,6 +82,8 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -414,7 +416,7 @@ private fun NotesApp() {
                     }
                     update(importState.copy(notes = (state.notes + importedNotes).distinctBy { it.id }.sortedByDescending { it.createdAt }))
                 })
-                NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
+                NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onBack = { page = NotesPage.MY }, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
         }
     }
@@ -501,7 +503,7 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
     val longText = note.content.length > 180 || note.content.count { it == '\n' } > 6
     Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(Modifier.padding(16.dp)) {
-            Text(markdownInline(note.content), maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)
+            CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE)
             if (longText) Text(if (expanded) "点击收起 · 双击编辑" else "点击展开 · 双击编辑", color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall); note.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }; Text(" · ${moodLabel(note.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall); Spacer(Modifier.weight(1f)); IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
             val paths = note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }
@@ -513,7 +515,25 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
 
 @Composable
 private fun CommentPreview(comments: List<NoteComment>, onToggle: (Int) -> Unit, modifier: Modifier = Modifier) {
-    Column(modifier) { comments.forEachIndexed { index, comment -> Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth().clickable { onToggle(index) }.padding(vertical = 3.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "评论", tint = NoteAccent, modifier = Modifier.size(16.dp)); if (comment.expanded && comment.text.isNotBlank()) Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp, modifier = Modifier.padding(start = 7.dp)) } } }
+    Column(modifier) { comments.forEachIndexed { index, comment -> Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth().clickable { onToggle(index) }.padding(vertical = 3.dp)) { Icon(if (comment.expanded) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "展开或隐藏评论", tint = NoteAccent, modifier = Modifier.size(17.dp)); Icon(Icons.Filled.ChatBubbleOutline, "评论", tint = NoteAccent, modifier = Modifier.size(16.dp).padding(start = 2.dp)); if (comment.expanded && comment.text.isNotBlank()) Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 7.dp)) { Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) } } } }
+}
+
+@Composable
+private fun CommentedNotePreview(content: String, comments: List<NoteComment>, onToggle: (Int) -> Unit, maxLines: Int = Int.MAX_VALUE, modifier: Modifier = Modifier) {
+    if (comments.isEmpty()) Text(markdownInline(content), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+    else {
+        val sorted = comments.withIndex().sortedBy { it.value.position.coerceIn(0, content.length) }
+        Column(modifier) {
+            var cursor = 0
+            sorted.forEach { indexed ->
+                val position = indexed.value.position.coerceIn(cursor, content.length)
+                if (position > cursor) Text(markdownInline(content.substring(cursor, position)), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+                CommentPreview(listOf(indexed.value), { onToggle(indexed.index) }, Modifier.padding(vertical = 2.dp))
+                cursor = position
+            }
+            if (cursor < content.length) Text(markdownInline(content.substring(cursor)), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -724,7 +744,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                             }
                             val paths = current.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }
                             if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
-                            if (current.comments.isNotEmpty()) CommentPreview(current.comments, {}, Modifier.padding(top = 12.dp))
+                            if (current.comments.isNotEmpty()) CommentedNotePreview(current.content, current.comments, {}, modifier = Modifier.padding(top = 12.dp))
                         }
                     }
                 }
@@ -813,6 +833,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } } else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
                     ToolButton(Icons.Filled.Label, "标签", false) { showTagDialog = true; tagInput = "" }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { val cursor = text.selection.start; text = text.copy(text = text.text.substring(0, cursor) + "#" + text.text.substring(cursor), selection = TextRange(cursor + 1)) }.padding(horizontal = 5.dp)) { Text("#", color = NotePrimary, fontSize = 23.sp, fontWeight = FontWeight.Bold); Text("快捷标签", color = NoteMuted, style = MaterialTheme.typography.labelSmall) }
                     ToolButton(Icons.Filled.CalendarMonth, "日期", false) { showTimeDialog = true }
                     ToolButton(moodIcon(mood), moodLabel(mood), mood == "HAPPY") { mood = when (mood) { "HAPPY" -> "NORMAL"; "NORMAL" -> "SAD"; else -> "HAPPY" } }
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
@@ -918,7 +939,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
                     Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
                     MarkdownPreview(current.content, Modifier.fillMaxWidth().padding(top = 16.dp))
-                    if (current.comments.isNotEmpty()) CommentPreview(current.comments, {}, Modifier.padding(top = 18.dp))
+                    if (current.comments.isNotEmpty()) CommentedNotePreview(current.content, current.comments, {}, modifier = Modifier.padding(top = 18.dp))
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1137,8 +1158,11 @@ private fun plainExportText(value: String): String = value
 private fun safeExportName(value: String): String = value.replace(Regex("[\\\\/:*?\"<>|\\r\\n]+"), "_").trim().take(48).ifBlank { "未命名" }
 
 @Composable
-private fun LetterPage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onEdit: (FutureLetter) -> Unit, onCreate: () -> Unit, onUpdate: (NotesState) -> Unit) {
-    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column { Text("未来的信", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("到日期后打开 App 查看", color = NoteMuted) }; Spacer(Modifier.weight(1f)); Button(onClick = onCreate) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(4.dp)); Text("写信") } }; if (due.isNotEmpty()) { Text("今天给你的信", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp)); due.forEach { letter -> Card(Modifier.fillMaxWidth().padding(top = 10.dp).clickable { onUpdate(state.copy(letters = state.letters.map { if (it.id == letter.id) it.copy(shown = true) else it })) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(16.dp)) { Text(letter.title.ifBlank { "给未来的自己" }, fontWeight = FontWeight.Bold); Text(letter.content, Modifier.padding(top = 8.dp), maxLines = 4, overflow = TextOverflow.Ellipsis) } } } }; Text("全部信件", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 20.dp)); LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 12.dp)) { items(state.letters, key = { it.id }) { letter -> Card(Modifier.fillMaxWidth().clickable { onEdit(letter) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MailOutline, null, tint = NotePrimary); Spacer(Modifier.width(10.dp)); Column { Text(letter.title.ifBlank { "给未来的自己" }, fontWeight = FontWeight.Bold); Text("${letter.deliverDate}${if (letter.shown) " · 已展示" else ""}", color = NoteMuted, style = MaterialTheme.typography.labelSmall) } } } } } }
+private fun LetterPage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onBack: () -> Unit, onEdit: (FutureLetter) -> Unit, onCreate: () -> Unit, onUpdate: (NotesState) -> Unit) {
+    var dragDistance by remember { mutableStateOf(0f) }
+    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp).pointerInput(Unit) {
+        detectHorizontalDragGestures(onHorizontalDrag = { _, amount -> dragDistance += amount }, onDragEnd = { if (dragDistance > 80f) onBack(); dragDistance = 0f }, onDragCancel = { dragDistance = 0f })
+    }) { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column { Text("未来的信", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("到日期后打开 App 查看", color = NoteMuted) }; Spacer(Modifier.weight(1f)); Button(onClick = onCreate) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(4.dp)); Text("写信") } }; if (due.isNotEmpty()) { Text("今天给你的信", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp)); due.forEach { letter -> Card(Modifier.fillMaxWidth().padding(top = 10.dp).clickable { onUpdate(state.copy(letters = state.letters.map { if (it.id == letter.id) it.copy(shown = true) else it })) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(16.dp)) { Text(letter.title.ifBlank { "给未来的自己" }, fontWeight = FontWeight.Bold); Text(letter.content, Modifier.padding(top = 8.dp), maxLines = 4, overflow = TextOverflow.Ellipsis) } } } }; Text("全部信件", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 20.dp)); LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 12.dp)) { items(state.letters, key = { it.id }) { letter -> Card(Modifier.fillMaxWidth().clickable { onEdit(letter) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MailOutline, null, tint = NotePrimary); Spacer(Modifier.width(10.dp)); Column { Text(letter.title.ifBlank { "给未来的自己" }, fontWeight = FontWeight.Bold); Text("${letter.deliverDate}${if (letter.shown) " · 已展示" else ""}", color = NoteMuted, style = MaterialTheme.typography.labelSmall) } } } } } }
 }
 
 @Composable
