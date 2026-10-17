@@ -97,6 +97,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -402,12 +403,19 @@ private fun NotesApp() {
 
 @Composable
 private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
+    val navColors = NavigationBarItemDefaults.colors(
+        selectedIconColor = NotePrimary,
+        selectedTextColor = NotePrimary,
+        indicatorColor = NoteSoft,
+        unselectedIconColor = NoteMuted,
+        unselectedTextColor = NoteMuted,
+    )
     NavigationBar(containerColor = Color.White) {
-        NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页") }, label = { Text("首页") })
-        NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理") }, label = { Text("整理") })
-        NavigationBarItem(page == NotesPage.DIARIES, { onSelect(NotesPage.DIARIES) }, icon = { Icon(Icons.Filled.Book, "日记") }, label = { Text("日记") })
-        NavigationBarItem(page == NotesPage.TAGS, { onSelect(NotesPage.TAGS) }, icon = { Icon(Icons.Filled.Label, "标签") }, label = { Text("标签") })
-        NavigationBarItem(page == NotesPage.MY || page == NotesPage.LETTERS, { onSelect(NotesPage.MY) }, icon = { Icon(Icons.Filled.Person, "我的") }, label = { Text("我的") })
+        NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页") }, label = { Text("首页") }, colors = navColors)
+        NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理") }, label = { Text("整理") }, colors = navColors)
+        NavigationBarItem(page == NotesPage.DIARIES, { onSelect(NotesPage.DIARIES) }, icon = { Icon(Icons.Filled.Book, "日记") }, label = { Text("日记") }, colors = navColors)
+        NavigationBarItem(page == NotesPage.TAGS, { onSelect(NotesPage.TAGS) }, icon = { Icon(Icons.Filled.Label, "标签") }, label = { Text("标签") }, colors = navColors)
+        NavigationBarItem(page == NotesPage.MY || page == NotesPage.LETTERS, { onSelect(NotesPage.MY) }, icon = { Icon(Icons.Filled.Person, "我的") }, label = { Text("我的") }, colors = navColors)
     }
 }
 
@@ -656,10 +664,9 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
             }
             if (mode == "MONTH") OutlinedButton(onClick = { showMonthPicker = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text(monthFilter) }
             if (mode == "MONTH" || mode == "RANDOM") OutlinedTextField(batchInput, { value -> batchInput = value.filter { it.isDigit() }.take(3) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("本轮整理数量（1-500）") })
-            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(noteScroll), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (current == null) EmptyHint("随记箱为空，所有记录都整理好了") else {
-                    Text("${index + 1} / ${batch.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
-                    NoteTimelineCard(current, state.categories, onEdit, {}, modifier = Modifier.pointerInput(current.id) {
+            Column(
+                Modifier.fillMaxWidth().weight(1f).verticalScroll(noteScroll).pointerInput(current?.id) {
+                    if (current != null) {
                         var dragDistance = 0f
                         detectHorizontalDragGestures(
                             onHorizontalDrag = { _, amount -> dragDistance += amount },
@@ -669,15 +676,37 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                             },
                             onDragCancel = { dragDistance = 0f },
                         )
-                    })
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        IconButton(onClick = { lastWasSkip = true; undoState = null; index++ }) { Icon(Icons.Filled.SkipNext, "跳过") }
-                        IconButton(onClick = { selected = current }) { Icon(Icons.Filled.Label, "归类") }
-                        IconButton(onClick = { undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost((batch.size - 2).coerceAtLeast(0)) }) { Icon(Icons.Filled.DeleteOutline, "删除") }
-                        IconButton(onClick = { when { undoState != null -> { onUpdate(undoState!!); index = (index - 1).coerceAtLeast(0); undoState = null }; lastWasSkip -> { index = (index - 1).coerceAtLeast(0); lastWasSkip = false } } }, enabled = undoState != null || lastWasSkip) { Icon(Icons.Filled.Undo, "撤销") }
+                    }
+                },
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (current == null) {
+                    EmptyHint("随记箱为空，所有记录都整理好了")
+                } else {
+                    Text("${index + 1} / ${batch.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
+                    SelectionContainer {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp)) {
+                            Text(current.content, style = MaterialTheme.typography.bodyLarge, color = NoteInk)
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 18.dp)) {
+                                Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                current.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                Text(" · ${moodLabel(current.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                            }
+                            val paths = current.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }
+                            if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
+                            if (current.comments.isNotEmpty()) CommentPreview(current.comments, {}, Modifier.padding(top = 12.dp))
+                        }
                     }
                 }
-                Text("跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
+                Text("左右滑动切换记录 · 跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
+            }
+            Surface(color = Color.White, shadowElevation = 6.dp, modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(enabled = current != null, onClick = { if (current != null) { lastWasSkip = true; undoState = null; index++ } }) { Icon(Icons.Filled.SkipNext, "跳过") }
+                    IconButton(enabled = current != null, onClick = { if (current != null) selected = current }) { Icon(Icons.Filled.Label, "归类") }
+                    IconButton(enabled = current != null, onClick = { if (current != null) { undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost((batch.size - 2).coerceAtLeast(0)) } }) { Icon(Icons.Filled.DeleteOutline, "删除") }
+                    IconButton(onClick = { when { undoState != null -> { onUpdate(undoState!!); index = (index - 1).coerceAtLeast(0); undoState = null }; lastWasSkip -> { index = (index - 1).coerceAtLeast(0); lastWasSkip = false } } }, enabled = undoState != null || lastWasSkip) { Icon(Icons.Filled.Undo, "撤销") }
+                }
             }
         }
     }
