@@ -266,7 +266,7 @@ private fun NotesApp() {
             }
         }
     }
-    editorNote?.let { note -> QuickNoteEditor(note, onDismiss = { editorNote = null }, onSave = { saveNote(it); editorNote = null }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
+    editorNote?.let { note -> QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null }, onSave = { saveNote(it); editorNote = null }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
     diaryEditor?.let { diary -> DiaryEditor(diary, onDismiss = { diaryEditor = null }, onSave = { value -> update(state.copy(diaries = listOf(value) + state.diaries.filterNot { it.id == value.id })); diaryEditor = null }) }
     letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null }) }
 }
@@ -394,7 +394,7 @@ private fun CategoryPicker(categories: List<NoteCategory>, onDismiss: () -> Unit
 }
 
 @Composable
-private fun QuickNoteEditor(note: QuickNote, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onDelete: () -> Unit) {
+private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onDelete: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var text by remember { mutableStateOf(TextFieldValue(note.content)) }
     var location by remember { mutableStateOf(note.location) }
@@ -406,6 +406,8 @@ private fun QuickNoteEditor(note: QuickNote, onDismiss: () -> Unit, onSave: (Qui
     var showTimeDialog by remember { mutableStateOf(false) }
     var timeInput by remember { mutableStateOf(editTime(note.createdAt)) }
     var timeError by remember { mutableStateOf(false) }
+    var showTagDialog by remember { mutableStateOf(false) }
+    var tagInput by remember { mutableStateOf("") }
     val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true || result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) location = getLastLocationLabel(context) ?: "位置已授权"
@@ -422,7 +424,7 @@ private fun QuickNoteEditor(note: QuickNote, onDismiss: () -> Unit, onSave: (Qui
                 }
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) location = getLastLocationLabel(context) ?: "位置已授权" else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
-                    ToolButton(Icons.Filled.Label, "标签", false) { val insertion = if (text.text.endsWith(" ") || text.text.isEmpty()) "#" else " #"; val next = text.text.substring(0, text.selection.start) + insertion + text.text.substring(text.selection.start); text = TextFieldValue(next, TextRange(text.selection.start + insertion.length)) }
+                    ToolButton(Icons.Filled.Label, "标签", false) { showTagDialog = true; tagInput = "" }
                     ToolButton(Icons.Filled.CalendarMonth, "日期", false) { showTimeDialog = true }
                     ToolButton(moodIcon(mood), moodLabel(mood), mood == "HAPPY") { mood = when (mood) { "HAPPY" -> "NORMAL"; "NORMAL" -> "SAD"; else -> "HAPPY" } }
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
@@ -437,6 +439,28 @@ private fun QuickNoteEditor(note: QuickNote, onDismiss: () -> Unit, onSave: (Qui
         }
     }
     if (showTimeDialog) AlertDialog(onDismissRequest = { showTimeDialog = false }, title = { Text("修改创建时间") }, text = { Column { OutlinedTextField(timeInput, { timeInput = it; timeError = false }, label = { Text("YYYY-MM-DD HH:mm") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii), isError = timeError); if (timeError) Text("时间格式不正确", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) } }, confirmButton = { TextButton(onClick = { val parsed = parseEditTime(timeInput); if (parsed == null) timeError = true else { createdAt = parsed; showTimeDialog = false } }) { Text("确定") } }, dismissButton = { TextButton(onClick = { showTimeDialog = false }) { Text("取消") } })
+    if (showTagDialog) AlertDialog(
+        onDismissRequest = { showTagDialog = false },
+        title = { Text("添加标签") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(tagInput, { tagInput = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("新建标签或路径") }, placeholder = { Text("例如：生活/阅读") })
+                if (categories.isNotEmpty()) {
+                    Text("已有标签", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+                    categories.take(8).forEach { category -> TextButton(onClick = { insertTagAtCursor(category.path, text) { text = it }; showTagDialog = false }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Label, null); Spacer(Modifier.width(6.dp)); Text(category.path) } }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { val value = tagInput.trim().trimStart('#'); if (value.isNotBlank() && value.split('/').all { it.isNotBlank() }) { insertTagAtCursor(value, text) { text = it }; showTagDialog = false } }) { Text("新建并插入") } },
+        dismissButton = { TextButton(onClick = { showTagDialog = false }) { Text("取消") } },
+    )
+}
+
+private fun insertTagAtCursor(tag: String, value: TextFieldValue, onChange: (TextFieldValue) -> Unit) {
+    val insertion = "#${tag.trimStart('#')}"
+    val start = value.selection.start.coerceIn(0, value.text.length)
+    val next = value.text.substring(0, start) + insertion + value.text.substring(start)
+    onChange(TextFieldValue(next, TextRange(start + insertion.length)))
 }
 
 @Composable
