@@ -449,7 +449,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 Icon(Icons.Filled.Folder, null); Spacer(Modifier.width(6.dp)); Text(if (photoUris.isEmpty()) "导入手机照片文件夹" else "重新选择文件夹")
             }
             if (photoUris.isEmpty()) EmptyHint("选择一个手机文件夹后，这里会显示其中的照片")
-            else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(photoUris, key = { it.toString() }) { uri -> FolderPhotoThumb(context, uri) }
             }
         } else {
@@ -526,13 +526,16 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     if (showTimeDialog) {
         LaunchedEffect(Unit) {
             val calendar = Calendar.getInstance().apply { timeInMillis = createdAt }
-            DatePickerDialog(context, { _, year, month, day ->
+                val picker = DatePickerDialog(context, { _, year, month, day ->
                 createdAt = Calendar.getInstance().apply {
                     set(year, month, day, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), 0)
                     set(Calendar.MILLISECOND, 0)
                 }.timeInMillis
                 showTimeDialog = false
-            }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show()
+                }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH))
+                picker.setOnCancelListener { showTimeDialog = false }
+                picker.setOnDismissListener { showTimeDialog = false }
+                picker.show()
         }
     }
     if (showTagDialog) AlertDialog(
