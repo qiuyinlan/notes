@@ -136,6 +136,14 @@ private val NoteAccent = Color(0xFFC68E6B)
 private val NotePaper = Color(0xFFF4E8DA)
 private val NoteSoft = Color(0xFFEAD9C7)
 private val NoteMuted = Color(0xFF8A786B)
+private val TagPalette = listOf(
+    0xFFE8D5C4.toInt(), 0xFFD8E2DC.toInt(), 0xFFF6E7CB.toInt(), 0xFFD9E4F5.toInt(),
+    0xFFE6D5E8.toInt(), 0xFFF2D0A9.toInt(), 0xFFD5E8D4.toInt(), 0xFFF4CCCC.toInt(),
+)
+private fun tagColor(category: NoteCategory): Color {
+    val stored = category.color.takeIf { it != 0L }?.toInt()
+    return Color(stored ?: TagPalette[Math.floorMod(category.id.hashCode(), TagPalette.size)])
+}
 
 private data class NoteComment(val position: Int, val text: String, val expanded: Boolean = true)
 private data class QuickNote(
@@ -149,7 +157,7 @@ private data class QuickNote(
     val mood: String = "NORMAL",
     val comments: List<NoteComment> = emptyList(),
 )
-private data class NoteCategory(val id: String, val name: String, val parentId: String?, val path: String)
+private data class NoteCategory(val id: String, val name: String, val parentId: String?, val path: String, val color: Long = 0L)
 private data class Diary(val id: String, val title: String, val markdown: String, val date: String)
 private data class FutureLetter(val id: String, val title: String, val content: String, val deliverDate: String, val shown: Boolean = false)
 private data class NotesState(
@@ -181,7 +189,7 @@ private object NotesStore {
                     },
                 )
             },
-            categories = root.optJSONArray("categories").toList { item -> NoteCategory(item.optString("id"), item.optString("name"), item.optNullableString("parentId"), item.optString("path")) },
+            categories = root.optJSONArray("categories").toList { item -> NoteCategory(item.optString("id"), item.optString("name"), item.optNullableString("parentId"), item.optString("path"), item.optLong("color", 0L)) },
             diaries = root.optJSONArray("diaries").toList { item -> Diary(item.optString("id"), item.optString("title"), item.optString("markdown"), item.optString("date")) },
             letters = root.optJSONArray("letters").toList { item -> FutureLetter(item.optString("id"), item.optString("title"), item.optString("content"), item.optString("deliverDate"), item.optBoolean("shown")) },
         )
@@ -196,7 +204,7 @@ private object NotesStore {
                     put("comments", JSONArray().apply { note.comments.forEach { comment -> put(JSONObject().apply { put("position", comment.position); put("text", comment.text); put("expanded", comment.expanded) }) } })
                 }) }
             })
-            put("categories", JSONArray().apply { state.categories.forEach { put(JSONObject().apply { put("id", it.id); put("name", it.name); put("parentId", it.parentId); put("path", it.path) }) } })
+            put("categories", JSONArray().apply { state.categories.forEach { put(JSONObject().apply { put("id", it.id); put("name", it.name); put("parentId", it.parentId); put("path", it.path); put("color", it.color) }) } })
             put("diaries", JSONArray().apply { state.diaries.forEach { put(JSONObject().apply { put("id", it.id); put("title", it.title); put("markdown", it.markdown); put("date", it.date) }) } })
             put("letters", JSONArray().apply { state.letters.forEach { put(JSONObject().apply { put("id", it.id); put("title", it.title); put("content", it.content); put("deliverDate", it.deliverDate); put("shown", it.shown) }) } })
         }
@@ -236,7 +244,7 @@ class NotesActivity : ComponentActivity() {
     }
 }
 
-private enum class NotesPage { HOME, ORGANIZER, DIARIES, LETTERS, CATEGORY }
+private enum class NotesPage { HOME, ORGANIZER, TAGS, DIARIES, LETTERS, CATEGORY }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -247,6 +255,7 @@ private fun NotesApp() {
     var state by remember { mutableStateOf(NotesStore.load(context)) }
     var page by remember { mutableStateOf(NotesPage.HOME) }
     var selectedCategory by remember { mutableStateOf<NoteCategory?>(null) }
+    var tagCategory by remember { mutableStateOf<NoteCategory?>(null) }
     var editorNote by remember { mutableStateOf<QuickNote?>(null) }
     var commentNote by remember { mutableStateOf<QuickNote?>(null) }
     var diaryEditor by remember { mutableStateOf<Diary?>(null) }
@@ -287,17 +296,18 @@ private fun NotesApp() {
             containerColor = NotePaper,
             topBar = {
                 TopAppBar(
-                    title = { Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.DIARIES -> "日记"; NotesPage.LETTERS -> "未来的信"; NotesPage.CATEGORY -> selectedCategory?.path ?: "分类" }, fontWeight = FontWeight.Bold) },
+                    title = { Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.TAGS -> "标签"; NotesPage.DIARIES -> "日记"; NotesPage.LETTERS -> "未来的信"; NotesPage.CATEGORY -> selectedCategory?.path ?: "分类" }, fontWeight = FontWeight.Bold) },
                     navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Filled.Menu, "打开导航") } },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = NotePaper),
                 )
             },
-            bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null } },
+            bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; if (target != NotesPage.TAGS) tagCategory = null } },
         ) { padding ->
             when (page) {
                 NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.DIARIES }, onLetters = { page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update)
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
+                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) })
                 NotesPage.DIARIES -> DiaryPage(state, padding, onEdit = { diaryEditor = it }, onCreate = { diaryEditor = Diary(UUID.randomUUID().toString(), "", "", today()) }, onRandom = { diaryWalk = it })
                 NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
@@ -315,6 +325,7 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
     NavigationBar(containerColor = Color.White) {
         NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页") }, label = { Text("首页") })
         NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理") }, label = { Text("整理") })
+        NavigationBarItem(page == NotesPage.TAGS, { onSelect(NotesPage.TAGS) }, icon = { Icon(Icons.Filled.Label, "标签") }, label = { Text("标签") })
         NavigationBarItem(page == NotesPage.LETTERS, { onSelect(NotesPage.LETTERS) }, icon = { Icon(Icons.Filled.MailOutline, "未来的信") }, label = { Text("未来的信") })
     }
 }
@@ -414,6 +425,67 @@ private fun CategoryPage(state: NotesState, category: NoteCategory, padding: Pad
         if (children.isNotEmpty()) { item { Text("子分类", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }; items(children) { child -> Surface(Modifier.fillMaxWidth().clickable { onCategory(child) }, color = NoteSoft, shape = RoundedCornerShape(10.dp)) { Text(child.name, modifier = Modifier.padding(14.dp), color = NoteInk, fontWeight = FontWeight.Bold) } } }
         item { Text("本分类记录 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         items(notes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}) }
+    }
+}
+
+@Composable
+private fun TagsPage(
+    state: NotesState,
+    selected: NoteCategory?,
+    padding: PaddingValues,
+    onSelect: (NoteCategory?) -> Unit,
+    onColorChange: (NoteCategory, Int) -> Unit,
+) {
+    var colorTarget by remember { mutableStateOf<NoteCategory?>(null) }
+    val categories = state.categories
+    val visible = if (selected == null) categories.filter { it.parentId == null } else categories.filter { it.parentId == selected.id }
+    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (selected != null) IconButton(onClick = { onSelect(categories.firstOrNull { it.id == selected.parentId }) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回上一级") }
+            Column(Modifier.weight(1f)) {
+                Text(selected?.path ?: "标签", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(if (selected == null) "按方块浏览你的分类标签" else "进入下一级标签空间", color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+            }
+            if (selected != null) IconButton(onClick = { colorTarget = selected }) { Icon(Icons.Filled.Tune, "调整颜色", tint = NotePrimary) }
+        }
+        if (visible.isEmpty()) {
+            EmptyHint(if (selected == null) "还没有标签，记录中添加 #标签 后会自动创建" else "这个标签下还没有二级标签")
+        } else {
+            LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxSize().padding(top = 12.dp), contentPadding = PaddingValues(bottom = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(visible, key = { it.id }) { category ->
+                    val childCount = categories.count { it.parentId == category.id }
+                    val noteCount = state.notes.count { category.id in it.categoryIds }
+                    Surface(onClick = { onSelect(category) }, color = tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().aspectRatio(1.15f)) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                            Column {
+                                Text(category.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = NoteInk)
+                                Text(category.path, style = MaterialTheme.typography.labelSmall, color = NoteMuted, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                            }
+                            Text("$noteCount 条记录${if (childCount > 0) "  ·  $childCount 个子标签" else ""}", style = MaterialTheme.typography.labelSmall, color = NoteMuted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    colorTarget?.let { category ->
+        AlertDialog(
+            onDismissRequest = { colorTarget = null },
+            title = { Text("调整“${category.name}”颜色") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TagPalette.chunked(4).forEach { row ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            row.forEach { color ->
+                                Surface(onClick = { onColorChange(category, color); colorTarget = null }, color = Color(color), shape = RoundedCornerShape(10.dp), modifier = Modifier.size(48.dp).weight(1f)) {}
+                            }
+                            repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { colorTarget = null }) { Text("取消") } },
+        )
     }
 }
 
