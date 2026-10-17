@@ -92,6 +92,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -394,7 +396,7 @@ private fun CategoryPicker(categories: List<NoteCategory>, onDismiss: () -> Unit
 @Composable
 private fun QuickNoteEditor(note: QuickNote, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onDelete: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var text by remember { mutableStateOf(note.content) }
+    var text by remember { mutableStateOf(TextFieldValue(note.content)) }
     var location by remember { mutableStateOf(note.location) }
     var mood by remember { mutableStateOf(note.mood) }
     var comments by remember { mutableStateOf(note.comments) }
@@ -416,20 +418,20 @@ private fun QuickNoteEditor(note: QuickNote, onDismiss: () -> Unit, onSave: (Qui
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = { showTimeDialog = true }) { Icon(Icons.Filled.AccessTime, "修改创建时间") }
-                    TextButton(onClick = { onSave(note.copy(content = text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() })) }, enabled = text.trim().isNotEmpty()) { Icon(Icons.Filled.Save, null); Text("保存") }
+                    TextButton(onClick = { onSave(note.copy(content = text.text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() })) }, enabled = text.text.trim().isNotEmpty()) { Icon(Icons.Filled.Save, null); Text("保存") }
                 }
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) location = getLastLocationLabel(context) ?: "位置已授权" else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
-                    ToolButton(Icons.Filled.Label, "标签", false) { text += if (text.endsWith(" ") || text.isEmpty()) "#" else " #" }
+                    ToolButton(Icons.Filled.Label, "标签", false) { val insertion = if (text.text.endsWith(" ") || text.text.isEmpty()) "#" else " #"; val next = text.text.substring(0, text.selection.start) + insertion + text.text.substring(text.selection.start); text = TextFieldValue(next, TextRange(text.selection.start + insertion.length)) }
                     ToolButton(Icons.Filled.CalendarMonth, "日期", false) { showTimeDialog = true }
                     ToolButton(moodIcon(mood), moodLabel(mood), mood == "HAPPY") { mood = when (mood) { "HAPPY" -> "NORMAL"; "NORMAL" -> "SAD"; else -> "HAPPY" } }
-                    ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.length, "", true); activeComment = comments.lastIndex; commentDraft = "" }
+                    ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
                 }
                 location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 6.dp)) }
                 Text("创建时间：${prettyTime(createdAt)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
                 OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp))
                 activeComment?.let { index ->
-                    OutlinedTextField(commentDraft, { commentDraft = it; comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = it, expanded = true) else comment } }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("评论 · 文字位置 ${comments.getOrNull(index)?.position ?: text.length}") }, trailingIcon = { IconButton(onClick = { activeComment = null }) { Icon(Icons.Filled.Close, "隐藏评论编辑") } })
+                    OutlinedTextField(commentDraft, { commentDraft = it; comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = it, expanded = true) else comment } }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("评论 · 文字位置 ${comments.getOrNull(index)?.position ?: text.text.length}") }, trailingIcon = { IconButton(onClick = { activeComment = null }) { Icon(Icons.Filled.Close, "隐藏评论编辑") } })
                 }
             }
         }
