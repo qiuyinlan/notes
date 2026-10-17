@@ -170,6 +170,8 @@ private val NoteAccent = Color(0xFFC68E6B)
 private val NotePaper = Color(0xFFF4E8DA)
 private val NoteSoft = Color(0xFFEAD9C7)
 private val NoteMuted = Color(0xFF8A786B)
+private val NoteTagColor = Color(0xFF2878B5)
+private val NoteTagRegex = Regex("(?<![\\p{L}\\d_])#([\\p{L}\\d][\\p{L}\\d/_-]*)(?=\\s|$)")
 private val TagPalette = listOf(
     0xFFE8D5C4.toInt(), 0xFFD8E2DC.toInt(), 0xFFF6E7CB.toInt(), 0xFFD9E4F5.toInt(),
     0xFFE6D5E8.toInt(), 0xFFF2D0A9.toInt(), 0xFFD5E8D4.toInt(), 0xFFF4CCCC.toInt(),
@@ -349,7 +351,7 @@ private fun NotesApp() {
     fun noteWithTags(note: QuickNote): QuickNote {
         val categories = state.categories.toMutableList()
         val ids = note.categoryIds.toMutableList()
-        Regex("(?<!\\w)#([\\p{L}\\d][\\p{L}\\d/_-]*)").findAll(note.content).forEach { match ->
+        NoteTagRegex.findAll(note.content).forEach { match ->
             var parent: String? = null
             var built = ""
             match.groupValues[1].split('/').filter { it.isNotBlank() }.forEach { name ->
@@ -397,7 +399,7 @@ private fun NotesApp() {
                     val importedNotes = imported.map { note ->
                         val categories = importState.categories.toMutableList()
                         val ids = note.categoryIds.toMutableList()
-                        Regex("(?<!\\w)#([\\p{L}\\d][\\p{L}\\d/_-]*)").findAll(note.content).forEach { match ->
+                        NoteTagRegex.findAll(note.content).forEach { match ->
                             var parent: String? = null
                             var built = ""
                             match.groupValues[1].split('/').filter { it.isNotBlank() }.forEach { name ->
@@ -499,7 +501,7 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
     val longText = note.content.length > 180 || note.content.count { it == '\n' } > 6
     Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(Modifier.padding(16.dp)) {
-            Text(note.content, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)
+            Text(markdownInline(note.content), maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)
             if (longText) Text(if (expanded) "点击收起 · 双击编辑" else "点击展开 · 双击编辑", color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall); note.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }; Text(" · ${moodLabel(note.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall); Spacer(Modifier.weight(1f)); IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
             val paths = note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }
@@ -977,7 +979,7 @@ private fun DiaryPage(state: NotesState, padding: PaddingValues, onEdit: (Diary)
     if (showRandomHint) AlertDialog(onDismissRequest = { showRandomHint = false }, title = { Text("还没有可漫步的日记") }, text = { Text("请先新建一篇日记。随机漫步不要求标签，日期为空时也可以浏览。") }, confirmButton = { TextButton(onClick = { showRandomHint = false }) { Text("知道了") } })
 }
 
-private fun diaryTags(diary: Diary): List<String> = Regex("(?<!\\w)#([\\p{L}\\d/_-]+)").findAll(diary.markdown).map { it.groupValues[1] }.distinct().toList()
+private fun diaryTags(diary: Diary): List<String> = NoteTagRegex.findAll(diary.markdown).map { it.groupValues[1] }.distinct().toList()
 
 @Composable
 private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit: (Diary) -> Unit) {
@@ -1219,7 +1221,7 @@ private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
 }
 
 private fun markdownInline(value: String) = buildAnnotatedString {
-    val pattern = Regex("""(\*\*|__)(.+?)\1|(?<!\*)\*([^*]+)\*|`([^`]+)`|\[([^]]+)]\([^)]+\)""")
+    val pattern = Regex("""(\*\*|__)(.+?)\1|(?<!\*)\*([^*]+)\*|`([^`]+)`|\[([^]]+)]\([^)]+\)|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/_-]*(?=\s|$)""")
     var cursor = 0
     pattern.findAll(value).forEach { match ->
         append(value.substring(cursor, match.range.first))
@@ -1228,6 +1230,7 @@ private fun markdownInline(value: String) = buildAnnotatedString {
             match.groupValues[3].isNotEmpty() -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(match.groupValues[3]) }
             match.groupValues[4].isNotEmpty() -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)) { append(match.groupValues[4]) }
             match.groupValues[5].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[5]) }
+            match.value.startsWith("#") -> withStyle(SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium)) { append(match.value) }
         }
         cursor = match.range.last + 1
     }
