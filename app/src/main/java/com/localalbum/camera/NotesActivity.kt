@@ -1,11 +1,15 @@
 package com.qiuyinlan.suixinji
 
 import android.Manifest
+import android.app.DatePickerDialog
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
+import android.graphics.BitmapFactory
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -27,6 +31,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -36,6 +41,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
@@ -58,6 +64,7 @@ import androidx.compose.material.icons.filled.SentimentDissatisfied
 import androidx.compose.material.icons.filled.SentimentNeutral
 import androidx.compose.material.icons.filled.SentimentVerySatisfied
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -84,6 +91,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -94,6 +103,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextRange
@@ -101,6 +113,9 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
@@ -108,6 +123,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Calendar
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.launch
@@ -196,6 +212,19 @@ private fun editTime(value: Long): String = SimpleDateFormat("yyyy-MM-dd HH:mm",
 private fun parseEditTime(value: String): Long? = runCatching { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).apply { isLenient = false }.parse(value)?.time }.getOrNull()
 private fun today(): String = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(Date())
 
+private fun queryFolderImages(context: Context, treeUri: Uri): List<Uri> = runCatching {
+    val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+    val result = mutableListOf<Uri>()
+    context.contentResolver.query(childUri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { cursor ->
+        while (cursor.moveToNext()) {
+            if (cursor.getString(1)?.startsWith("image/") == true) {
+                result += DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(0))
+            }
+        }
+    }
+    result
+}.getOrDefault(emptyList())
+
 class NotesActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -221,6 +250,7 @@ private fun NotesApp() {
     var editorNote by remember { mutableStateOf<QuickNote?>(null) }
     var commentNote by remember { mutableStateOf<QuickNote?>(null) }
     var diaryEditor by remember { mutableStateOf<Diary?>(null) }
+    var diaryWalk by remember { mutableStateOf<List<Diary>?>(null) }
     var letterEditor by remember { mutableStateOf<FutureLetter?>(null) }
 
     fun update(next: NotesState) { state = next; NotesStore.save(context, next) }
@@ -268,7 +298,7 @@ private fun NotesApp() {
                 NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.DIARIES }, onLetters = { page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update)
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
-                NotesPage.DIARIES -> DiaryPage(state, padding, onEdit = { diaryEditor = it }, onCreate = { diaryEditor = Diary(UUID.randomUUID().toString(), "", "", today()) })
+                NotesPage.DIARIES -> DiaryPage(state, padding, onEdit = { diaryEditor = it }, onCreate = { diaryEditor = Diary(UUID.randomUUID().toString(), "", "", today()) }, onRandom = { diaryWalk = it })
                 NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
         }
@@ -276,6 +306,7 @@ private fun NotesApp() {
     editorNote?.let { note -> QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null }, onSave = { saveNote(it); editorNote = null }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
     diaryEditor?.let { diary -> DiaryEditor(diary, onDismiss = { diaryEditor = null }, onSave = { value -> update(state.copy(diaries = listOf(value) + state.diaries.filterNot { it.id == value.id })); diaryEditor = null }) }
+    diaryWalk?.let { diaries -> DiaryWalkDialog(diaries, onDismiss = { diaryWalk = null }, onEdit = { diaryWalk = null; diaryEditor = it }) }
     letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null }) }
 }
 
@@ -284,7 +315,6 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
     NavigationBar(containerColor = Color.White) {
         NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页") }, label = { Text("首页") })
         NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理") }, label = { Text("整理") })
-        NavigationBarItem(page == NotesPage.DIARIES, { onSelect(NotesPage.DIARIES) }, icon = { Icon(Icons.Filled.Book, "日记") }, label = { Text("日记") })
         NavigationBarItem(page == NotesPage.LETTERS, { onSelect(NotesPage.LETTERS) }, icon = { Icon(Icons.Filled.MailOutline, "未来的信") }, label = { Text("未来的信") })
     }
 }
@@ -389,23 +419,51 @@ private fun CategoryPage(state: NotesState, category: NoteCategory, padding: Pad
 
 @Composable
 private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (NotesState) -> Unit, onEdit: (QuickNote) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var index by remember { mutableStateOf(0) }
     var selected by remember { mutableStateOf<QuickNote?>(null) }
+    var photoMode by rememberSaveable { mutableStateOf(false) }
+    var photoUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            photoUris = queryFolderImages(context, uri)
+        }
+    }
     val inbox = state.notes.filter { it.status == "inbox" }
     val current = inbox.getOrNull(index.coerceAtMost((inbox.size - 1).coerceAtLeast(0)))
     Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("整理台", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("一次处理一条，评论会自动显示", color = NoteMuted)
-        if (current == null) EmptyHint("随记箱为空，所有记录都整理好了") else {
-            Text("${index + 1} / ${inbox.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
-            NoteTimelineCard(current, state.categories, onEdit, {})
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { index++ }) { Icon(Icons.Filled.SkipNext, null); Spacer(Modifier.width(4.dp)); Text("跳过") }
-                Button(onClick = { selected = current }) { Icon(Icons.Filled.Label, null); Spacer(Modifier.width(4.dp)); Text("归类") }
-                IconButton(onClick = { onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost(inbox.size - 2) }) { Icon(Icons.Filled.DeleteOutline, "删除") }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("整理台", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(if (photoMode) "选择手机文件夹查看照片" else "一次处理一条，评论会自动显示", color = NoteMuted)
+            }
+            TextButton(onClick = { photoMode = !photoMode }) {
+                Icon(if (photoMode) Icons.Filled.Inbox else Icons.Filled.Folder, null)
+                Spacer(Modifier.width(4.dp))
+                Text(if (photoMode) "随记" else "照片")
             }
         }
-        Spacer(Modifier.weight(1f)); Text("跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+        if (photoMode) {
+            Button(onClick = { folderPicker.launch(null) }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Filled.Folder, null); Spacer(Modifier.width(6.dp)); Text(if (photoUris.isEmpty()) "导入手机照片文件夹" else "重新选择文件夹")
+            }
+            if (photoUris.isEmpty()) EmptyHint("选择一个手机文件夹后，这里会显示其中的照片")
+            else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(photoUris, key = { it.toString() }) { uri -> FolderPhotoThumb(context, uri) }
+            }
+        } else {
+            if (current == null) EmptyHint("随记箱为空，所有记录都整理好了") else {
+                Text("${index + 1} / ${inbox.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
+                NoteTimelineCard(current, state.categories, onEdit, {})
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { index++ }) { Icon(Icons.Filled.SkipNext, null); Spacer(Modifier.width(4.dp)); Text("跳过") }
+                    Button(onClick = { selected = current }) { Icon(Icons.Filled.Label, null); Spacer(Modifier.width(4.dp)); Text("归类") }
+                    IconButton(onClick = { onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost(inbox.size - 2) }) { Icon(Icons.Filled.DeleteOutline, "删除") }
+                }
+            }
+            Spacer(Modifier.weight(1f)); Text("跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+        }
     }
     selected?.let { note -> CategoryPicker(state.categories, onDismiss = { selected = null }, onPick = { category -> onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it })); selected = null; index++ }) }
 }
@@ -427,10 +485,14 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var activeComment by remember { mutableStateOf<Int?>(null) }
     var createdAt by remember { mutableStateOf(note.createdAt) }
     var showTimeDialog by remember { mutableStateOf(false) }
-    var timeInput by remember { mutableStateOf(editTime(note.createdAt)) }
-    var timeError by remember { mutableStateOf(false) }
     var showTagDialog by remember { mutableStateOf(false) }
     var tagInput by remember { mutableStateOf("") }
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+        keyboardController?.show()
+    }
     val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true || result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } }
@@ -454,14 +516,25 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                 }
                 location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 6.dp)) }
                 Text("创建时间：${prettyTime(createdAt)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
-                OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp))
+                OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp))
                 activeComment?.let { index ->
                     OutlinedTextField(commentDraft, { commentDraft = it; comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = it, expanded = true) else comment } }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("评论 · 文字位置 ${comments.getOrNull(index)?.position ?: text.text.length}") }, trailingIcon = { IconButton(onClick = { activeComment = null }) { Icon(Icons.Filled.Close, "隐藏评论编辑") } })
                 }
             }
         }
     }
-    if (showTimeDialog) AlertDialog(onDismissRequest = { showTimeDialog = false }, title = { Text("修改创建时间") }, text = { Column { OutlinedTextField(timeInput, { timeInput = it; timeError = false }, label = { Text("YYYY-MM-DD HH:mm") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii), isError = timeError); if (timeError) Text("时间格式不正确", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) } }, confirmButton = { TextButton(onClick = { val parsed = parseEditTime(timeInput); if (parsed == null) timeError = true else { createdAt = parsed; showTimeDialog = false } }) { Text("确定") } }, dismissButton = { TextButton(onClick = { showTimeDialog = false }) { Text("取消") } })
+    if (showTimeDialog) {
+        LaunchedEffect(Unit) {
+            val calendar = Calendar.getInstance().apply { timeInMillis = createdAt }
+            DatePickerDialog(context, { _, year, month, day ->
+                createdAt = Calendar.getInstance().apply {
+                    set(year, month, day, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), 0)
+                    set(Calendar.MILLISECOND, 0)
+                }.timeInMillis
+                showTimeDialog = false
+            }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show()
+        }
+    }
     if (showTagDialog) AlertDialog(
         onDismissRequest = { showTagDialog = false },
         title = { Text("添加标签") },
@@ -499,13 +572,79 @@ private fun getLastLocationLabel(context: Context): String? {
 }
 
 @Composable
-private fun DiaryPage(state: NotesState, padding: PaddingValues, onEdit: (Diary) -> Unit, onCreate: () -> Unit) {
+private fun DiaryPage(state: NotesState, padding: PaddingValues, onEdit: (Diary) -> Unit, onCreate: () -> Unit, onRandom: (List<Diary>) -> Unit) {
+    var monthFilter by rememberSaveable { mutableStateOf("全部月份") }
+    var categoryFilter by rememberSaveable { mutableStateOf("全部分类") }
+    var showMonthPicker by remember { mutableStateOf(false) }
+    var showCategoryPicker by remember { mutableStateOf(false) }
+    val months = state.diaries.map { it.date.take(7) }.filter { it.length == 7 }.distinct().sortedDescending()
+    val categories = state.diaries.flatMap { diaryTags(it) }.distinct().sorted()
+    val filtered = state.diaries.sortedByDescending { it.date }.filter { diary ->
+        (monthFilter == "全部月份" || diary.date.startsWith(monthFilter)) && (categoryFilter == "全部分类" || categoryFilter in diaryTags(diary))
+    }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Column { Text("日记", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("Markdown 原文保留，评论自动展示", color = NoteMuted) }; Spacer(Modifier.weight(1f)); Button(onClick = onCreate) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(4.dp)); Text("新建") } } }
-        if (state.diaries.isEmpty()) item { EmptyHint("还没有日记，写下第一篇吧") }
-        items(state.diaries, key = { it.id }) { diary -> Card(Modifier.fillMaxWidth().clickable { onEdit(diary) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(16.dp)) { Text(diary.title.ifBlank { "无标题日记" }, fontWeight = FontWeight.Bold); Text(diary.date, color = NoteMuted, style = MaterialTheme.typography.labelSmall); Text(diary.markdown.lineSequence().firstOrNull().orEmpty(), maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp)) } } }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text("日记列表", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("按日期浏览，进入后可以继续编辑", color = NoteMuted) }
+                IconButton(onClick = { onRandom(filtered) }, enabled = filtered.isNotEmpty()) { Icon(Icons.Filled.Shuffle, "随机漫步") }
+                Button(onClick = onCreate) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(4.dp)); Text("新建") }
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showMonthPicker = true }) { Icon(Icons.Filled.CalendarMonth, null); Spacer(Modifier.width(4.dp)); Text(monthFilter) }
+                OutlinedButton(onClick = { showCategoryPicker = true }) { Icon(Icons.Filled.Label, null); Spacer(Modifier.width(4.dp)); Text(categoryFilter) }
+            }
+        }
+        item { OutlinedButton(onClick = { onRandom(filtered) }, enabled = filtered.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Shuffle, null); Spacer(Modifier.width(6.dp)); Text("开始随机漫步" + if (filtered.isNotEmpty()) "（${filtered.size} 篇）" else "") } }
+        if (filtered.isEmpty()) item { EmptyHint("还没有符合筛选条件的日记") }
+        items(filtered, key = { it.id }) { diary ->
+            Card(Modifier.fillMaxWidth().clickable { onEdit(diary) }, colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(diary.title.ifBlank { "无标题日记" }, fontWeight = FontWeight.Bold)
+                    Text(diary.date, color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                    Text(diary.markdown.lineSequence().firstOrNull().orEmpty(), maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+                    val tags = diaryTags(diary)
+                    if (tags.isNotEmpty()) Text(tags.joinToString("  ") { "#$it" }, color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
+                }
+            }
+        }
         item { Text("随记评论预览", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp)) }
         items(state.notes.filter { it.comments.isNotEmpty() }, key = { "comments-${it.id}" }) { note -> Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(note.content, maxLines = 2, overflow = TextOverflow.Ellipsis); CommentPreview(note.comments, {}, Modifier.padding(top = 6.dp)) } } }
+    }
+    if (showMonthPicker) AlertDialog(onDismissRequest = { showMonthPicker = false }, title = { Text("按月份筛选") }, text = { Column { TextButton(onClick = { monthFilter = "全部月份"; showMonthPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("全部月份") }; months.forEach { month -> TextButton(onClick = { monthFilter = month; showMonthPicker = false }, modifier = Modifier.fillMaxWidth()) { Text(month) } } } }, confirmButton = { TextButton(onClick = { showMonthPicker = false }) { Text("取消") } })
+    if (showCategoryPicker) AlertDialog(onDismissRequest = { showCategoryPicker = false }, title = { Text("按分类筛选") }, text = { Column { TextButton(onClick = { categoryFilter = "全部分类"; showCategoryPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("全部分类") }; categories.forEach { category -> TextButton(onClick = { categoryFilter = category; showCategoryPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("#$category") } } } }, confirmButton = { TextButton(onClick = { showCategoryPicker = false }) { Text("取消") } })
+}
+
+private fun diaryTags(diary: Diary): List<String> = Regex("(?<!\\w)#([\\p{L}\\d/_-]+)").findAll(diary.markdown).map { it.groupValues[1] }.distinct().toList()
+
+@Composable
+private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit: (Diary) -> Unit) {
+    var index by remember(diaries) { mutableStateOf(diaries.indices.randomOrNull() ?: 0) }
+    val current = diaries.getOrNull(index)
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = NotePaper) {
+            Column(Modifier.fillMaxSize().padding(18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, "返回列表") }
+                    Text("随机漫步", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { index = diaries.indices.randomOrNull() ?: 0 }) { Text("重新随机") }
+                }
+                if (current != null) {
+                    Text("当前范围第 ${index + 1} / ${diaries.size} 篇", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+                    Text(current.title.ifBlank { "无标题日记" }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp))
+                    Text(current.date, color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
+                    Text(current.markdown, modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 20.dp), style = MaterialTheme.typography.bodyLarge)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { if (index > 0) index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null); Spacer(Modifier.width(4.dp)); Text("上一篇") }
+                        TextButton(onClick = { onEdit(current) }) { Icon(Icons.Filled.Edit, null); Spacer(Modifier.width(4.dp)); Text("继续编辑") }
+                        OutlinedButton(onClick = { if (index < diaries.lastIndex) index++ }, enabled = index < diaries.lastIndex) { Text("下一篇"); Spacer(Modifier.width(4.dp)); Icon(Icons.AutoMirrored.Filled.ArrowForward, null) }
+                    }
+                    if (index == 0 || index == diaries.lastIndex) Text(if (index == 0 && index == diaries.lastIndex) "当前范围只有这一篇" else if (index == 0) "已经到达最早的日记" else "已经到达最新的日记", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp))
+                } else EmptyHint("当前范围没有日记")
+            }
+        }
     }
 }
 
@@ -521,5 +660,18 @@ private fun QuickNoteEditorPreview() = Unit
 private fun DiaryEditor(diary: Diary, onDismiss: () -> Unit, onSave: (Diary) -> Unit) { var title by remember { mutableStateOf(diary.title) }; var text by remember { mutableStateOf(diary.markdown) }; Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) { Surface(Modifier.fillMaxSize(), color = NotePaper) { Column(Modifier.padding(18.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text("编辑日记", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = { onSave(diary.copy(title = title, markdown = text)) }) { Text("保存") } }; OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题") }); Spacer(Modifier.height(10.dp)); OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("Markdown") }, maxLines = 30) } } } }
 @Composable
 private fun LetterEditor(letter: FutureLetter, onDismiss: () -> Unit, onSave: (FutureLetter) -> Unit) { var title by remember { mutableStateOf(letter.title) }; var text by remember { mutableStateOf(letter.content) }; var date by remember { mutableStateOf(letter.deliverDate) }; Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) { Surface(Modifier.fillMaxSize(), color = NotePaper) { Column(Modifier.padding(18.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text("写给未来的自己", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = { if (date.isNotBlank()) onSave(letter.copy(title = title, content = text, deliverDate = date)) }) { Text("保存") } }; OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题（可选）") }); OutlinedTextField(date, { date = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("展示日期 YYYY-MM-DD") }); Spacer(Modifier.height(10.dp)); OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("正文") }, maxLines = 30) } } } }
+
+@Composable
+private fun FolderPhotoThumb(context: Context, uri: Uri) {
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, key1 = uri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it)?.asImageBitmap() } }.getOrNull()
+        }
+    }
+    Card(Modifier.fillMaxWidth().aspectRatio(1f), colors = CardDefaults.cardColors(containerColor = NoteSoft)) {
+        if (bitmap != null) Image(bitmap!!, contentDescription = "照片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("读取中", style = MaterialTheme.typography.labelSmall, color = NoteMuted) }
+    }
+}
 
 @Composable private fun EmptyHint(text: String) { Surface(color = NoteSoft, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) { Text(text, color = NoteInk, modifier = Modifier.padding(16.dp)) } }
