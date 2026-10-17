@@ -32,6 +32,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -504,6 +506,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
     }
     val inbox = state.notes.filter { it.status == "inbox" }
     val current = inbox.getOrNull(index.coerceAtMost((inbox.size - 1).coerceAtLeast(0)))
+    val noteScroll = rememberScrollState()
     Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -525,16 +528,18 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 items(photoUris, key = { it.toString() }) { uri -> FolderPhotoThumb(context, uri) }
             }
         } else {
-            if (current == null) EmptyHint("随记箱为空，所有记录都整理好了") else {
-                Text("${index + 1} / ${inbox.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
-                NoteTimelineCard(current, state.categories, onEdit, {})
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { index++ }) { Icon(Icons.Filled.SkipNext, null); Spacer(Modifier.width(4.dp)); Text("跳过") }
-                    Button(onClick = { selected = current }) { Icon(Icons.Filled.Label, null); Spacer(Modifier.width(4.dp)); Text("归类") }
-                    IconButton(onClick = { onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost(inbox.size - 2) }) { Icon(Icons.Filled.DeleteOutline, "删除") }
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(noteScroll), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (current == null) EmptyHint("随记箱为空，所有记录都整理好了") else {
+                    Text("${index + 1} / ${inbox.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
+                    NoteTimelineCard(current, state.categories, onEdit, {})
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        IconButton(onClick = { index++ }) { Icon(Icons.Filled.SkipNext, "跳过") }
+                        IconButton(onClick = { selected = current }) { Icon(Icons.Filled.Label, "归类") }
+                        IconButton(onClick = { onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost(inbox.size - 2) }) { Icon(Icons.Filled.DeleteOutline, "删除") }
+                    }
                 }
+                Text("跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
             }
-            Spacer(Modifier.weight(1f)); Text("跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
         }
     }
     selected?.let { note -> CategoryPicker(state.categories, onDismiss = { selected = null }, onPick = { category -> onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it })); selected = null; index++ }) }
