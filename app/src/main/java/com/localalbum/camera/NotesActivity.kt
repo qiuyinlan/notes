@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.graphics.BitmapFactory
+import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -56,6 +58,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.LocationOn
@@ -69,10 +72,12 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -131,6 +136,9 @@ import java.util.UUID
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 
 private val NoteInk = Color(0xFF4B3B30)
 private val NotePrimary = Color(0xFF8B6A52)
@@ -158,6 +166,7 @@ private data class QuickNote(
     val location: String? = null,
     val mood: String = "NORMAL",
     val comments: List<NoteComment> = emptyList(),
+    val imageUris: List<String> = emptyList(),
 )
 private data class NoteCategory(val id: String, val name: String, val parentId: String?, val path: String, val color: Long = 0L)
 private data class Diary(val id: String, val title: String, val markdown: String, val date: String)
@@ -189,6 +198,7 @@ private object NotesStore {
                     comments = item.optJSONArray("comments").toList { comment ->
                         NoteComment(comment.optInt("position"), comment.optString("text"), comment.optBoolean("expanded", true))
                     },
+                    imageUris = item.optJSONArray("imageUris").toStringList(),
                 )
             },
             categories = root.optJSONArray("categories").toList { item -> NoteCategory(item.optString("id"), item.optString("name"), item.optNullableString("parentId"), item.optString("path"), item.optLong("color", 0L)) },
@@ -204,6 +214,7 @@ private object NotesStore {
                     put("id", note.id); put("content", note.content); put("createdAt", note.createdAt); put("updatedAt", note.updatedAt)
                     put("categoryIds", JSONArray(note.categoryIds)); put("status", note.status); put("location", note.location); put("mood", note.mood)
                     put("comments", JSONArray().apply { note.comments.forEach { comment -> put(JSONObject().apply { put("position", comment.position); put("text", comment.text); put("expanded", comment.expanded) }) } })
+                    put("imageUris", JSONArray(note.imageUris))
                 }) }
             })
             put("categories", JSONArray().apply { state.categories.forEach { put(JSONObject().apply { put("id", it.id); put("name", it.name); put("parentId", it.parentId); put("path", it.path); put("color", it.color) }) } })
@@ -221,6 +232,7 @@ private fun prettyTime(value: Long): String = SimpleDateFormat("yyyy年MM月dd�
 private fun editTime(value: Long): String = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(Date(value))
 private fun parseEditTime(value: String): Long? = runCatching { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).apply { isLenient = false }.parse(value)?.time }.getOrNull()
 private fun today(): String = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(Date())
+private fun prettyMonth(value: Long): String = SimpleDateFormat("yyyy-MM", Locale.CHINA).format(Date(value))
 
 private fun queryFolderImages(context: Context, treeUri: Uri): List<Uri> = runCatching {
     val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
@@ -498,15 +510,39 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
     var selected by remember { mutableStateOf<QuickNote?>(null) }
     var photoMode by rememberSaveable { mutableStateOf(false) }
     var photoUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var photoIndex by remember { mutableStateOf(0) }
+    var photoDraft by remember { mutableStateOf("") }
+    var deletePhotoAfterSave by remember { mutableStateOf(false) }
+    var photoPreview by remember { mutableStateOf<Uri?>(null) }
+    var mode by rememberSaveable { mutableStateOf("ALL") }
+    var monthFilter by rememberSaveable { mutableStateOf("全部月份") }
+    var batchInput by rememberSaveable { mutableStateOf("20") }
+    var showMonthPicker by remember { mutableStateOf(false) }
+    var undoState by remember { mutableStateOf<NotesState?>(null) }
+    var lastWasSkip by remember { mutableStateOf(false) }
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             photoUris = queryFolderImages(context, uri)
+            photoIndex = 0
+            photoDraft = ""
         }
     }
     val inbox = state.notes.filter { it.status == "inbox" }
-    val current = inbox.getOrNull(index.coerceAtMost((inbox.size - 1).coerceAtLeast(0)))
+    val inboxIds = inbox.map { it.id }
+    val batchCount = batchInput.toIntOrNull()?.coerceIn(1, 500) ?: 20
+    val monthOptions = inbox.map { prettyMonth(it.createdAt) }.distinct().sortedDescending()
+    val batch = remember(mode, monthFilter, inboxIds, batchCount) {
+        val source = if (mode == "MONTH" && monthFilter != "全部月份") inbox.filter { prettyMonth(it.createdAt) == monthFilter } else inbox
+        if (mode == "RANDOM") source.shuffled().take(batchCount) else if (mode == "MONTH") source.take(batchCount) else source
+    }
+    val current = batch.getOrNull(index.coerceAtMost((batch.size - 1).coerceAtLeast(0)))
     val noteScroll = rememberScrollState()
+    LaunchedEffect(mode, monthFilter, batchCount, inboxIds.joinToString("|")) {
+        index = 0
+        undoState = null
+        lastWasSkip = false
+    }
     Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -524,33 +560,70 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 Icon(Icons.Filled.Folder, null); Spacer(Modifier.width(6.dp)); Text(if (photoUris.isEmpty()) "导入手机照片文件夹" else "重新选择文件夹")
             }
             if (photoUris.isEmpty()) EmptyHint("选择一个手机文件夹后，这里会显示其中的照片")
-            else LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(photoUris, key = { it.toString() }) { uri -> FolderPhotoThumb(context, uri) }
-            }
+            else PhotoOrganizerPanel(context, photoUris, photoIndex, photoDraft, deletePhotoAfterSave, Modifier.weight(1f), onDraftChange = { photoDraft = it }, onDeleteChange = { deletePhotoAfterSave = it }, onPreview = { photoPreview = it }, onSave = {
+                val uri = photoUris.getOrNull(photoIndex) ?: return@PhotoOrganizerPanel
+                if (photoDraft.trim().isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    val note = QuickNote(UUID.randomUUID().toString(), photoDraft.trim(), now, now, emptyList(), imageUris = listOf(uri.toString()))
+                    onUpdate(state.copy(notes = listOf(note) + state.notes))
+                    if (deletePhotoAfterSave) runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+                    photoDraft = ""
+                    deletePhotoAfterSave = false
+                    photoIndex = (photoIndex + 1).coerceAtMost(photoUris.lastIndex)
+                }
+            }, onNext = { photoDraft = ""; deletePhotoAfterSave = false; photoIndex = (photoIndex + 1).coerceAtMost(photoUris.lastIndex) })
         } else {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("MONTH" to "按月份", "RANDOM" to "随机", "ALL" to "全部").forEach { (value, label) ->
+                    TextButton(onClick = { mode = value; if (value == "MONTH" && monthOptions.isNotEmpty()) showMonthPicker = true }, modifier = Modifier.weight(1f)) { Text(label, color = if (mode == value) NotePrimary else NoteMuted, fontWeight = if (mode == value) FontWeight.Bold else FontWeight.Normal) }
+                }
+            }
+            if (mode == "MONTH") OutlinedButton(onClick = { showMonthPicker = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text(monthFilter) }
+            if (mode == "MONTH" || mode == "RANDOM") OutlinedTextField(batchInput, { value -> batchInput = value.filter { it.isDigit() }.take(3) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("本轮整理数量（1-500）") })
             Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(noteScroll), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (current == null) EmptyHint("随记箱为空，所有记录都整理好了") else {
-                    Text("${index + 1} / ${inbox.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
+                    Text("${index + 1} / ${batch.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
                     NoteTimelineCard(current, state.categories, onEdit, {})
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        IconButton(onClick = { index++ }) { Icon(Icons.Filled.SkipNext, "跳过") }
+                        IconButton(onClick = { lastWasSkip = true; undoState = null; index++ }) { Icon(Icons.Filled.SkipNext, "跳过") }
                         IconButton(onClick = { selected = current }) { Icon(Icons.Filled.Label, "归类") }
-                        IconButton(onClick = { onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost(inbox.size - 2) }) { Icon(Icons.Filled.DeleteOutline, "删除") }
+                        IconButton(onClick = { undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost((batch.size - 2).coerceAtLeast(0)) }) { Icon(Icons.Filled.DeleteOutline, "删除") }
+                        IconButton(onClick = { when { undoState != null -> { onUpdate(undoState!!); index = (index - 1).coerceAtLeast(0); undoState = null }; lastWasSkip -> { index = (index - 1).coerceAtLeast(0); lastWasSkip = false } } }, enabled = undoState != null || lastWasSkip) { Icon(Icons.Filled.Undo, "撤销") }
                     }
                 }
                 Text("跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
             }
         }
     }
-    selected?.let { note -> CategoryPicker(state.categories, onDismiss = { selected = null }, onPick = { category -> onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it })); selected = null; index++ }) }
+    selected?.let { note -> CategoryPicker(state.categories, onDismiss = { selected = null }, onPick = { category -> undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it })); selected = null; index++ }, onCreate = { raw ->
+        val clean = raw.trim().trimStart('#')
+        if (clean.isNotBlank()) {
+            val category = state.categories.firstOrNull { it.path == clean } ?: NoteCategory(UUID.randomUUID().toString(), clean.substringAfterLast('/'), null, clean)
+            undoState = state
+            lastWasSkip = false
+            onUpdate(state.copy(categories = if (state.categories.any { it.path == category.path }) state.categories else state.categories + category, notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it }))
+            selected = null
+            index++
+        }
+    }) }
+    showMonthPicker.takeIf { it }?.let { AlertDialog(onDismissRequest = { showMonthPicker = false }, title = { Text("选择月份") }, text = { Column { monthOptions.forEach { month -> TextButton(onClick = { monthFilter = month; showMonthPicker = false }, modifier = Modifier.fillMaxWidth()) { Text(month) } } } }, confirmButton = { TextButton(onClick = { showMonthPicker = false }) { Text("取消") } }) }
+    photoPreview?.let { uri -> ImagePreviewDialog(context, uri, onDismiss = { photoPreview = null }) }
 }
 
 @Composable
-private fun CategoryPicker(categories: List<NoteCategory>, onDismiss: () -> Unit, onPick: (NoteCategory) -> Unit) {
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("选择分类") }, text = { if (categories.isEmpty()) Text("还没有分类，请先记录一条带 #分类 的内容") else Column { categories.forEach { category -> TextButton(onClick = { onPick(category) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Folder, null); Spacer(Modifier.width(8.dp)); Text(category.path) } } } }, confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+private fun CategoryPicker(categories: List<NoteCategory>, onDismiss: () -> Unit, onPick: (NoteCategory) -> Unit, onCreate: (String) -> Unit = {}) {
+    var newCategory by remember { mutableStateOf("") }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("选择分类") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedTextField(newCategory, { newCategory = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("新建分类") }, placeholder = { Text("例如：生活/阅读") })
+            if (newCategory.isNotBlank()) TextButton(onClick = { onCreate(newCategory) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("新建并归类") }
+            categories.forEach { category -> TextButton(onClick = { onPick(category) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Folder, null); Spacer(Modifier.width(8.dp)); Text(category.path) } }
+        }
+    }, confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onDelete: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
@@ -564,6 +637,8 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var showTimeDialog by remember { mutableStateOf(false) }
     var showTagDialog by remember { mutableStateOf(false) }
     var tagInput by remember { mutableStateOf("") }
+    var imageUris by remember { mutableStateOf(note.imageUris) }
+    var previewUri by remember { mutableStateOf<Uri?>(null) }
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     LaunchedEffect(Unit) {
@@ -574,6 +649,12 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true || result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } }
     }
+    val imageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            imageUris = (imageUris + uri.toString()).distinct()
+        }
+    }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = NotePaper) {
             Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -582,7 +663,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = { showTimeDialog = true }) { Icon(Icons.Filled.AccessTime, "修改创建时间") }
-                    TextButton(onClick = { onSave(note.copy(content = text.text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() })) }, enabled = text.text.trim().isNotEmpty()) { Icon(Icons.Filled.Save, null); Text("保存") }
+                    TextButton(onClick = { onSave(note.copy(content = text.text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() }, imageUris = imageUris)) }, enabled = text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) { Icon(Icons.Filled.Save, null); Text("保存") }
                 }
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } } else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
@@ -590,9 +671,17 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     ToolButton(Icons.Filled.CalendarMonth, "日期", false) { showTimeDialog = true }
                     ToolButton(moodIcon(mood), moodLabel(mood), mood == "HAPPY") { mood = when (mood) { "HAPPY" -> "NORMAL"; "NORMAL" -> "SAD"; else -> "HAPPY" } }
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
+                    ToolButton(Icons.Filled.PhotoLibrary, "图片", false) { imageLauncher.launch(arrayOf("image/*")) }
                 }
                 location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 6.dp)) }
                 Text("创建时间：${prettyTime(createdAt)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
+                if (imageUris.isNotEmpty()) {
+                    Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        imageUris.forEach { uriString ->
+                            FolderPhotoThumb(context, Uri.parse(uriString), Modifier.size(76.dp).combinedClickable(onClick = { previewUri = Uri.parse(uriString) }, onLongClick = { previewUri = Uri.parse(uriString) }))
+                        }
+                    }
+                }
                 OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp))
                 activeComment?.let { index ->
                     OutlinedTextField(commentDraft, { commentDraft = it; comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = it, expanded = true) else comment } }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("评论 · 文字位置 ${comments.getOrNull(index)?.position ?: text.text.length}") }, trailingIcon = { IconButton(onClick = { activeComment = null }) { Icon(Icons.Filled.Close, "隐藏评论编辑") } })
@@ -630,6 +719,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         confirmButton = { TextButton(onClick = { val value = tagInput.trim().trimStart('#'); if (value.isNotBlank() && value.split('/').all { it.isNotBlank() }) { insertTagAtCursor(value, text) { text = it }; showTagDialog = false } }) { Text("新建并插入") } },
         dismissButton = { TextButton(onClick = { showTagDialog = false }) { Text("取消") } },
     )
+    previewUri?.let { uri -> ImagePreviewDialog(context, uri, onDismiss = { previewUri = null }) }
 }
 
 private fun insertTagAtCursor(tag: String, value: TextFieldValue, onChange: (TextFieldValue) -> Unit) {
@@ -742,15 +832,80 @@ private fun DiaryEditor(diary: Diary, onDismiss: () -> Unit, onSave: (Diary) -> 
 private fun LetterEditor(letter: FutureLetter, onDismiss: () -> Unit, onSave: (FutureLetter) -> Unit) { var title by remember { mutableStateOf(letter.title) }; var text by remember { mutableStateOf(letter.content) }; var date by remember { mutableStateOf(letter.deliverDate) }; Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) { Surface(Modifier.fillMaxSize(), color = NotePaper) { Column(Modifier.padding(18.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text("写给未来的自己", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = { if (date.isNotBlank()) onSave(letter.copy(title = title, content = text, deliverDate = date)) }) { Text("保存") } }; OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题（可选）") }); OutlinedTextField(date, { date = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("展示日期 YYYY-MM-DD") }); Spacer(Modifier.height(10.dp)); OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("正文") }, maxLines = 30) } } } }
 
 @Composable
-private fun FolderPhotoThumb(context: Context, uri: Uri) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun PhotoOrganizerPanel(
+    context: Context,
+    photos: List<Uri>,
+    index: Int,
+    draft: String,
+    deleteAfterSave: Boolean,
+    modifier: Modifier,
+    onDraftChange: (String) -> Unit,
+    onDeleteChange: (Boolean) -> Unit,
+    onPreview: (Uri) -> Unit,
+    onSave: () -> Unit,
+    onNext: () -> Unit,
+) {
+    val uri = photos.getOrNull(index)
+    if (uri == null) {
+        EmptyHint("文件夹中没有可整理的照片")
+        return
+    }
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("照片 ${index + 1} / ${photos.size}", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+        FolderPhotoThumb(context, uri, Modifier.fillMaxWidth().weight(0.9f).combinedClickable(onClick = {}, onLongClick = { onPreview(uri) }))
+        OutlinedTextField(draft, onDraftChange, Modifier.fillMaxWidth().weight(1.1f), placeholder = { Text("记录这张图片的关键信息…") }, maxLines = 12)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(deleteAfterSave, onDeleteChange)
+            Text("保存笔记后删除原图", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onNext, enabled = index < photos.lastIndex) { Text("下一张") }
+            Button(onClick = onSave, enabled = draft.trim().isNotEmpty()) { Icon(Icons.Filled.Save, null); Spacer(Modifier.width(4.dp)); Text("保存并下一张") }
+        }
+    }
+}
+
+@Composable
+private fun FolderPhotoThumb(context: Context, uri: Uri, modifier: Modifier = Modifier) {
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, key1 = uri) {
         value = withContext(Dispatchers.IO) {
             runCatching { context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it)?.asImageBitmap() } }.getOrNull()
         }
     }
-    Card(Modifier.fillMaxWidth().aspectRatio(1f), colors = CardDefaults.cardColors(containerColor = NoteSoft)) {
+    Card(modifier, colors = CardDefaults.cardColors(containerColor = NoteSoft)) {
         if (bitmap != null) Image(bitmap!!, contentDescription = "照片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("读取中", style = MaterialTheme.typography.labelSmall, color = NoteMuted) }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun ImagePreviewDialog(context: Context, uri: Uri, onDismiss: () -> Unit) {
+    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = uri) {
+        value = withContext(Dispatchers.IO) { runCatching { context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) } }.getOrNull() }
+    }
+    var ocrText by remember(uri) { mutableStateOf("") }
+    var ocrLoading by remember(uri) { mutableStateOf(false) }
+    fun recognizeText() {
+        val source = bitmap ?: return
+        ocrLoading = true
+        val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+        recognizer.process(InputImage.fromBitmap(source, 0))
+            .addOnSuccessListener { result -> ocrText = result.text; ocrLoading = false; recognizer.close() }
+            .addOnFailureListener { ocrText = "识别失败，请换一张清晰图片"; ocrLoading = false; recognizer.close() }
+    }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = Color.Black) {
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    if (bitmap != null) Image(bitmap!!.asImageBitmap(), contentDescription = "放大图片", modifier = Modifier.fillMaxSize().combinedClickable(onClick = {}, onLongClick = { recognizeText() }), contentScale = ContentScale.Fit)
+                    else Text("读取中", color = Color.White)
+                    IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) { Icon(Icons.Filled.Close, "关闭", tint = Color.White) }
+                }
+                if (ocrLoading) Text("正在本地识别文字…", color = Color.White, modifier = Modifier.padding(12.dp))
+                if (ocrText.isNotBlank()) Surface(color = Color.White, modifier = Modifier.fillMaxWidth().fillMaxHeight(0.28f)) { SelectionContainer { Text(ocrText, color = NoteInk, modifier = Modifier.verticalScroll(rememberScrollState()).padding(14.dp)) } }
+            }
+        }
     }
 }
 
