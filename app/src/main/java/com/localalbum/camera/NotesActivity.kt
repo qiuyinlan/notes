@@ -566,10 +566,14 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                     val now = System.currentTimeMillis()
                     val note = QuickNote(UUID.randomUUID().toString(), photoDraft.trim(), now, now, emptyList(), imageUris = listOf(uri.toString()))
                     onUpdate(state.copy(notes = listOf(note) + state.notes))
-                    if (deletePhotoAfterSave) runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+                    val shouldDelete = deletePhotoAfterSave
+                    if (shouldDelete) {
+                        runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+                        photoUris = photoUris.filterNot { it == uri }
+                    }
                     photoDraft = ""
                     deletePhotoAfterSave = false
-                    photoIndex = (photoIndex + 1).coerceAtMost(photoUris.lastIndex)
+                    photoIndex = if (shouldDelete) photoIndex.coerceAtMost((photoUris.lastIndex).coerceAtLeast(0)) else (photoIndex + 1).coerceAtMost(photoUris.lastIndex)
                 }
             }, onNext = { photoDraft = ""; deletePhotoAfterSave = false; photoIndex = (photoIndex + 1).coerceAtMost(photoUris.lastIndex) })
         } else {
