@@ -67,7 +67,12 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FormatBold
+import androidx.compose.material.icons.filled.FormatItalic
+import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Label
@@ -75,11 +80,14 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Redo
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SentimentDissatisfied
 import androidx.compose.material.icons.filled.SentimentNeutral
 import androidx.compose.material.icons.filled.SentimentVerySatisfied
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.StrikethroughS
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material.icons.filled.Tune
@@ -94,6 +102,8 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -119,6 +129,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -795,6 +806,10 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var text by remember { mutableStateOf(TextFieldValue(note.content)) }
+    val undoStack = remember { mutableStateListOf<TextFieldValue>() }
+    val redoStack = remember { mutableStateListOf<TextFieldValue>() }
+    var showPreview by rememberSaveable { mutableStateOf(true) }
+    var showMoreFormatting by remember { mutableStateOf(false) }
     var location by remember { mutableStateOf(note.location) }
     var mood by remember { mutableStateOf(note.mood) }
     var comments by remember { mutableStateOf(note.comments) }
@@ -808,6 +823,28 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var previewUri by remember { mutableStateOf<Uri?>(null) }
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    fun replaceEditorText(value: TextFieldValue) {
+        if (value != text) {
+            undoStack.add(text)
+            if (undoStack.size > 50) undoStack.removeAt(0)
+            redoStack.clear()
+            text = value
+        }
+    }
+    fun wrapSelection(prefix: String, suffix: String = prefix) {
+        val start = text.selection.start.coerceIn(0, text.text.length)
+        val end = text.selection.end.coerceIn(start, text.text.length)
+        val selected = text.text.substring(start, end)
+        val replacement = if (selected.isEmpty()) prefix + suffix else prefix + selected + suffix
+        val next = text.text.substring(0, start) + replacement + text.text.substring(end)
+        val cursor = if (selected.isEmpty()) start + prefix.length else start + replacement.length
+        replaceEditorText(TextFieldValue(next, TextRange(cursor)))
+    }
+    fun prefixCurrentLine(prefix: String) {
+        val start = text.selection.start.coerceIn(0, text.text.length)
+        val lineStart = text.text.lastIndexOf('\n', (start - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+        replaceEditorText(TextFieldValue(text.text.substring(0, lineStart) + prefix + text.text.substring(lineStart), TextRange(start + prefix.length)))
+    }
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
         keyboardController?.show()
@@ -841,6 +878,51 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
                     ToolButton(Icons.Filled.PhotoLibrary, "图片", false) { imageLauncher.launch(arrayOf("image/*")) }
                 }
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    MarkdownToolButton(Icons.Filled.FormatBold, "粗体") { wrapSelection("**") }
+                    MarkdownToolButton(Icons.Filled.FormatItalic, "斜体") { wrapSelection("*") }
+                    MarkdownToolButton(Icons.Filled.FormatUnderlined, "下划线") { wrapSelection("<u>", "</u>") }
+                    MarkdownToolButton(Icons.Filled.StrikethroughS, "删除线") { wrapSelection("~~") }
+                    MarkdownToolButton(Icons.Filled.FormatQuote, "引用") { prefixCurrentLine("> ") }
+                    MarkdownToolButton(Icons.Filled.Remove, "分隔线") {
+                        val insertion = if (text.text.isBlank()) "---\n" else "\n\n---\n"
+                        replaceEditorText(TextFieldValue(text.text + insertion, TextRange(text.text.length + insertion.length)))
+                    }
+                    IconButton(onClick = {
+                        if (undoStack.isNotEmpty()) {
+                            val current = text
+                            val previous = undoStack.removeAt(undoStack.lastIndex)
+                            redoStack.add(current)
+                            text = previous
+                        }
+                    }, enabled = undoStack.isNotEmpty()) { Icon(Icons.Filled.Undo, "撤销") }
+                    IconButton(onClick = {
+                        if (redoStack.isNotEmpty()) {
+                            val current = text
+                            val next = redoStack.removeAt(redoStack.lastIndex)
+                            undoStack.add(current)
+                            text = next
+                        }
+                    }, enabled = redoStack.isNotEmpty()) { Icon(Icons.Filled.Redo, "重做") }
+                    Box {
+                        IconButton(onClick = { showMoreFormatting = true }) { Icon(Icons.Filled.MoreVert, "更多格式") }
+                        DropdownMenu(expanded = showMoreFormatting, onDismissRequest = { showMoreFormatting = false }) {
+                            DropdownMenuItem(text = { Text("行内代码") }, onClick = { wrapSelection("`"); showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text("代码块") }, onClick = {
+                                prefixCurrentLine("```\n")
+                                replaceEditorText(TextFieldValue(text.text + "\n```", TextRange(text.text.length + 4)))
+                                showMoreFormatting = false
+                            })
+                            DropdownMenuItem(text = { Text("无序列表") }, onClick = { prefixCurrentLine("- "); showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text("有序列表") }, onClick = { prefixCurrentLine("1. "); showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text(if (showPreview) "隐藏实时预览" else "显示实时预览") }, onClick = { showPreview = !showPreview; showMoreFormatting = false })
+                        }
+                    }
+                }
                 val inlineTags = NoteTagRegex.findAll(text.text).map { it.groupValues[1] }.distinct().toList()
                 if (inlineTags.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { inlineTags.forEach { Text("#$it", color = NoteTagColor, fontSize = 12.sp, fontWeight = FontWeight.Medium) } }
                 location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 6.dp)) }
@@ -852,7 +934,15 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                         }
                     }
                 }
-                OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp), colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White))
+                Column(Modifier.fillMaxWidth().weight(1f)) {
+                    OutlinedTextField(text, { replaceEditorText(it) }, Modifier.fillMaxWidth().weight(if (showPreview) 0.58f else 1f).focusRequester(focusRequester), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp), colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White))
+                    if (showPreview) {
+                        Text("实时预览", color = NoteMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp, bottom = 3.dp))
+                        Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().weight(0.42f)) {
+                            MarkdownPreview(text.text, Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp))
+                        }
+                    }
+                }
                 if (comments.isNotEmpty()) CommentedNotePreview(text.text, comments, { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } }, showEye = true, modifier = Modifier.fillMaxWidth().heightIn(max = 128.dp).padding(top = 8.dp).verticalScroll(rememberScrollState()))
             }
         }
@@ -931,6 +1021,12 @@ private fun insertTagAtCursor(tag: String, value: TextFieldValue, onChange: (Tex
 
 @Composable
 private fun ToolButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, selected: Boolean, onClick: () -> Unit) { Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 5.dp)) { Icon(icon, label, tint = if (selected) NoteAccent else NotePrimary, modifier = Modifier.size(23.dp)); Text(label, color = NoteMuted, style = MaterialTheme.typography.labelSmall) } }
+@Composable
+private fun MarkdownToolButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(36.dp)) {
+        Icon(icon, label, tint = NotePrimary, modifier = Modifier.size(21.dp))
+    }
+}
 private fun moodIcon(mood: String) = when (mood) { "HAPPY" -> Icons.Filled.SentimentVerySatisfied; "SAD" -> Icons.Filled.SentimentDissatisfied; else -> Icons.Filled.SentimentNeutral }
 @Suppress("DEPRECATION")
 private fun getLastLocationLabel(context: Context): String? {
@@ -1278,15 +1374,17 @@ private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
 }
 
 private fun markdownInline(value: String) = buildAnnotatedString {
-    val pattern = Regex("""(\*\*|__)(.+?)\1|(?<!\*)\*([^*]+)\*|`([^`]+)`|\[([^]]+)]\([^)]+\)|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/_-]*(?=\s|$)""")
+    val pattern = Regex("""(\*\*|__)(.+?)\1|(?<!\*)\*([^*]+)\*|~~(.+?)~~|`([^`]+)`|<u>(.+?)</u>|\[([^]]+)]\([^)]+\)|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/_-]*(?=\s|$)""")
     var cursor = 0
     pattern.findAll(value).forEach { match ->
         append(value.substring(cursor, match.range.first))
         when {
             match.groupValues[1].isNotEmpty() -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(match.groupValues[2]) }
             match.groupValues[3].isNotEmpty() -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(match.groupValues[3]) }
-            match.groupValues[4].isNotEmpty() -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)) { append(match.groupValues[4]) }
-            match.groupValues[5].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[5]) }
+            match.groupValues[4].isNotEmpty() -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(match.groupValues[4]) }
+            match.groupValues[5].isNotEmpty() -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)) { append(match.groupValues[5]) }
+            match.groupValues[6].isNotEmpty() -> withStyle(SpanStyle(textDecoration = TextDecoration.Underline)) { append(match.groupValues[6]) }
+            match.groupValues[7].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[7]) }
             match.value.startsWith("#") -> withStyle(SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium, fontSize = 12.sp)) { append(match.value) }
         }
         cursor = match.range.last + 1
