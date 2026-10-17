@@ -1,8 +1,8 @@
-# 分类相机
+# 随心记
 
-一个本地优先的 Android 相机原型：先选分类，再拍照；照片直接写入手机媒体库的 `DCIM/<分类名>`，可由手机相册应用读取。
+一个本地优先的 Android 个人记录应用：先记录，再整理。首屏可以直接写下随记，使用 `#生活/阅读` 自动建立层级分类，也可以在整理台逐条归类。
 
-照片不会上传。应用仅请求相机权限；分类名称保存在应用本地偏好设置中。删除分类只会从应用列表移除名称，不会删除相册目录或其中的照片。
+随记、分类、日记和未来的信都保存在手机本地，不需要账号或网络。Markdown 日记保留原文；未来的信按设备本地日期展示。
 
 ## 构建
 
@@ -12,7 +12,7 @@
 
 用 Android Studio 打开项目并同步 Gradle，然后运行 `app` 配置。手机需运行 Android 10 或更新版本。
 
-也可以直接在项目目录运行 `gradlew.bat assembleRelease`。APK 输出到 `app/build/outputs/apk/release/app-release.apk`；连接开启 USB 调试的手机后可运行 `gradlew.bat installRelease`。当前 Release 变体为测试用途，使用本机 Android debug 密钥签名，不应用于正式商店发布。
+也可以直接在项目目录运行 `gradlew.bat assembleRelease`。APK 输出到 `app/build/outputs/apk/release/app-release.apk`；连接开启 USB 调试的手机后可运行 `gradlew.bat installRelease`。项目存在 `keystore.properties` 时使用发布密钥；没有发布密钥时回退到 Android debug 密钥，仅用于真机测试。
 
 ## Release 签名保护
 
@@ -41,9 +41,10 @@ keyPassword=替换为密钥密码
 
 ## 当前范围
 
-- 创建和选择本地分类
-- 内置后置相机预览与拍照
-- 照片保存到 `DCIM/<分类名>`
-- 相机权限请求
+- 快速随记和本地保存
+- `#一级/二级` 分类路径和分类空间
+- 随记箱整理、归类、跳过、删除
+- Markdown 日记编辑
+- 未来的信和到期展示
 
-尚未实现导入旧照片、编辑分类名称、前置镜头或云端功能。
+相册整理代码仍保留在项目中作为平台能力参考，当前启动入口为随心记。

@@ -44,23 +44,17 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (releaseKeystorePath.isNullOrBlank()) {
+                signingConfigs.getByName("debug")
+            } else {
+                signingConfigs.getByName("release")
+            }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 
     kotlinOptions {
         jvmTarget = "17"
-    }
-}
-
-tasks.configureEach {
-    if (name.contains("Release", ignoreCase = true) && name.startsWith("assemble", ignoreCase = true)) {
-        doFirst {
-            check(!releaseKeystorePath.isNullOrBlank()) {
-                "Configure keystore.properties with your release signing key before building release."
-            }
-        }
     }
 }
 
