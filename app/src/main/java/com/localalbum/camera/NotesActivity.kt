@@ -70,6 +70,7 @@ import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SentimentDissatisfied
 import androidx.compose.material.icons.filled.SentimentNeutral
@@ -84,6 +85,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -145,6 +147,9 @@ import java.util.Date
 import java.util.Calendar
 import java.util.Locale
 import java.util.UUID
+import java.io.BufferedOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -318,7 +323,7 @@ class NotesActivity : ComponentActivity() {
     }
 }
 
-private enum class NotesPage { HOME, ORGANIZER, TAGS, DIARIES, LETTERS, CATEGORY }
+private enum class NotesPage { HOME, ORGANIZER, TAGS, DIARIES, MY, LETTERS, CATEGORY }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -370,7 +375,7 @@ private fun NotesApp() {
             containerColor = NotePaper,
             topBar = {
                 TopAppBar(
-                    title = { Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.TAGS -> "标签"; NotesPage.DIARIES -> "日记"; NotesPage.LETTERS -> "未来的信"; NotesPage.CATEGORY -> selectedCategory?.path ?: "分类" }, fontWeight = FontWeight.Bold) },
+                    title = { Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.TAGS -> "标签"; NotesPage.DIARIES -> "日记"; NotesPage.MY -> "我的"; NotesPage.LETTERS -> "信件"; NotesPage.CATEGORY -> selectedCategory?.path ?: "分类" }, fontWeight = FontWeight.Bold) },
                     navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Filled.Menu, "打开导航") } },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = NotePaper),
                 )
@@ -378,11 +383,12 @@ private fun NotesApp() {
             bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; if (target != NotesPage.TAGS) tagCategory = null } },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.DIARIES }, onLetters = { page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update)
+                NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.DIARIES }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update)
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) })
                 NotesPage.DIARIES -> DiaryPage(state, padding, onEdit = { diaryEditor = it }, onCreate = { diaryEditor = Diary(UUID.randomUUID().toString(), "", "", today()) }, onRandom = { diaryWalk = it })
+                NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS })
                 NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
         }
@@ -399,8 +405,9 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
     NavigationBar(containerColor = Color.White) {
         NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页") }, label = { Text("首页") })
         NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理") }, label = { Text("整理") })
+        NavigationBarItem(page == NotesPage.DIARIES, { onSelect(NotesPage.DIARIES) }, icon = { Icon(Icons.Filled.Book, "日记") }, label = { Text("日记") })
         NavigationBarItem(page == NotesPage.TAGS, { onSelect(NotesPage.TAGS) }, icon = { Icon(Icons.Filled.Label, "标签") }, label = { Text("标签") })
-        NavigationBarItem(page == NotesPage.LETTERS, { onSelect(NotesPage.LETTERS) }, icon = { Icon(Icons.Filled.MailOutline, "未来的信") }, label = { Text("未来的信") })
+        NavigationBarItem(page == NotesPage.MY || page == NotesPage.LETTERS, { onSelect(NotesPage.MY) }, icon = { Icon(Icons.Filled.Person, "我的") }, label = { Text("我的") })
     }
 }
 
@@ -412,7 +419,7 @@ private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCate
         DrawerItem("随记箱 · ${state.notes.count { it.status == "inbox" }}", Icons.Filled.Inbox, page == NotesPage.ORGANIZER) { onNavigate(NotesPage.ORGANIZER, null) }
         DrawerItem("整理", Icons.Filled.Tune, page == NotesPage.ORGANIZER) { onNavigate(NotesPage.ORGANIZER, null) }
         DrawerItem("日记", Icons.Filled.Book, page == NotesPage.DIARIES) { onNavigate(NotesPage.DIARIES, null) }
-        DrawerItem("未来的信", Icons.Filled.MailOutline, page == NotesPage.LETTERS) { onNavigate(NotesPage.LETTERS, null) }
+        DrawerItem("我的", Icons.Filled.Person, page == NotesPage.MY || page == NotesPage.LETTERS) { onNavigate(NotesPage.MY, null) }
         Divider(Modifier.padding(vertical = 12.dp))
         Text("分类", style = MaterialTheme.typography.labelLarge, color = NoteMuted, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
         state.categories.filter { it.parentId == null }.forEach { category -> DrawerItem(category.path, Icons.Filled.Label, selected?.id == category.id) { onNavigate(NotesPage.CATEGORY, category) } }
@@ -430,20 +437,25 @@ private fun DrawerItem(label: String, icon: androidx.compose.ui.graphics.vector.
 
 @Composable
 private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item {
-            Text("随心记", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp, bottom = 10.dp))
-            Box(Modifier.fillMaxWidth().height(112.dp).clickable { val now = System.currentTimeMillis(); onCapture(QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList())) }) {
-                OutlinedTextField(value = "", onValueChange = {}, enabled = false, modifier = Modifier.fillMaxSize(), placeholder = { Text("点击开始记录…") }, shape = RoundedCornerShape(16.dp), trailingIcon = { Icon(Icons.AutoMirrored.Filled.Send, "开始记录", tint = NotePrimary) })
+    Column(Modifier.fillMaxSize().padding(padding)) {
+        LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            item {
+                Text("时间线", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
             }
+            item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); SummaryCard("今日的信", due.size, Icons.Filled.MailOutline, onLetters) } }
+            item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("日记") } } }
+            if (state.notes.isEmpty()) item { EmptyHint("还没有记录，点击底部输入框开始") }
+            items(state.notes.sortedByDescending { it.createdAt }, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }) }
+            if (state.categories.isNotEmpty()) item { Text("分类空间", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            if (state.categories.isNotEmpty()) item { LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height(((state.categories.count { it.parentId == null } + 1) / 2 * 88).coerceAtLeast(88).dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(state.categories.filter { it.parentId == null }) { category -> Card(Modifier.fillMaxWidth().height(78.dp).clickable { onCategory(category) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(category.name, fontWeight = FontWeight.Bold); Text("${state.notes.count { category.id in it.categoryIds }} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp)) } } } } }
         }
-        item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); SummaryCard("今日的信", due.size, Icons.Filled.MailOutline, onLetters) } }
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Text("时间线", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("日记") } } }
-        if (state.notes.isEmpty()) item { EmptyHint("还没有记录，点击上面的输入框开始") }
-        items(state.notes.sortedByDescending { it.createdAt }, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }) }
-        if (state.categories.isNotEmpty()) item { Text("分类空间", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
-        if (state.categories.isNotEmpty()) item { LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height(((state.categories.count { it.parentId == null } + 1) / 2 * 88).coerceAtLeast(88).dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(state.categories.filter { it.parentId == null }) { category -> Card(Modifier.fillMaxWidth().height(78.dp).clickable { onCategory(category) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(category.name, fontWeight = FontWeight.Bold); Text("${state.notes.count { category.id in it.categoryIds }} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp)) } } } } }
+        Box(Modifier.fillMaxWidth().background(NotePaper).padding(horizontal = 16.dp, vertical = 8.dp).clickable {
+            val now = System.currentTimeMillis()
+            onCapture(QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()))
+        }) {
+            OutlinedTextField(value = "", onValueChange = {}, enabled = false, modifier = Modifier.fillMaxWidth().height(58.dp), singleLine = true, placeholder = { Text("点击开始记录…") }, shape = RoundedCornerShape(12.dp), trailingIcon = { Icon(Icons.AutoMirrored.Filled.Send, "开始记录", tint = NotePrimary) })
+        }
     }
 }
 
@@ -821,16 +833,18 @@ private fun DiaryPage(state: NotesState, padding: PaddingValues, onEdit: (Diary)
     var categoryFilter by rememberSaveable { mutableStateOf("全部分类") }
     var showMonthPicker by remember { mutableStateOf(false) }
     var showCategoryPicker by remember { mutableStateOf(false) }
+    var showRandomHint by remember { mutableStateOf(false) }
     val months = state.diaries.map { it.date.take(7) }.filter { it.length == 7 }.distinct().sortedDescending()
     val categories = state.diaries.flatMap { diaryTags(it) }.distinct().sorted()
     val filtered = state.diaries.sortedByDescending { it.date }.filter { diary ->
         (monthFilter == "全部月份" || diary.date.startsWith(monthFilter)) && (categoryFilter == "全部分类" || categoryFilter in diaryTags(diary))
     }
+    val randomPool = filtered.ifEmpty { state.diaries.sortedByDescending { it.date } }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) { Text("日记列表", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("按日期浏览，进入后可以继续编辑", color = NoteMuted) }
-                IconButton(onClick = { onRandom(filtered) }, enabled = filtered.isNotEmpty()) { Icon(Icons.Filled.Shuffle, "随机漫步") }
+                IconButton(onClick = { if (randomPool.isEmpty()) showRandomHint = true else onRandom(randomPool) }) { Icon(Icons.Filled.Shuffle, "随机漫步") }
                 Button(onClick = onCreate) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(4.dp)); Text("新建") }
             }
         }
@@ -840,7 +854,7 @@ private fun DiaryPage(state: NotesState, padding: PaddingValues, onEdit: (Diary)
                 OutlinedButton(onClick = { showCategoryPicker = true }) { Icon(Icons.Filled.Label, null); Spacer(Modifier.width(4.dp)); Text(categoryFilter) }
             }
         }
-        item { OutlinedButton(onClick = { onRandom(filtered) }, enabled = filtered.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Shuffle, null); Spacer(Modifier.width(6.dp)); Text("开始随机漫步" + if (filtered.isNotEmpty()) "（${filtered.size} 篇）" else "") } }
+        item { OutlinedButton(onClick = { if (randomPool.isEmpty()) showRandomHint = true else onRandom(randomPool) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Shuffle, null); Spacer(Modifier.width(6.dp)); Text("开始随机漫步" + if (randomPool.isNotEmpty()) "（${randomPool.size} 篇）" else "") } }
         if (filtered.isEmpty()) item { EmptyHint("还没有符合筛选条件的日记") }
         items(filtered, key = { it.id }) { diary ->
             Card(Modifier.fillMaxWidth().clickable { onEdit(diary) }, colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -858,6 +872,7 @@ private fun DiaryPage(state: NotesState, padding: PaddingValues, onEdit: (Diary)
     }
     if (showMonthPicker) AlertDialog(onDismissRequest = { showMonthPicker = false }, title = { Text("按月份筛选") }, text = { Column { TextButton(onClick = { monthFilter = "全部月份"; showMonthPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("全部月份") }; months.forEach { month -> TextButton(onClick = { monthFilter = month; showMonthPicker = false }, modifier = Modifier.fillMaxWidth()) { Text(month) } } } }, confirmButton = { TextButton(onClick = { showMonthPicker = false }) { Text("取消") } })
     if (showCategoryPicker) AlertDialog(onDismissRequest = { showCategoryPicker = false }, title = { Text("按分类筛选") }, text = { Column { TextButton(onClick = { categoryFilter = "全部分类"; showCategoryPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("全部分类") }; categories.forEach { category -> TextButton(onClick = { categoryFilter = category; showCategoryPicker = false }, modifier = Modifier.fillMaxWidth()) { Text("#$category") } } } }, confirmButton = { TextButton(onClick = { showCategoryPicker = false }) { Text("取消") } })
+    if (showRandomHint) AlertDialog(onDismissRequest = { showRandomHint = false }, title = { Text("还没有可漫步的日记") }, text = { Text("请先新建一篇日记。随机漫步不要求标签，日期为空时也可以浏览。") }, confirmButton = { TextButton(onClick = { showRandomHint = false }) { Text("知道了") } })
 }
 
 private fun diaryTags(diary: Diary): List<String> = Regex("(?<!\\w)#([\\p{L}\\d/_-]+)").findAll(diary.markdown).map { it.groupValues[1] }.distinct().toList()
@@ -891,6 +906,95 @@ private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit:
         }
     }
 }
+
+@Composable
+private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showExport by remember { mutableStateOf(false) }
+    var pendingFormat by remember { mutableStateOf<String?>(null) }
+    var exportResult by remember { mutableStateOf<String?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val format = pendingFormat
+        if (uri != null && format != null) {
+            exportResult = if (exportNotesToZip(context, state, uri, format)) "导出完成" else "导出失败，请重试"
+        }
+        pendingFormat = null
+    }
+    val month = today().take(7)
+    val monthCount = state.notes.count { prettyMonth(it.createdAt) == month } + state.diaries.count { it.date.startsWith(month) }
+    val progress = (monthCount / 30f).coerceIn(0f, 1f)
+    Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth())
+        Text("把每一次记录都留在本地", color = NoteMuted, modifier = Modifier.fillMaxWidth().padding(top = 3.dp))
+        Box(Modifier.padding(vertical = 24.dp).size(178.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(progress, modifier = Modifier.fillMaxSize(), color = NoteAccent, trackColor = NoteSoft, strokeWidth = 14.dp)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = NoteInk)
+                Text("本月 $monthCount 条", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        Text("记录热力", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("每月记录达到 30 条时圆环画满", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 3.dp, bottom = 18.dp))
+        Button(onClick = onLetters, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.MailOutline, null); Spacer(Modifier.width(7.dp)); Text("我的信件") }
+        OutlinedButton(onClick = { showExport = true }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) { Icon(Icons.Filled.Save, null); Spacer(Modifier.width(7.dp)); Text("导出记录") }
+        Text("导出成压缩包，可选择 TXT 或 Markdown 格式", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
+        exportResult?.let { Text(it, color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 12.dp)) }
+    }
+    if (showExport) AlertDialog(
+        onDismissRequest = { showExport = false },
+        title = { Text("选择导出格式") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(onClick = { pendingFormat = "md"; showExport = false; exportLauncher.launch("suixinji-${today()}.zip") }, modifier = Modifier.fillMaxWidth()) { Text("Markdown（.md）") }
+                TextButton(onClick = { pendingFormat = "txt"; showExport = false; exportLauncher.launch("suixinji-${today()}.zip") }, modifier = Modifier.fillMaxWidth()) { Text("纯文本（.txt）") }
+            }
+        },
+        confirmButton = { TextButton(onClick = { showExport = false }) { Text("取消") } },
+    )
+}
+
+private fun exportNotesToZip(context: Context, state: NotesState, uri: Uri, format: String): Boolean = runCatching {
+    val output = context.contentResolver.openOutputStream(uri) ?: return@runCatching false
+    output.use { stream ->
+        ZipOutputStream(BufferedOutputStream(stream)).use { zip ->
+            fun addEntry(path: String, body: String) {
+                zip.putNextEntry(ZipEntry(path))
+                zip.write(body.toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+            }
+            var index = 1
+            state.notes.sortedBy { it.createdAt }.forEach { note ->
+                val title = note.content.lineSequence().firstOrNull().orEmpty().ifBlank { "随记" }
+                val name = safeExportName(title)
+                addEntry("随记/${index++}-$name.$format", exportDocument(title, editTime(note.createdAt), note.content, format))
+            }
+            state.diaries.sortedBy { it.date }.forEach { diary ->
+                val title = diary.title.ifBlank { "日记" }
+                addEntry("日记/${safeExportName(title)}-${diary.date}.$format", exportDocument(title, diary.date, diary.markdown, format))
+            }
+            state.letters.sortedBy { it.deliverDate }.forEach { letter ->
+                val title = letter.title.ifBlank { "未来的信" }
+                addEntry("信件/${safeExportName(title)}-${letter.deliverDate}.$format", exportDocument(title, letter.deliverDate, letter.content, format))
+            }
+        }
+    }
+    true
+}.getOrDefault(false)
+
+private fun exportDocument(title: String, date: String, content: String, format: String): String {
+    return if (format == "md") {
+        "# $title\n\n日期：$date\n\n$content\n"
+    } else {
+        "标题：$title\n日期：$date\n\n${plainExportText(content)}\n"
+    }
+}
+
+private fun plainExportText(value: String): String = value
+    .replace(Regex("^\\s{0,3}#{1,6}\\s+", RegexOption.MULTILINE), "")
+    .replace(Regex("[*_`~]"), "")
+    .replace(Regex("^\\s*[-*+]\\s+", RegexOption.MULTILINE), "• ")
+
+private fun safeExportName(value: String): String = value.replace(Regex("[\\\\/:*?\"<>|\\r\\n]+"), "_").trim().take(48).ifBlank { "未命名" }
 
 @Composable
 private fun LetterPage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onEdit: (FutureLetter) -> Unit, onCreate: () -> Unit, onUpdate: (NotesState) -> Unit) {
