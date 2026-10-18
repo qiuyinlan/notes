@@ -380,6 +380,7 @@ private fun NotesApp() {
     var commentNote by remember { mutableStateOf<QuickNote?>(null) }
     var letterEditor by remember { mutableStateOf<FutureLetter?>(null) }
     var renameTarget by remember { mutableStateOf<NoteCategory?>(null) }
+    var homeDateFilter by rememberSaveable { mutableStateOf<String?>(null) }
 
     fun update(next: NotesState) { state = next; NotesStore.save(context, next) }
     fun noteWithTags(note: QuickNote): QuickNote {
@@ -420,10 +421,10 @@ private fun NotesApp() {
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = NotePaper),
                 )
             },
-            bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; if (target != NotesPage.TAGS) tagCategory = null } },
+            bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; homeDateFilter = null; if (target != NotesPage.TAGS) tagCategory = null } },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+                NotesPage.HOME -> HomePage(state, dueLetters, padding, homeDateFilter, onClearDateFilter = { homeDateFilter = null }, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
@@ -432,7 +433,7 @@ private fun NotesApp() {
                     tagCategory = null
                 })
                 NotesPage.WALK -> WalkPage(state, padding, onEdit = { editorNote = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
-                NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onImport = { bundle ->
+                NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; page = NotesPage.HOME }, onImport = { bundle ->
                     var importState = state
                     val mergedCategories = importState.categories.toMutableList()
                     val idMap = mutableMapOf<String, String>()
@@ -465,7 +466,7 @@ private fun NotesApp() {
     }
     editorNote?.let { note -> QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null }, onSave = { saveNote(it); editorNote = null }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
-    letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null }) }
+    letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null; page = NotesPage.MY }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null; page = NotesPage.MY }) }
     renameTarget?.let { category ->
         RenameCategoryDialog(category, onDismiss = { renameTarget = null }, onSave = { newName ->
             val cleanName = newName.trim().trimStart('#')
@@ -605,14 +606,24 @@ private fun DrawerItem(label: String, icon: androidx.compose.ui.graphics.vector.
 }
 
 @Composable
-private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit, onDelete: (QuickNote) -> Unit) {
+private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, dateFilter: String?, onClearDateFilter: () -> Unit, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit, onDelete: (QuickNote) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
-    val visibleNotes = state.notes.sortedByDescending { it.createdAt }.filter { note -> query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) } }
+    val dayFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.CHINA) }
+    val visibleNotes = state.notes.sortedByDescending { it.createdAt }.filter { note ->
+        (dateFilter == null || dayFormat.format(Date(note.createdAt)) == dateFilter) &&
+            (query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) })
+    }
     Column(Modifier.fillMaxSize().padding(padding)) {
         LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             item {
-                Text("时间线", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("时间线", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    if (dateFilter != null) {
+                        TextButton(onClick = onClearDateFilter) { Text("${dateFilter} ×", color = NotePrimary) }
+                    }
+                }
+                if (dateFilter != null) Text("当天记录", color = NoteMuted, modifier = Modifier.padding(top = 3.dp)) else Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(top = 12.dp), singleLine = true, label = { Text("搜索笔记") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } })
             }
             item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); SummaryCard("今日的信", due.size, Icons.Filled.MailOutline, onLetters) } }
@@ -1425,7 +1436,7 @@ private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit:
 }
 
 @Composable
-private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onImport: (ImportBundle) -> Unit) {
+private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onDayClick: (String) -> Unit, onImport: (ImportBundle) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showTransfer by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
@@ -1452,19 +1463,61 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
             result = if (imported.notes.isEmpty()) "没有解析到可导入的 Flomo 笔记" else "已导入 ${imported.notes.size} 条笔记"
         }
     }
-    val days = remember { (0 until 90).map { offset -> Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -(89 - offset)) }.time } }
     val dayFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.CHINA) }
     val dayCounts = remember(state.notes) { state.notes.groupingBy { dayFormat.format(Date(it.createdAt)) }.eachCount() }
+    var monthOffset by rememberSaveable { mutableStateOf(0) }
+    val monthCalendar = remember(monthOffset) { Calendar.getInstance().apply { set(Calendar.DAY_OF_MONTH, 1); add(Calendar.MONTH, monthOffset) } }
+    val monthLabel = remember(monthOffset) { SimpleDateFormat("yyyy年M月", Locale.CHINA).format(monthCalendar.time) }
+    val firstDayOffset = monthCalendar.get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY
+    val daysInMonth = monthCalendar.getActualMaximum(Calendar.DAY_OF_MONTH)
+    val monthCells = remember(monthOffset) {
+        (0 until 42).map { index ->
+            if (index < firstDayOffset || index >= firstDayOffset + daysInMonth) null
+            else Calendar.getInstance().apply { set(monthCalendar.get(Calendar.YEAR), monthCalendar.get(Calendar.MONTH), index - firstDayOffset + 1, 0, 0, 0); set(Calendar.MILLISECOND, 0) }.time
+        }
+    }
     Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp)) {
         Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("本地保存 · ${state.notes.size} 条记录", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
-        Text("近三个月记录热力", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp))
-        Text("每天一个圆圈，颜色越深表示当天记录越多", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 3.dp, bottom = 12.dp))
-        LazyVerticalGrid(GridCells.Fixed(15), Modifier.fillMaxWidth().height(212.dp), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            items(days, key = { dayFormat.format(it) }) { day ->
-                val count = dayCounts[dayFormat.format(day)] ?: 0
-                val color = when { count >= 5 -> NotePrimary; count >= 3 -> NoteAccent; count == 2 -> NoteSoft; count == 1 -> NotePaper; else -> Color(0xFFF7F4F0) }
-                Surface(color = color, shape = CircleShape, modifier = Modifier.size(15.dp)) {}
+        Text("记录热力", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp))
+        Text("左右滑动切换月份，点击日期查看当天全部笔记", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 3.dp, bottom = 12.dp))
+        Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().pointerInput(monthOffset) {
+                var dragDistance = 0f
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, amount -> dragDistance += amount },
+                    onDragEnd = {
+                        if (dragDistance < -80f) monthOffset += 1
+                        else if (dragDistance > 80f) monthOffset -= 1
+                        dragDistance = 0f
+                    },
+                    onDragCancel = { dragDistance = 0f },
+                )
+            }.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { monthOffset -= 1 }, modifier = Modifier.size(36.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上个月", tint = NotePrimary) }
+                    Text(monthLabel, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = FontWeight.Bold)
+                    IconButton(onClick = { monthOffset += 1 }, modifier = Modifier.size(36.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "下个月", tint = NotePrimary) }
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    listOf("日", "一", "二", "三", "四", "五", "六").forEach { label -> Text(label, Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = NoteMuted, style = MaterialTheme.typography.labelSmall) }
+                }
+                LazyVerticalGrid(GridCells.Fixed(7), Modifier.fillMaxWidth().height(228.dp), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalArrangement = Arrangement.spacedBy(3.dp), userScrollEnabled = false) {
+                    items(monthCells) { day ->
+                        if (day == null) {
+                            Spacer(Modifier.size(34.dp))
+                        } else {
+                            val dayKey = dayFormat.format(day)
+                            val count = dayCounts[dayKey] ?: 0
+                            val color = when { count >= 5 -> NotePrimary; count >= 3 -> NoteAccent; count == 2 -> NoteSoft; count == 1 -> NotePaper; else -> Color(0xFFF7F4F0) }
+                            Box(Modifier.fillMaxWidth().height(34.dp).clickable { onDayClick(dayKey) }, contentAlignment = Alignment.Center) {
+                                Surface(color = color, shape = CircleShape, modifier = Modifier.size(30.dp)) {
+                                    Box(contentAlignment = Alignment.Center) { Text(dayKey.substring(8), color = if (count >= 3) Color.White else NoteMuted, style = MaterialTheme.typography.labelSmall) }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         Button(onClick = onLetters, modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) { Icon(Icons.Filled.MailOutline, null); Spacer(Modifier.width(7.dp)); Text("我的信件") }
@@ -1935,7 +1988,37 @@ private fun markdownInline(value: String) = buildAnnotatedString {
     append(value.substring(cursor))
 }
 @Composable
-private fun LetterEditor(letter: FutureLetter, onDismiss: () -> Unit, onSave: (FutureLetter) -> Unit) { var title by remember { mutableStateOf(letter.title) }; var text by remember { mutableStateOf(letter.content) }; var date by remember { mutableStateOf(letter.deliverDate) }; Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) { Surface(Modifier.fillMaxSize(), color = NotePaper) { Column(Modifier.padding(18.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text("写给未来的自己", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = { if (date.isNotBlank()) onSave(letter.copy(title = title, content = text, deliverDate = date)) }) { Text("保存") } }; OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题（可选）") }); OutlinedTextField(date, { date = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("展示日期 YYYY-MM-DD") }); Spacer(Modifier.height(10.dp)); OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("正文") }, maxLines = 30) } } } }
+private fun LetterEditor(letter: FutureLetter, onDismiss: () -> Unit, onSave: (FutureLetter) -> Unit) {
+    var title by remember { mutableStateOf(letter.title) }
+    var text by remember { mutableStateOf(letter.content) }
+    var date by remember { mutableStateOf(letter.deliverDate) }
+    var dragDistance by remember { mutableStateOf(0f) }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            Modifier.fillMaxSize().pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, amount -> dragDistance += amount },
+                    onDragEnd = { if (abs(dragDistance) > 80f) onDismiss(); dragDistance = 0f },
+                    onDragCancel = { dragDistance = 0f },
+                )
+            },
+            color = NotePaper,
+        ) {
+            Column(Modifier.padding(18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, "返回我的") }
+                    Text("写给未来的自己", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { if (date.isNotBlank()) onSave(letter.copy(title = title, content = text, deliverDate = date)) }) { Text("保存") }
+                }
+                OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题（可选）") })
+                OutlinedTextField(date, { date = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("展示日期 YYYY-MM-DD") })
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("正文") }, maxLines = 30)
+            }
+        }
+    }
+}
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
