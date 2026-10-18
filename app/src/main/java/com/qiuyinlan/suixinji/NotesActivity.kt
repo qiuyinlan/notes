@@ -1307,10 +1307,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         replaceEditorText(TextFieldValue(text.text.substring(0, lineStart) + prefix + text.text.substring(lineStart), TextRange(start + prefix.length)))
     }
     LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-        keyboardController?.show()
-    }
-    LaunchedEffect(Unit) {
         while (true) {
             delay(30_000)
             if (hasChanges()) saveChanges()
@@ -1328,7 +1324,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     }
     Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = Color.White) {
-            Column(Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 10.dp)) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 2.dp, vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { if (text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) saveChanges(); onDismiss() }) { Icon(Icons.Filled.Check, "保存并返回首页") }
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -1356,13 +1352,14 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                 }
                 val formattingToolbar: @Composable () -> Unit = {
                 Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(18.dp)) }
-                    IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(18.dp)) }
-                    IconButton(onClick = { wrapSelection("~~") }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.StrikethroughS, "删除线", modifier = Modifier.size(18.dp)) }
-                    IconButton(onClick = { wrapSelection("<u>", "</u>") }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.FormatUnderlined, "下划线", modifier = Modifier.size(18.dp)) }
+                    IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(16.dp)) }
+                    IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(16.dp)) }
+                    IconButton(onClick = { wrapSelection("~~") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.StrikethroughS, "删除线", modifier = Modifier.size(16.dp)) }
+                    IconButton(onClick = { wrapSelection("<u>", "</u>") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatUnderlined, "下划线", modifier = Modifier.size(16.dp)) }
+                    IconButton(onClick = { keyboardController?.hide(); focusRequester.freeFocus() }, modifier = Modifier.size(28.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", modifier = Modifier.size(16.dp)) }
                     Spacer(Modifier.weight(1f))
                     Box {
-                        IconButton(onClick = { showMoreFormatting = true }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.MoreVert, "更多格式", modifier = Modifier.size(18.dp)) }
+                        IconButton(onClick = { showMoreFormatting = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.MoreVert, "更多格式", modifier = Modifier.size(16.dp)) }
                         DropdownMenu(expanded = showMoreFormatting, onDismissRequest = { showMoreFormatting = false }) {
                             Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                 IconButton(onClick = { prefixCurrentLine("> "); showMoreFormatting = false }) { Icon(Icons.Filled.FormatQuote, "引用") }
@@ -1379,7 +1376,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     }
                 }
                 }
-                if (!editorFocused) formattingToolbar()
                 Box(Modifier.fillMaxWidth().weight(1f).background(Color.White)) {
                     Column(Modifier.fillMaxSize().padding(horizontal = 0.dp, vertical = 0.dp)) {
                         if (editorFocused) formattingToolbar()
@@ -1406,12 +1402,13 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                                     focusRequester.requestFocus()
                                     keyboardController?.show()
                                 },
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
                             )
                         }
                     }
                     IconButton(onClick = { saveAndNext() }, modifier = Modifier.align(if (text.text.isBlank()) Alignment.BottomEnd else Alignment.TopEnd).padding(4.dp)) { Icon(Icons.Filled.Add, "保存并新建下一篇", tint = NotePrimary) }
                 }
+                if (!editorFocused) Box(Modifier.fillMaxWidth().background(Color.White).padding(vertical = 2.dp)) { formattingToolbar() }
             }
         }
     }
