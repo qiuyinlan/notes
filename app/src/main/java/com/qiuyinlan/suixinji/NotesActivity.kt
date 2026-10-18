@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -528,7 +529,7 @@ private fun NotesApp() {
             }
         }
     }
-    editorNote?.let { note -> QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null }, onSave = { saveNote(it) }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
+    editorNote?.let { note -> QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null; page = NotesPage.HOME }, onSave = { saveNote(it) }, onNext = { val now = System.currentTimeMillis(); editorNote = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()) }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
     letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null; page = NotesPage.MY }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null; page = NotesPage.MY }) }
     renameTarget?.let { category ->
@@ -747,7 +748,7 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
         Column(Modifier.padding(16.dp)) {
             CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, showEye = false)
             if (longText) Text(if (expanded) "点击收起 · 双击编辑" else "点击展开 · 双击编辑", color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall); note.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }; Text(" · ${moodLabel(note.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall); Spacer(Modifier.weight(1f)); IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall); note.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }; Text(" · ${moodLabel(note.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall); Spacer(Modifier.weight(1f)); if (note.comments.isEmpty()) IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
             val paths = note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }
             if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
         }
@@ -1125,7 +1126,7 @@ private fun CategoryPicker(categories: List<NoteCategory>, onDismiss: () -> Unit
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
-private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onDelete: () -> Unit) {
+private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onNext: () -> Unit, onDelete: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var text by remember { mutableStateOf(TextFieldValue(note.content)) }
@@ -1163,6 +1164,10 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     }
     fun hasChanges(): Boolean = text.text.trim() != savedNote.content.trim() || location != savedNote.location || mood != savedNote.mood || comments != savedNote.comments || createdAt != savedNote.createdAt || imageUris != savedNote.imageUris
     fun requestDismiss() { if (hasChanges()) showUnsavedDialog = true else onDismiss() }
+    fun saveAndNext() {
+        if (text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) saveChanges()
+        onNext()
+    }
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     fun replaceEditorText(value: TextFieldValue) {
@@ -1241,13 +1246,12 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         }
     }
     Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize(), color = NotePaper) {
+        Surface(Modifier.fillMaxSize(), color = Color.White) {
             Column(Modifier.fillMaxSize().padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = ::requestDismiss) { Icon(Icons.Filled.Close, "关闭") }
+                    IconButton(onClick = { if (text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) saveChanges(); onDismiss() }) { Icon(Icons.Filled.Check, "保存并返回首页") }
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { saveChanges() }, enabled = text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) { Icon(Icons.Filled.Save, "保存") }
                 }
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } } else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
@@ -1292,8 +1296,8 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                         }
                     }
                 }
-                Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
-                    Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp)) {
+                Box(Modifier.fillMaxWidth().weight(1f).background(Color.White)) {
+                    Column(Modifier.fillMaxSize().padding(horizontal = 0.dp, vertical = 0.dp)) {
                         OutlinedTextField(
                             text,
                             { handleEditorInput(it) },
@@ -1301,8 +1305,8 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                             placeholder = { Text("写下此刻的想法…") },
                             maxLines = 30,
                             visualTransformation = MarkdownVisualTransformation(comments),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White),
+                            shape = RoundedCornerShape(0.dp),
+                            colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Color.Transparent, focusedBorderColor = Color.Transparent, unfocusedContainerColor = Color.White, focusedContainerColor = Color.White),
                         )
                         if (comments.isNotEmpty()) {
                             CommentedNotePreview(
@@ -1320,6 +1324,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                             )
                         }
                     }
+                    IconButton(onClick = { saveAndNext() }, modifier = Modifier.align(if (text.text.isBlank()) Alignment.BottomEnd else Alignment.TopEnd).padding(4.dp)) { Icon(Icons.Filled.Add, "保存并新建下一篇", tint = NotePrimary) }
                 }
             }
         }
