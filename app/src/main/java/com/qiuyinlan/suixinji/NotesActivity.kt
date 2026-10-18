@@ -527,7 +527,7 @@ private fun NotesApp() {
             },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, dueLetters, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+                NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { openEditor(it, NotesPage.ORGANIZER) })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
@@ -745,18 +745,18 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
         LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("时间线", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    if (dateFilter == null) Text("时间线", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
                     if (dateFilter != null) {
                         TextButton(onClick = onClearDateFilter) { Text("${dateFilter} ×", color = NotePrimary) }
                     }
                 }
-                if (dateFilter != null) Text("当天记录", color = NoteMuted, modifier = Modifier.padding(top = 3.dp)) else Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
+                if (dateFilter != null) Text("${dateFilter} 的记录", color = NoteMuted, modifier = Modifier.padding(top = 3.dp)) else Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
                 if (searchOpen) OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(top = 12.dp), singleLine = true, label = { Text("搜索笔记") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } })
             }
-            item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); LetterSummaryCard(due.size, onLetters) } }
-            item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("漫步") } } }
-            if (state.notes.isEmpty()) item { EmptyHint("还没有记录，点击底部输入框开始") }
+            if (dateFilter == null) item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); LetterSummaryCard(due.size, onLetters) } }
+            item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); if (dateFilter == null) { Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("漫步") } } } }
+            if (state.notes.isEmpty()) item { EmptyHint(if (dateFilter == null) "还没有记录，点击底部输入框开始" else "这一天还没有笔记") }
             if (visibleNotes.isEmpty() && query.isNotBlank()) item { EmptyHint("没有找到匹配的笔记") }
             items(visibleNotes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }, onDelete = { onDelete(note) }) }
             if (state.categories.isNotEmpty()) item { Text("分类空间", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
@@ -1622,6 +1622,7 @@ private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit:
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onDayClick: (String) -> Unit, onImport: (ImportBundle) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -1668,7 +1669,7 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
         Text("本地保存 · ${state.notes.size} 条记录", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
         Text("记录热力", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp))
         Text("左右滑动切换月份，点击日期查看当天全部笔记", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 3.dp, bottom = 12.dp))
-        Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+        Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { monthOffset = 0 })) {
             Column(Modifier.fillMaxWidth().pointerInput(monthOffset) {
                 var dragDistance = 0f
                 detectHorizontalDragGestures(
@@ -1697,8 +1698,9 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
                             val dayKey = dayFormat.format(day)
                             val count = dayCounts[dayKey] ?: 0
                             val color = when { count >= 5 -> NotePrimary; count >= 3 -> NoteAccent; count == 2 -> NoteSoft; count == 1 -> NotePaper; else -> Color(0xFFF7F4F0) }
+                            val isToday = dayKey == dayFormat.format(Date())
                             Box(Modifier.fillMaxWidth().height(34.dp).clickable { onDayClick(dayKey) }, contentAlignment = Alignment.Center) {
-                                Surface(color = color, shape = CircleShape, modifier = Modifier.size(30.dp)) {
+                                Surface(color = color, shape = CircleShape, border = if (isToday) androidx.compose.foundation.BorderStroke(2.dp, NoteAccent) else null, modifier = Modifier.size(30.dp)) {
                                     Box(contentAlignment = Alignment.Center) { Text(dayKey.substring(8), color = if (count >= 3) Color.White else NoteMuted, style = MaterialTheme.typography.labelSmall) }
                                 }
                             }
