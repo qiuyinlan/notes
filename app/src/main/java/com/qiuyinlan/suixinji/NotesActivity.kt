@@ -168,6 +168,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -526,7 +527,7 @@ private fun NotesApp() {
             },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, dueLetters, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+                NotesPage.HOME -> HomePage(state, dueLetters, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { openEditor(it, NotesPage.ORGANIZER) })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
@@ -753,7 +754,7 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
                 if (dateFilter != null) Text("当天记录", color = NoteMuted, modifier = Modifier.padding(top = 3.dp)) else Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
                 if (searchOpen) OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(top = 12.dp), singleLine = true, label = { Text("搜索笔记") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } })
             }
-            item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); SummaryCard("今日的信", due.size, Icons.Filled.MailOutline, onLetters) } }
+            item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); LetterSummaryCard(due.size, onLetters) } }
             item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("漫步") } } }
             if (state.notes.isEmpty()) item { EmptyHint("还没有记录，点击底部输入框开始") }
             if (visibleNotes.isEmpty() && query.isNotBlank()) item { EmptyHint("没有找到匹配的笔记") }
@@ -773,6 +774,16 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
 @Composable
 private fun SummaryCard(label: String, count: Int, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
     Card(Modifier.fillMaxWidth(0.48f).height(82.dp).clickable(onClick = onClick), colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = NotePrimary, modifier = Modifier.size(24.dp)); Spacer(Modifier.width(10.dp)); Column { Text(label, color = NoteMuted, style = MaterialTheme.typography.labelMedium); Text(count.toString(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) } } }
+}
+
+@Composable
+private fun LetterSummaryCard(count: Int, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth(0.48f)) {
+        SummaryCard("信", count, Icons.Filled.MailOutline, onClick)
+        if (count > 0) Surface(color = NoteAccent, shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(22.dp)) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) { Text(count.toString(), color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1045,8 +1056,8 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
         undoState = null
         lastWasSkip = false
     }
-    Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Column(Modifier.weight(1f).verticalScroll(pageScroll), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Box(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+        Column(Modifier.fillMaxSize().verticalScroll(pageScroll).padding(bottom = 78.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("整理台", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -1128,7 +1139,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 Text("左右滑动切换记录 · 跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
             }
             }
-            Surface(color = Color.White, shadowElevation = 6.dp, modifier = Modifier.fillMaxWidth()) {
+            Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                     IconButton(enabled = current != null, onClick = { if (current != null) { lastWasSkip = true; undoState = null; index++ } }) { Icon(Icons.Filled.SkipNext, "跳过") }
                     IconButton(enabled = current != null, onClick = { if (current != null) selected = current }) { Icon(Icons.Filled.Label, "归类") }
@@ -1174,6 +1185,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
     var showMoreFormatting by remember { mutableStateOf(false) }
+    var editorFocused by remember { mutableStateOf(false) }
     var location by remember { mutableStateOf(note.location) }
     var mood by remember { mutableStateOf(note.mood) }
     var comments by remember { mutableStateOf(note.comments) }
@@ -1288,7 +1300,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     }
     Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = Color.White) {
-            Column(Modifier.fillMaxSize().padding(16.dp)) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { if (text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) saveChanges(); onDismiss() }) { Icon(Icons.Filled.Check, "保存并返回首页") }
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -1314,14 +1326,15 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { wrapSelection("**") }) { Icon(Icons.Filled.FormatBold, "加粗") }
-                    IconButton(onClick = { wrapSelection("==") }) { Icon(Icons.Filled.FormatColorFill, "荧光笔") }
-                    IconButton(onClick = { wrapSelection("~~") }) { Icon(Icons.Filled.StrikethroughS, "删除线") }
-                    IconButton(onClick = { wrapSelection("<u>", "</u>") }) { Icon(Icons.Filled.FormatUnderlined, "下划线") }
+                val formattingToolbar: @Composable () -> Unit = {
+                Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(18.dp)) }
+                    IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(18.dp)) }
+                    IconButton(onClick = { wrapSelection("~~") }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.StrikethroughS, "删除线", modifier = Modifier.size(18.dp)) }
+                    IconButton(onClick = { wrapSelection("<u>", "</u>") }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.FormatUnderlined, "下划线", modifier = Modifier.size(18.dp)) }
                     Spacer(Modifier.weight(1f))
                     Box {
-                        IconButton(onClick = { showMoreFormatting = true }) { Icon(Icons.Filled.MoreVert, "更多格式") }
+                        IconButton(onClick = { showMoreFormatting = true }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.MoreVert, "更多格式", modifier = Modifier.size(18.dp)) }
                         DropdownMenu(expanded = showMoreFormatting, onDismissRequest = { showMoreFormatting = false }) {
                             Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                 IconButton(onClick = { prefixCurrentLine("> "); showMoreFormatting = false }) { Icon(Icons.Filled.FormatQuote, "引用") }
@@ -1337,15 +1350,19 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                         }
                     }
                 }
+                }
+                if (!editorFocused) formattingToolbar()
                 Box(Modifier.fillMaxWidth().weight(1f).background(Color.White)) {
                     Column(Modifier.fillMaxSize().padding(horizontal = 0.dp, vertical = 0.dp)) {
+                        if (editorFocused) formattingToolbar()
                         OutlinedTextField(
                             text,
                             { handleEditorInput(it) },
-                            Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester),
                             placeholder = { Text("写下此刻的想法…") },
                             maxLines = 30,
                             visualTransformation = MarkdownVisualTransformation(comments),
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 14.sp, color = Color(0xFF9B8170)),
+                            modifier = Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester).onFocusChanged { editorFocused = it.isFocused },
                             shape = RoundedCornerShape(0.dp),
                             colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Color.Transparent, focusedBorderColor = Color.Transparent, unfocusedContainerColor = Color.White, focusedContainerColor = Color.White),
                         )
@@ -1482,8 +1499,8 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
     val current = notes.getOrNull(index.coerceIn(0, (notes.size - 1).coerceAtLeast(0)))
     var dragDistance by remember { mutableStateOf(0f) }
     var showDeleteDialog by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+    Box(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 78.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("漫步", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -1513,12 +1530,12 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             }
             if (index == 0 || index == notes.lastIndex) Text(if (notes.size == 1) "当前只有这一篇" else if (index == 0) "已经到达最早的笔记" else "已经到达最新的笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
         }
-        Surface(color = Color.White, shadowElevation = 6.dp, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { if (index > 0) index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上一篇", tint = NotePrimary) }
-                IconButton(onClick = { current?.let(onEdit) }, enabled = current != null) { Icon(Icons.Filled.Edit, "编辑", tint = NotePrimary) }
-                IconButton(onClick = { if (index < notes.lastIndex) index++ }, enabled = index < notes.lastIndex) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "下一篇", tint = NotePrimary) }
-            }
+    }
+    Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { if (index > 0) index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上一篇", tint = NotePrimary) }
+            IconButton(onClick = { current?.let(onEdit) }, enabled = current != null) { Icon(Icons.Filled.Edit, "编辑", tint = NotePrimary) }
+            IconButton(onClick = { if (index < notes.lastIndex) index++ }, enabled = index < notes.lastIndex) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "下一篇", tint = NotePrimary) }
         }
     }
     }
@@ -2165,11 +2182,17 @@ private fun markdownInline(value: String) = buildAnnotatedString {
 }
 @Composable
 private fun LetterEditor(letter: FutureLetter, onDismiss: () -> Unit, onSave: (FutureLetter) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var title by remember { mutableStateOf(letter.title) }
     var text by remember { mutableStateOf(letter.content) }
     var date by remember { mutableStateOf(letter.deliverDate) }
     var dragDistance by remember { mutableStateOf(0f) }
     var startedFromEdge by remember { mutableStateOf(false) }
+    fun chooseDate() {
+        val parts = date.split('-').mapNotNull { it.toIntOrNull() }
+        val calendar = Calendar.getInstance().apply { if (parts.size == 3) set(parts[0], parts[1] - 1, parts[2]) }
+        DatePickerDialog(context, { _, year, month, day -> date = "%04d-%02d-%02d".format(Locale.CHINA, year, month + 1, day) }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show()
+    }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             Modifier.fillMaxSize().pointerInput(Unit) {
@@ -2190,7 +2213,7 @@ private fun LetterEditor(letter: FutureLetter, onDismiss: () -> Unit, onSave: (F
                     TextButton(onClick = { if (date.isNotBlank()) onSave(letter.copy(title = title, content = text, deliverDate = date)) }) { Text("保存") }
                 }
                 OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("标题（可选）") })
-                OutlinedTextField(date, { date = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("展示日期 YYYY-MM-DD") })
+                OutlinedTextField(date, { date = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("拆信时间") }, trailingIcon = { IconButton(onClick = ::chooseDate) { Icon(Icons.Filled.CalendarMonth, "选择拆信日期", tint = NotePrimary) } })
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), label = { Text("正文") }, maxLines = 30)
             }
