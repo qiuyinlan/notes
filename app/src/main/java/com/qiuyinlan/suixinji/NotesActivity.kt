@@ -654,22 +654,41 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
     if (showDeleteDialog) AlertDialog(onDismissRequest = { showDeleteDialog = false }, title = { Text("删除笔记") }, text = { Text("确定删除这条笔记吗？") }, confirmButton = { TextButton(onClick = { showDeleteDialog = false; onDelete() }) { Text("删除") } }, dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("取消") } })
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CommentPreview(comments: List<NoteComment>, onToggle: (Int) -> Unit, showEye: Boolean = true, modifier: Modifier = Modifier) {
-    Column(modifier) { comments.forEachIndexed { index, comment -> Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth().clickable(enabled = showEye) { onToggle(index) }.padding(vertical = 3.dp)) { if (showEye) Icon(if (comment.expanded) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "展开或隐藏评论", tint = NoteAccent, modifier = Modifier.size(17.dp)); Icon(Icons.Filled.ChatBubbleOutline, "评论", tint = NoteAccent, modifier = Modifier.size(16.dp).padding(start = 2.dp)); if ((!showEye || comment.expanded) && comment.text.isNotBlank()) Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 7.dp)) { Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) } } } }
+private fun CommentPreview(comments: List<NoteComment>, onToggle: (Int) -> Unit, showEye: Boolean = true, onDoubleClick: (Int) -> Unit = {}, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        comments.forEachIndexed { index, comment ->
+            Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                if (showEye) {
+                    IconButton(onClick = { onToggle(index) }, modifier = Modifier.size(22.dp)) { Icon(if (comment.expanded) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "展开或隐藏评论", tint = NoteAccent, modifier = Modifier.size(17.dp)) }
+                }
+                Icon(Icons.Filled.ChatBubbleOutline, "评论", tint = NoteAccent, modifier = Modifier.size(16.dp).padding(start = 2.dp, top = 3.dp))
+                if ((!showEye || comment.expanded) && comment.text.isNotBlank()) {
+                    Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 7.dp).combinedClickable(onClick = {}, onDoubleClick = { onDoubleClick(index) })) { Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) }
+                }
+            }
+        }
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CommentedNotePreview(content: String, comments: List<NoteComment>, onToggle: (Int) -> Unit, maxLines: Int = Int.MAX_VALUE, showEye: Boolean = true, modifier: Modifier = Modifier) {
+private fun CommentedNotePreview(content: String, comments: List<NoteComment>, onToggle: (Int) -> Unit, maxLines: Int = Int.MAX_VALUE, showEye: Boolean = true, onDoubleClickComment: (Int) -> Unit = {}, modifier: Modifier = Modifier) {
     if (comments.isEmpty()) Text(markdownInline(content), modifier = modifier, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+    else if (content.isBlank()) CommentPreview(comments, onToggle, showEye, onDoubleClickComment, modifier)
     else {
         val sorted = comments.withIndex().sortedBy { it.value.position.coerceIn(0, content.length) }
         Column(modifier) {
             var cursor = 0
             sorted.forEach { indexed ->
                 val position = indexed.value.position.coerceIn(cursor, content.length)
-                if (position > cursor) Text(markdownInline(content.substring(cursor, position)), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
-                CommentPreview(listOf(indexed.value), { onToggle(indexed.index) }, showEye = showEye, modifier = Modifier.padding(vertical = 2.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    if (position > cursor) Text(markdownInline(content.substring(cursor, position)), modifier = Modifier.weight(1f), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+                    else Spacer(Modifier.weight(1f))
+                    Icon(Icons.Filled.ChatBubbleOutline, "评论位置", tint = NoteAccent, modifier = Modifier.size(17.dp).combinedClickable(onClick = {}, onDoubleClick = { onDoubleClickComment(indexed.index) }))
+                }
+                CommentPreview(listOf(indexed.value), { onToggle(indexed.index) }, showEye = showEye, onDoubleClick = { onDoubleClickComment(indexed.index) }, modifier = Modifier.padding(vertical = 2.dp))
                 cursor = position
             }
             if (cursor < content.length) Text(markdownInline(content.substring(cursor)), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
@@ -1148,7 +1167,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                             Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester),
                             placeholder = { Text("写下此刻的想法…") },
                             maxLines = 30,
-                            visualTransformation = MarkdownVisualTransformation,
+                            visualTransformation = MarkdownVisualTransformation(comments),
                             shape = RoundedCornerShape(10.dp),
                             colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White),
                         )
@@ -1158,6 +1177,12 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                                 comments,
                                 { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } },
                                 showEye = true,
+                                onDoubleClickComment = { index ->
+                                    val position = comments.getOrNull(index)?.position?.coerceIn(0, text.text.length) ?: text.text.length
+                                    text = text.copy(selection = TextRange(position))
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                },
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
                             )
                         }
@@ -1803,7 +1828,7 @@ private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
     }
 }
 
-private object MarkdownVisualTransformation : VisualTransformation {
+private class MarkdownVisualTransformation(private val comments: List<NoteComment> = emptyList()) : VisualTransformation {
     override fun filter(text: androidx.compose.ui.text.AnnotatedString): TransformedText {
         val source = text.text
         val hidden = BooleanArray(source.length)
@@ -1822,18 +1847,28 @@ private object MarkdownVisualTransformation : VisualTransformation {
         }
         val sourceToDisplay = IntArray(source.length + 1)
         val displayToSourceList = mutableListOf<Int>()
+        val markerDisplayRanges = mutableListOf<IntRange>()
         val display = StringBuilder()
-        source.forEachIndexed { index, character ->
+        for (index in 0..source.length) {
             sourceToDisplay[index] = display.length
+            comments.filter { it.position.coerceIn(0, source.length) == index }.forEach {
+                val markerStart = display.length
+                display.append('◉')
+                displayToSourceList += index
+                markerDisplayRanges += markerStart..markerStart
+            }
+            sourceToDisplay[index] = display.length
+            if (index == source.length) break
+            val character = source[index]
             if (!hidden[index]) {
                 val atLineStart = index == 0 || source[index - 1] == '\n'
                 display.append(if (character == '-' && atLineStart && source.getOrNull(index + 1) == ' ') '•' else character)
                 displayToSourceList += index
             }
         }
-        sourceToDisplay[source.length] = display.length
         val styled = buildAnnotatedString {
             append(display.toString())
+            markerDisplayRanges.forEach { range -> addStyle(SpanStyle(color = NoteAccent, fontWeight = FontWeight.Bold), range.first, range.last + 1) }
             fun styleRange(range: IntRange, style: SpanStyle) {
                 val start = sourceToDisplay[range.first.coerceIn(0, source.length)]
                 val end = sourceToDisplay[(range.last + 1).coerceIn(0, source.length)]
