@@ -423,7 +423,7 @@ private fun NotesApp() {
                     val idMap = mutableMapOf<String, String>()
                     bundle.categories.forEach { incoming ->
                         val existing = mergedCategories.firstOrNull { it.path == incoming.path }
-                        val target = existing ?: incoming.copy(id = UUID.randomUUID().toString()).also { mergedCategories += it }
+                        val target = existing ?: incoming.copy(id = UUID.randomUUID().toString(), parentId = incoming.parentId?.let { idMap[it] }).also { mergedCategories += it }
                         idMap[incoming.id] = target.id
                     }
                     val importedNotes = bundle.notes.map { note ->
