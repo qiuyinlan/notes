@@ -425,7 +425,7 @@ private fun NotesApp() {
                     update(state.copy(categories = state.categories.filterNot { it.id in removedIds }, notes = state.notes.map { note -> note.copy(categoryIds = note.categoryIds.filterNot { it in removedIds }) }))
                     tagCategory = state.categories.firstOrNull { it.id == category.parentId }
                 })
-                NotesPage.WALK -> WalkPage(state, padding, onEdit = { editorNote = it })
+                NotesPage.WALK -> WalkPage(state, padding, onEdit = { editorNote = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onImport = { bundle ->
                     var importState = state
                     val mergedCategories = importState.categories.toMutableList()
@@ -1097,12 +1097,14 @@ private fun getLastLocationLabel(context: Context): String? {
     return parts.joinToString("").takeIf { it.isNotBlank() } ?: "位置已授权"
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNote) -> Unit) {
+private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit) {
     val notes = remember(state.notes) { state.notes.sortedByDescending { it.createdAt } }
     var index by remember(notes) { mutableStateOf(notes.indices.randomOrNull() ?: 0) }
     val current = notes.getOrNull(index.coerceIn(0, (notes.size - 1).coerceAtLeast(0)))
     var dragDistance by remember { mutableStateOf(0f) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -1118,7 +1120,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             Surface(
                 color = Color.White,
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).pointerInput(current.id) {
+                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).combinedClickable(onClick = {}, onLongClick = { showDeleteDialog = true }).pointerInput(current.id) {
                     detectHorizontalDragGestures(
                         onHorizontalDrag = { _, amount -> dragDistance += amount },
                         onDragEnd = { if (abs(dragDistance) > 80f) index = (index + if (dragDistance < 0f) 1 else -1).coerceIn(0, notes.lastIndex); dragDistance = 0f },
@@ -1139,6 +1141,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             if (index == 0 || index == notes.lastIndex) Text(if (notes.size == 1) "当前只有这一篇" else if (index == 0) "已经到达最早的笔记" else "已经到达最新的笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
         }
     }
+    if (showDeleteDialog && current != null) AlertDialog(onDismissRequest = { showDeleteDialog = false }, title = { Text("删除笔记") }, text = { Text("确定删除这条笔记吗？") }, confirmButton = { TextButton(onClick = { showDeleteDialog = false; onDelete(current) }) { Text("删除") } }, dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("取消") } })
 }
 
 @Composable
