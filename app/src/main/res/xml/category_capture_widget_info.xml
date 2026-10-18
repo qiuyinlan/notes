@@ -2,7 +2,7 @@
     android:configure="com.localalbum.camera.CategoryCaptureWidgetConfigActivity"
     android:description="@string/widget_description"
     android:label="@string/widget_category_name"
-    android:previewImage="@mipmap/ic_launcher"
+    android:previewImage="@drawable/category_capture_widget_preview"
     android:initialLayout="@layout/category_capture_widget"
     android:minWidth="140dp"
     android:minHeight="70dp"
