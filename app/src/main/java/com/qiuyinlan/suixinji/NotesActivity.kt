@@ -420,6 +420,7 @@ private fun NotesApp() {
     var tagCategory by remember { mutableStateOf<NoteCategory?>(null) }
     var editorNote by remember { mutableStateOf<QuickNote?>(null) }
     var editorReturnPage by remember { mutableStateOf(NotesPage.HOME) }
+    var lettersReturnPage by remember { mutableStateOf(NotesPage.HOME) }
     var commentNote by remember { mutableStateOf<QuickNote?>(null) }
     var letterEditor by remember { mutableStateOf<FutureLetter?>(null) }
     var renameTarget by remember { mutableStateOf<NoteCategory?>(null) }
@@ -437,7 +438,7 @@ private fun NotesApp() {
         enabled = page != NotesPage.HOME && editorNote == null && commentNote == null && letterEditor == null && renameTarget == null && !showNewCategory,
     ) {
         when (page) {
-            NotesPage.LETTERS -> page = NotesPage.MY
+            NotesPage.LETTERS -> { page = lettersReturnPage; selectedCategory = null }
             NotesPage.CATEGORY -> {
                 page = NotesPage.TAGS
                 selectedCategory = null
@@ -489,7 +490,7 @@ private fun NotesApp() {
                 val parent = selectedCategory?.parentId?.let { id -> state.categories.firstOrNull { it.id == id } }
                 if (parent != null) selectedCategory = parent else { selectedCategory = null; page = NotesPage.TAGS }
             }
-            NotesPage.LETTERS -> page = NotesPage.MY
+            NotesPage.LETTERS -> { page = lettersReturnPage; selectedCategory = null }
             NotesPage.MY, NotesPage.TAGS, NotesPage.ORGANIZER, NotesPage.WALK -> page = NotesPage.HOME
             else -> Unit
         }
@@ -592,12 +593,8 @@ private fun NotesApp() {
                 }
             },
         ) { padding ->
-            AnimatedContent(targetState = page, transitionSpec = {
-                (slideInVertically(initialOffsetY = { it }) + fadeIn()) togetherWith
-                    (slideOutVertically(targetOffsetY = { it }) + fadeOut())
-            }, label = "page-transition") { visiblePage ->
-            when (visiblePage) {
-                NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+            when (page) {
+                NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { lettersReturnPage = NotesPage.HOME; page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { openEditor(it, NotesPage.ORGANIZER) })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
@@ -606,7 +603,7 @@ private fun NotesApp() {
                     tagCategory = null
                 })
                 NotesPage.WALK -> WalkPage(state, padding, onEdit = { openEditor(it, NotesPage.WALK) }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
-            NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; page = NotesPage.HOME }, onImport = { bundle ->
+            NotesPage.MY -> MyPage(state, padding, onLetters = { lettersReturnPage = NotesPage.MY; page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; page = NotesPage.HOME }, onImport = { bundle ->
                     var importState = state
                     val mergedCategories = importState.categories.toMutableList()
                     val idMap = mutableMapOf<String, String>()
@@ -633,14 +630,13 @@ private fun NotesApp() {
                     }
                     update(importState.copy(categories = mergedCategories, notes = (state.notes + importedNotes).distinctBy { it.id }.sortedByDescending { it.createdAt }))
             }, onRestore = { restored -> update(restored) })
-                NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onBack = { page = NotesPage.MY }, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
-            }
+                NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onBack = { page = lettersReturnPage }, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
         }
     }
     editorNote?.let { note -> key(note.id) { QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null; page = editorReturnPage }, onSave = { saveNote(it) }, onNext = { val now = System.currentTimeMillis(); editorNote = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()) }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) } }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
-    letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null; page = NotesPage.MY }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null; page = NotesPage.MY }) }
+    letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null; page = lettersReturnPage }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null; page = lettersReturnPage }) }
     renameTarget?.let { category ->
         RenameCategoryDialog(category, onDismiss = { renameTarget = null }, onSave = { newName ->
             val cleanName = newName.trim().trimStart('#')
