@@ -878,39 +878,20 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
                     ToolButton(Icons.Filled.PhotoLibrary, "图片", false) { imageLauncher.launch(arrayOf("image/*")) }
                 }
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    MarkdownToolButton(Icons.Filled.FormatBold, "粗体") { wrapSelection("**") }
-                    MarkdownToolButton(Icons.Filled.FormatItalic, "斜体") { wrapSelection("*") }
-                    MarkdownToolButton(Icons.Filled.FormatUnderlined, "下划线") { wrapSelection("<u>", "</u>") }
-                    MarkdownToolButton(Icons.Filled.StrikethroughS, "删除线") { wrapSelection("~~") }
-                    MarkdownToolButton(Icons.Filled.FormatQuote, "引用") { prefixCurrentLine("> ") }
-                    MarkdownToolButton(Icons.Filled.Remove, "分隔线") {
-                        val insertion = if (text.text.isBlank()) "---\n" else "\n\n---\n"
-                        replaceEditorText(TextFieldValue(text.text + insertion, TextRange(text.text.length + insertion.length)))
-                    }
-                    IconButton(onClick = {
-                        if (undoStack.isNotEmpty()) {
-                            val current = text
-                            val previous = undoStack.removeAt(undoStack.lastIndex)
-                            redoStack.add(current)
-                            text = previous
-                        }
-                    }, enabled = undoStack.isNotEmpty()) { Icon(Icons.Filled.Undo, "撤销") }
-                    IconButton(onClick = {
-                        if (redoStack.isNotEmpty()) {
-                            val current = text
-                            val next = redoStack.removeAt(redoStack.lastIndex)
-                            undoStack.add(current)
-                            text = next
-                        }
-                    }, enabled = redoStack.isNotEmpty()) { Icon(Icons.Filled.Redo, "重做") }
+                Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.End) {
                     Box {
                         IconButton(onClick = { showMoreFormatting = true }) { Icon(Icons.Filled.MoreVert, "更多格式") }
                         DropdownMenu(expanded = showMoreFormatting, onDismissRequest = { showMoreFormatting = false }) {
+                            DropdownMenuItem(text = { Text("粗体") }, onClick = { wrapSelection("**"); showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text("斜体") }, onClick = { wrapSelection("*"); showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text("下划线") }, onClick = { wrapSelection("<u>", "</u>"); showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text("删除线") }, onClick = { wrapSelection("~~"); showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text("引用") }, onClick = { prefixCurrentLine("> "); showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text("分隔线") }, onClick = {
+                                val insertion = if (text.text.isBlank()) "---\n" else "\n\n---\n"
+                                replaceEditorText(TextFieldValue(text.text + insertion, TextRange(text.text.length + insertion.length)))
+                                showMoreFormatting = false
+                            })
                             DropdownMenuItem(text = { Text("行内代码") }, onClick = { wrapSelection("`"); showMoreFormatting = false })
                             DropdownMenuItem(text = { Text("代码块") }, onClick = {
                                 prefixCurrentLine("```\n")
@@ -919,7 +900,24 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                             })
                             DropdownMenuItem(text = { Text("无序列表") }, onClick = { prefixCurrentLine("- "); showMoreFormatting = false })
                             DropdownMenuItem(text = { Text("有序列表") }, onClick = { prefixCurrentLine("1. "); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text(if (showPreview) "隐藏实时预览" else "显示实时预览") }, onClick = { showPreview = !showPreview; showMoreFormatting = false })
+                            DropdownMenuItem(text = { Text("撤销") }, enabled = undoStack.isNotEmpty(), onClick = {
+                                if (undoStack.isNotEmpty()) {
+                                    val current = text
+                                    val previous = undoStack.removeAt(undoStack.lastIndex)
+                                    redoStack.add(current)
+                                    text = previous
+                                }
+                                showMoreFormatting = false
+                            })
+                            DropdownMenuItem(text = { Text("重做") }, enabled = redoStack.isNotEmpty(), onClick = {
+                                if (redoStack.isNotEmpty()) {
+                                    val current = text
+                                    val next = redoStack.removeAt(redoStack.lastIndex)
+                                    undoStack.add(current)
+                                    text = next
+                                }
+                                showMoreFormatting = false
+                            })
                         }
                     }
                 }
@@ -937,7 +935,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                 Column(Modifier.fillMaxWidth().weight(1f)) {
                     OutlinedTextField(text, { replaceEditorText(it) }, Modifier.fillMaxWidth().weight(if (showPreview) 0.58f else 1f).focusRequester(focusRequester), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp), colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White))
                     if (showPreview) {
-                        Text("实时预览", color = NoteMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp, bottom = 3.dp))
                         Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().weight(0.42f)) {
                             if (comments.isEmpty()) MarkdownPreview(text.text, Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp))
                             else CommentedNotePreview(text.text, comments, { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } }, showEye = true, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp).verticalScroll(rememberScrollState()))
