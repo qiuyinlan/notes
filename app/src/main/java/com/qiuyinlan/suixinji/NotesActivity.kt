@@ -106,6 +106,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -401,6 +402,11 @@ private fun NotesApp() {
     var homeDateFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var showCategoryMenu by remember { mutableStateOf(false) }
     var showChildCategoryMenu by remember { mutableStateOf(false) }
+    var showHomeSearch by rememberSaveable { mutableStateOf(false) }
+    var showTagsSearch by rememberSaveable { mutableStateOf(false) }
+    var showCategorySearch by rememberSaveable { mutableStateOf(false) }
+    var newCategoryParent by remember { mutableStateOf<NoteCategory?>(null) }
+    var showNewCategory by remember { mutableStateOf(false) }
 
     fun update(next: NotesState) { state = next; NotesStore.save(context, next) }
     fun noteWithTags(note: QuickNote): QuickNote {
@@ -459,16 +465,29 @@ private fun NotesApp() {
                             IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Filled.Menu, "打开导航") }
                         }
                     },
+                    actions = {
+                        when (page) {
+                            NotesPage.HOME -> IconButton(onClick = { showHomeSearch = !showHomeSearch }) { Icon(Icons.Filled.Search, "搜索笔记") }
+                            NotesPage.TAGS -> IconButton(onClick = { showTagsSearch = !showTagsSearch }) { Icon(Icons.Filled.Search, "搜索标签和笔记") }
+                            NotesPage.CATEGORY -> IconButton(onClick = { showCategorySearch = !showCategorySearch }) { Icon(Icons.Filled.Search, "搜索当前标签") }
+                            else -> Unit
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = NotePaper),
                 )
             },
-            bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; homeDateFilter = null; if (target != NotesPage.TAGS) tagCategory = null } },
+            bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; homeDateFilter = null; showHomeSearch = false; showTagsSearch = false; showCategorySearch = false; if (target != NotesPage.TAGS) tagCategory = null } },
+            floatingActionButton = {
+                if (page == NotesPage.TAGS) {
+                    FloatingActionButton(onClick = { newCategoryParent = tagCategory; showNewCategory = true }) { Icon(Icons.Filled.Add, "新建标签") }
+                }
+            },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, dueLetters, padding, homeDateFilter, onClearDateFilter = { homeDateFilter = null }, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
-                NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
+                NotesPage.HOME -> HomePage(state, dueLetters, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+                NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
-                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
+                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
                     val removedIds = state.categories.filter { item -> selectedCategories.any { category -> item.id == category.id || item.path.startsWith("${category.path}/") } }.map { it.id }.toSet()
                     update(state.copy(categories = state.categories.filterNot { it.id in removedIds }, notes = state.notes.map { note -> note.copy(categoryIds = note.categoryIds.filterNot { it in removedIds }) }))
                     tagCategory = null
@@ -525,6 +544,19 @@ private fun NotesApp() {
                 selectedCategory = selectedCategory?.let { current -> renamed.firstOrNull { it.id == current.id } }
                 tagCategory = tagCategory?.let { current -> renamed.firstOrNull { it.id == current.id } }
                 renameTarget = null
+            }
+        })
+    }
+    if (showNewCategory) {
+        NewCategoryDialog(newCategoryParent, onDismiss = { showNewCategory = false }, onCreate = { rawName ->
+            val name = rawName.trim().trimStart('#')
+            if (name.isNotBlank() && !name.contains('/')) {
+                val parent = newCategoryParent
+                val path = if (parent == null) name else "${parent.path}/$name"
+                if (state.categories.none { it.path == path }) {
+                    update(state.copy(categories = state.categories + NoteCategory(UUID.randomUUID().toString(), name, parent?.id, path)))
+                    showNewCategory = false
+                }
             }
         })
     }
@@ -640,6 +672,18 @@ private fun RenameCategoryDialog(category: NoteCategory, onDismiss: () -> Unit, 
 }
 
 @Composable
+private fun NewCategoryDialog(parent: NoteCategory?, onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (parent == null) "新建标签" else "新建下级标签") },
+        text = { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("标签名称") }, placeholder = { Text("例如：阅读") }) },
+        confirmButton = { TextButton(onClick = { onCreate(name) }, enabled = name.trim().isNotBlank()) { Text("创建") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
 private fun DrawerItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).background(if (selected) NoteSoft else Color.Transparent).padding(horizontal = 22.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, tint = if (selected) NotePrimary else NoteMuted, modifier = Modifier.size(21.dp)); Spacer(Modifier.width(14.dp)); Text(label, color = NoteInk, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
@@ -647,7 +691,7 @@ private fun DrawerItem(label: String, icon: androidx.compose.ui.graphics.vector.
 }
 
 @Composable
-private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, dateFilter: String?, onClearDateFilter: () -> Unit, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit, onDelete: (QuickNote) -> Unit) {
+private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, dateFilter: String?, searchOpen: Boolean, onClearDateFilter: () -> Unit, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit, onDelete: (QuickNote) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     val dayFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.CHINA) }
     val visibleNotes = state.notes.sortedByDescending { it.createdAt }.filter { note ->
@@ -665,7 +709,7 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
                     }
                 }
                 if (dateFilter != null) Text("当天记录", color = NoteMuted, modifier = Modifier.padding(top = 3.dp)) else Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
-                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(top = 12.dp), singleLine = true, label = { Text("搜索笔记") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } })
+                if (searchOpen) OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(top = 12.dp), singleLine = true, label = { Text("搜索笔记") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } })
             }
             item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); SummaryCard("今日的信", due.size, Icons.Filled.MailOutline, onLetters) } }
             item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("漫步") } } }
@@ -766,12 +810,15 @@ private fun CommentSheet(note: QuickNote, onDismiss: () -> Unit, onSave: (NoteCo
 private fun moodLabel(mood: String): String = when (mood) { "HAPPY" -> "开心"; "SAD" -> "不开心"; else -> "正常" }
 
 @Composable
-private fun CategoryPage(state: NotesState, category: NoteCategory, padding: PaddingValues, onAdd: () -> Unit, onEdit: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onDelete: (QuickNote) -> Unit) {
+private fun CategoryPage(state: NotesState, category: NoteCategory, padding: PaddingValues, searchOpen: Boolean, onAdd: () -> Unit, onEdit: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onDelete: (QuickNote) -> Unit) {
+    var query by rememberSaveable(category.id) { mutableStateOf("") }
     val children = state.categories.filter { it.parentId == category.id }
-    val notes = state.notes.filter { category.id in it.categoryIds }
+    val visibleChildren = children.filter { query.isBlank() || it.name.contains(query, true) || it.path.contains(query, true) }
+    val notes = state.notes.filter { note -> category.id in note.categoryIds && (query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) }) }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (searchOpen) item { OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索当前标签") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } }) }
         item { OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("在这里写一条") } }
-        if (children.isNotEmpty()) { item { Text("子分类", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }; items(children) { child -> Surface(Modifier.fillMaxWidth().clickable { onCategory(child) }, color = NoteSoft, shape = RoundedCornerShape(10.dp)) { Text(child.name, modifier = Modifier.padding(14.dp), color = NoteInk, fontWeight = FontWeight.Bold) } } }
+        if (visibleChildren.isNotEmpty()) { item { Text("子分类", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }; items(visibleChildren) { child -> Surface(Modifier.fillMaxWidth().clickable { onCategory(child) }, color = NoteSoft, shape = RoundedCornerShape(10.dp)) { Text(child.name, modifier = Modifier.padding(14.dp), color = NoteInk, fontWeight = FontWeight.Bold) } } }
         item { Text("本分类记录 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         items(notes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onDelete = { onDelete(note) }) }
     }
@@ -783,6 +830,7 @@ private fun TagsPage(
     state: NotesState,
     selected: NoteCategory?,
     padding: PaddingValues,
+    searchOpen: Boolean,
     onSelect: (NoteCategory?) -> Unit,
     onEdit: (QuickNote) -> Unit,
     onDeleteNote: (QuickNote) -> Unit,
@@ -820,7 +868,7 @@ private fun TagsPage(
             }
             if (selected != null) IconButton(onClick = { colorTarget = selected }) { Icon(Icons.Filled.Tune, "调整颜色", tint = NotePrimary) }
         }
-        OutlinedTextField(
+        if (searchOpen) OutlinedTextField(
             query,
             { query = it },
             Modifier.fillMaxWidth().padding(top = 10.dp),
