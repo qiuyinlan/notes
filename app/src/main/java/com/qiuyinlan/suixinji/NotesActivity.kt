@@ -44,6 +44,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -1468,7 +1470,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     IconButton(onClick = { saveAndNext() }, modifier = Modifier.align(if (text.text.isBlank()) Alignment.BottomEnd else Alignment.TopEnd).padding(4.dp)) { Icon(Icons.Filled.Add, "保存并新建下一篇", tint = NotePrimary) }
                 }
                 }
-                Box(Modifier.fillMaxWidth().background(Color.White).padding(vertical = 2.dp)) {
+                Box(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().background(Color.White).padding(vertical = 4.dp)) {
                     Row(Modifier.fillMaxWidth().scale(1.1f), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(16.dp)) }
                         IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(16.dp)) }
