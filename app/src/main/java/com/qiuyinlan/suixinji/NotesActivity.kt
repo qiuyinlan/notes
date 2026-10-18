@@ -418,7 +418,11 @@ private fun NotesApp() {
                 NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update)
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
-                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) })
+                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onDelete = { category ->
+                    val removedIds = state.categories.filter { it.id == category.id || it.path.startsWith("${category.path}/") }.map { it.id }.toSet()
+                    update(state.copy(categories = state.categories.filterNot { it.id in removedIds }, notes = state.notes.map { note -> note.copy(categoryIds = note.categoryIds.filterNot { it in removedIds }) }))
+                    tagCategory = state.categories.firstOrNull { it.id == category.parentId }
+                })
                 NotesPage.WALK -> WalkPage(state, padding, onEdit = { editorNote = it })
                 NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onImport = { bundle ->
                     var importState = state
@@ -594,6 +598,7 @@ private fun CategoryPage(state: NotesState, category: NoteCategory, padding: Pad
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TagsPage(
     state: NotesState,
@@ -602,12 +607,14 @@ private fun TagsPage(
     onSelect: (NoteCategory?) -> Unit,
     onEdit: (QuickNote) -> Unit,
     onColorChange: (NoteCategory, Int) -> Unit,
+    onDelete: (NoteCategory) -> Unit,
 ) {
     var colorTarget by remember { mutableStateOf<NoteCategory?>(null) }
+    var deleteTarget by remember { mutableStateOf<NoteCategory?>(null) }
     val categories = state.categories
     val visible = if (selected == null) categories.filter { it.parentId == null } else categories.filter { it.parentId == selected.id }
     val notes = selected?.let { category -> state.notes.filter { category.id in it.categoryIds }.sortedByDescending { it.createdAt } }.orEmpty()
-    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp)) {
+    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             if (selected != null) IconButton(onClick = { onSelect(categories.firstOrNull { it.id == selected.parentId }) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回上一级") }
             Column(Modifier.weight(1f)) {
@@ -621,7 +628,7 @@ private fun TagsPage(
                 items(visible, key = { it.id }) { category ->
                     val childCount = categories.count { it.parentId == category.id }
                     val noteCount = state.notes.count { category.id in it.categoryIds }
-                    Surface(onClick = { onSelect(category) }, color = tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().aspectRatio(1.15f)) {
+                    Surface(color = tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = { onSelect(category) }, onLongClick = { deleteTarget = category })) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
                             Column {
                                 Text(category.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = NoteInk)
@@ -635,8 +642,8 @@ private fun TagsPage(
         }
         if (selected != null) {
             Text("${selected.name} 下的笔记 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
-            if (notes.isEmpty()) EmptyHint("这个标签下还没有笔记") else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
-                items(notes, key = { "tag-${it.id}" }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}) }
+            if (notes.isEmpty()) EmptyHint("这个标签下还没有笔记") else Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 18.dp)) {
+                notes.forEach { note -> NoteTimelineCard(note, state.categories, onEdit, {}) }
             }
         } else if (visible.isEmpty()) {
             EmptyHint("还没有标签，记录中添加 #标签 后会自动创建")
@@ -659,6 +666,15 @@ private fun TagsPage(
                 }
             },
             confirmButton = { TextButton(onClick = { colorTarget = null }) { Text("取消") } },
+        )
+    }
+    deleteTarget?.let { category ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("清理标签") },
+            text = { Text("长按选中的标签将被删除，标签下的子标签也会移除，笔记正文不会删除。") },
+            confirmButton = { TextButton(onClick = { deleteTarget = null; onDelete(category) }) { Text("删除") } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
         )
     }
 }
@@ -697,13 +713,14 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
         if (mode == "RANDOM") source.shuffled().take(batchCount) else if (mode == "MONTH") source.take(batchCount) else source
     }
     val current = batch.getOrNull(index.coerceAtMost((batch.size - 1).coerceAtLeast(0)))
-    val noteScroll = rememberScrollState()
+    val pageScroll = rememberScrollState()
     LaunchedEffect(mode, monthFilter, batchCount, inboxIds.joinToString("|")) {
         index = 0
         undoState = null
         lastWasSkip = false
     }
     Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(pageScroll), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("整理台", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -745,7 +762,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
             if (mode == "MONTH") OutlinedButton(onClick = { showMonthPicker = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text(monthFilter) }
             if (mode == "MONTH" || mode == "RANDOM") OutlinedTextField(batchInput, { value -> batchInput = value.filter { it.isDigit() }.take(3) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("本轮整理数量（1-500）") })
             Column(
-                Modifier.fillMaxWidth().weight(1f).verticalScroll(noteScroll).pointerInput(current?.id) {
+                Modifier.fillMaxWidth().pointerInput(current?.id) {
                     if (current != null) {
                         var dragDistance = 0f
                         detectHorizontalDragGestures(
@@ -780,6 +797,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                     }
                 }
                 Text("左右滑动切换记录 · 跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
+            }
             }
             Surface(color = Color.White, shadowElevation = 6.dp, modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
@@ -1060,7 +1078,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
     var index by remember(notes) { mutableStateOf(notes.indices.randomOrNull() ?: 0) }
     val current = notes.getOrNull(index.coerceIn(0, (notes.size - 1).coerceAtLeast(0)))
     var dragDistance by remember { mutableStateOf(0f) }
-    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp)) {
+    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("漫步", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -1075,7 +1093,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             Surface(
                 color = Color.White,
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().weight(1f).padding(vertical = 12.dp).pointerInput(current.id) {
+                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).pointerInput(current.id) {
                     detectHorizontalDragGestures(
                         onHorizontalDrag = { _, amount -> dragDistance += amount },
                         onDragEnd = { if (abs(dragDistance) > 80f) index = (index + if (dragDistance < 0f) 1 else -1).coerceIn(0, notes.lastIndex); dragDistance = 0f },
