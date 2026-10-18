@@ -794,11 +794,13 @@ private fun SummaryCard(label: String, count: Int, icon: androidx.compose.ui.gra
 
 @Composable
 private fun LetterSummaryIconCard(count: Int, onClick: () -> Unit) {
-    Box(Modifier.fillMaxWidth(0.48f).height(82.dp), contentAlignment = Alignment.Center) {
-        IconButton(onClick = onClick, modifier = Modifier.size(58.dp)) { Icon(Icons.Filled.MailOutline, "信", tint = NotePrimary, modifier = Modifier.size(36.dp)) }
+    Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 3.dp, modifier = Modifier.fillMaxWidth(0.48f).height(82.dp).clickable(onClick = onClick)) {
+      Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Icon(Icons.Filled.MailOutline, "信", tint = NotePrimary, modifier = Modifier.size(36.dp))
         Surface(color = NoteAccent, shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(22.dp)) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) { Text(count.toString(), color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
         }
+      }
     }
 }
 
@@ -818,7 +820,7 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
     var expanded by rememberSaveable(note.id) { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     val longText = note.content.length > 180 || note.content.count { it == '\n' } > 6
-    Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }, onLongClick = { showDeleteDialog = true }), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }, onLongClick = { showDeleteDialog = true }), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 5.dp)) {
         Column(Modifier.padding(16.dp)) {
             CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, showEye = false)
             if (longText) Text(if (expanded) "点击收起 · 双击编辑" else "点击展开 · 双击编辑", color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
@@ -1083,7 +1085,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
         lastWasSkip = false
     }
     Box(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
-        Column(Modifier.fillMaxSize().verticalScroll(pageScroll).padding(bottom = 78.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.fillMaxSize().verticalScroll(pageScroll).padding(bottom = 92.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("整理台", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -1165,7 +1167,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 Text("左右滑动切换记录 · 跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
             }
             }
-            Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+            Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFB8B0A8)), modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                     IconButton(enabled = current != null, onClick = { if (current != null) { lastWasSkip = true; undoState = null; index++ } }) { Icon(Icons.Filled.SkipNext, "跳过") }
                     IconButton(enabled = current != null, onClick = { if (current != null) selected = current }) { Icon(Icons.Filled.Label, "归类") }
@@ -1557,7 +1559,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             if (index == 0 || index == notes.lastIndex) Text(if (notes.size == 1) "当前只有这一篇" else if (index == 0) "已经到达最早的笔记" else "已经到达最新的笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
         }
     }
-    Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+    Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFB8B0A8)), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { if (index > 0) index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上一篇", tint = NotePrimary) }
             IconButton(onClick = { current?.let(onEdit) }, enabled = current != null) { Icon(Icons.Filled.Edit, "编辑", tint = NotePrimary) }
