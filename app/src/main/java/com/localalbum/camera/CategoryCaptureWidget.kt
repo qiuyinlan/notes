@@ -25,6 +25,8 @@ internal object CategoryCaptureWidget {
             ?.takeIf { name -> categories.any { it.name == name } }
             ?: categories.firstOrNull()?.name
             ?: context.getString(R.string.widget_default_category)
+        views.setImageViewResource(R.id.widget_icon, R.drawable.category_capture_widget_preview)
+        views.setTextViewText(R.id.widget_title, context.getString(R.string.widget_category_name))
         views.setTextViewText(R.id.widget_category_action, context.getString(R.string.widget_category_action, categoryName))
         views.setOnClickPendingIntent(R.id.widget_category_action, pendingIntent(context, widgetId, WIDGET_ACTION_CAMERA, categoryName))
         manager.updateAppWidget(widgetId, views)

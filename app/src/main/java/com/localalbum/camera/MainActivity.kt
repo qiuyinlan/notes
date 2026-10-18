@@ -201,6 +201,7 @@ private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: Stri
 private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long, val sizeBytes: Long = 0L, val sourceKey: String? = null)
 private data class PendingVideoMove(val video: VideoItem, val target: Category)
 private data class PendingPhotoMove(val photo: PhotoItem, val target: Category)
+private data class CameraAppOption(val packageName: String, val label: String)
 private enum class VideoMoveResult { MOVED, NEEDS_CONFIRMATION, FAILED }
 private data class MediaStorage(
     val photoCount: Int = 0,
@@ -276,6 +277,8 @@ private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String?
     var showCreateDialog by remember { mutableStateOf(false) }
     var cameraOpen by rememberSaveable { mutableStateOf(false) }
     var pendingExternalCapture by remember { mutableStateOf<Uri?>(null) }
+    var cameraChoiceCategory by remember { mutableStateOf<Category?>(null) }
+    var cameraAppOptions by remember { mutableStateOf<List<CameraAppOption>>(emptyList()) }
     val externalCameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val uri = pendingExternalCapture
         pendingExternalCapture = null
@@ -284,6 +287,33 @@ private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String?
             Toast.makeText(context, "照片已保存到 $selectedCategory", Toast.LENGTH_SHORT).show()
         } else if (uri != null) {
             runCatching { context.contentResolver.delete(uri, null, null) }
+        }
+    }
+    fun launchExternalCamera(category: Category, app: CameraAppOption) {
+        val outputUri = runCatching {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "camera_${System.currentTimeMillis()}.jpg")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.RELATIVE_PATH, category.relativePath ?: "DCIM/${category.name}")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        }.getOrNull()
+        if (outputUri == null) {
+            Toast.makeText(context, "无法准备照片保存位置", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingExternalCapture = outputUri
+        runCatching {
+            externalCameraLauncher.launch(Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                setPackage(app.packageName)
+                putExtra(MediaStore.EXTRA_OUTPUT, outputUri)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        }.onFailure {
+            pendingExternalCapture = null
+            runCatching { context.contentResolver.delete(outputUri, null, null) }
+            Toast.makeText(context, "无法打开所选相机", Toast.LENGTH_SHORT).show()
         }
     }
     var screen by rememberSaveable { mutableStateOf(AppScreen.HOME) }
@@ -409,7 +439,6 @@ private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String?
                     reviewedPhotoKeys = reviewedPhotoKeys - action.reviewedItems.map { it.uri.toString() }.toSet()
                 }
                 recordOrganized(-action.organizedAmount)
-                screen = if (action.origin == UndoOrigin.CATEGORY) AppScreen.CATEGORY else AppScreen.ORGANIZE
             }
             is UndoableStage.PhotoMove -> {
                 val source = photoSourceCategory(action.original)
@@ -423,7 +452,6 @@ private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String?
                         reviewedPhotoKeys = reviewedPhotoKeys - action.reviewedItems.map { it.uri.toString() }.toSet()
                     }
                     recordOrganized(-action.organizedAmount)
-                    screen = if (action.origin == UndoOrigin.CATEGORY) AppScreen.CATEGORY else AppScreen.ORGANIZE
                 } else {
                     undoableStages.add(action)
                     Toast.makeText(context, "照片无法移回原位置", Toast.LENGTH_SHORT).show()
@@ -436,7 +464,6 @@ private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String?
                 recordOrganized(-action.organizedAmount)
                 undoRestoredVideo = action.item
                 undoVideoRestoreVersion += 1
-                screen = AppScreen.VIDEOS
             }
         }
     }
@@ -686,27 +713,16 @@ private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String?
     LaunchedEffect(widgetAction, widgetCategory) {
         when (widgetAction) {
             WIDGET_ACTION_CAMERA -> {
-                selectedCategory = categories.firstOrNull { it.name == widgetCategory }?.name
-                    ?: categories.firstOrNull()?.name
-                    ?: selectedCategory
                 val category = categories.firstOrNull { it.name == widgetCategory }
-                    ?: categories.firstOrNull { it.name == selectedCategory }
-                val values = ContentValues().apply {
-                    put(MediaStore.Images.Media.DISPLAY_NAME, "camera_${System.currentTimeMillis()}.jpg")
-                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                    put(MediaStore.Images.Media.RELATIVE_PATH, category?.relativePath ?: "DCIM/${category?.name ?: selectedCategory}")
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
-                }
-                val outputUri = runCatching { context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) }.getOrNull()
-                if (outputUri != null) {
-                    pendingExternalCapture = outputUri
-                    externalCameraLauncher.launch(Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                        putExtra(MediaStore.EXTRA_OUTPUT, outputUri)
-                        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }.let { Intent.createChooser(it, "选择相机") })
-                } else {
-                    Toast.makeText(context, "无法准备照片保存位置", Toast.LENGTH_SHORT).show()
-                }
+                    ?: categories.firstOrNull()
+                    ?: Category(selectedCategory)
+                selectedCategory = category.name
+                val captureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                cameraAppOptions = context.packageManager.queryIntentActivities(captureIntent, PackageManager.MATCH_DEFAULT_ONLY)
+                    .map { CameraAppOption(it.activityInfo.packageName, it.loadLabel(context.packageManager).toString()) }
+                    .distinctBy { it.packageName }
+                    .sortedBy { it.label.lowercase(Locale.getDefault()) }
+                cameraChoiceCategory = category
             }
             WIDGET_ACTION_PHOTOS -> {
                 restorePhotoGroupUris = null
@@ -989,6 +1005,8 @@ private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String?
             categories = categories,
             initialGroupUris = restoreVideoGroupUris,
             stagedCount = videoTrash.size,
+            restoreVideo = undoRestoredVideo,
+            restoreVersion = undoVideoRestoreVersion,
             canUndo = undoableStages.isNotEmpty(),
             onBack = { restoreVideoGroupUris = null; screen = AppScreen.HOME },
             onTrash = { group ->
@@ -1081,6 +1099,36 @@ private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String?
             },
         )
     }
+    }
+
+    cameraChoiceCategory?.let { category ->
+        AlertDialog(
+            onDismissRequest = { cameraChoiceCategory = null },
+            title = { Text("选择相机") },
+            text = {
+                Column {
+                    TextButton(
+                        onClick = {
+                            selectedCategory = category.name
+                            screen = AppScreen.HOME
+                            cameraOpen = true
+                            cameraChoiceCategory = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("应用内相机 · ${category.name}") }
+                    cameraAppOptions.forEach { app ->
+                        TextButton(
+                            onClick = {
+                                cameraChoiceCategory = null
+                                launchExternalCamera(category, app)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(app.label, maxLines = 1) }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { cameraChoiceCategory = null }) { Text("取消") } },
+        )
     }
 
     if (showCreateDialog) {
@@ -1850,7 +1898,6 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
         if (restoreVersion <= consumedRestoreVersion || restorePhotos.isEmpty()) return@LaunchedEffect
         val loaded = withContext(Dispatchers.IO) { queryPhotos(context, category) }
         photos = loaded.filterNot { it.uri in stagedPhotoUris }
-        viewerIndex = photos.indexOfFirst { it.uri == restorePhotos.first().uri }.takeIf { it >= 0 }
         consumedRestoreVersion = restoreVersion
     }
     BackHandler(onBack = onBack)
@@ -2380,7 +2427,7 @@ private fun OrganizePhotosScreen(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val gridState = rememberLazyGridState()
-    val sourcePhotos = remember { photos }
+    val sourcePhotos = remember(photos) { photos }
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var selecting by remember { mutableStateOf(false) }
     val selectionBounds = remember { mutableStateMapOf<Uri, Rect>() }
@@ -2423,7 +2470,6 @@ private fun OrganizePhotosScreen(
         val restored = restorePhotos
         visiblePhotos = (restored + visiblePhotos).distinctBy { it.uri }
         batchPhotos = (restored + batchPhotos).distinctBy { it.uri }
-        if (!gameMode) viewerIndex = visiblePhotos.indexOfFirst { it.uri in restoredUris }.takeIf { it >= 0 }
         consumedRestoreVersion = restoreVersion
     }
     val remainingCount = sourcePhotos.count { it.uri !in processedUris }
@@ -2652,7 +2698,6 @@ private fun PhotoDeleteGameScreen(
         if (restoreVersion <= consumedRestoreVersion || restorePhotos.isEmpty()) return@LaunchedEffect
         remaining = (restorePhotos + remaining).distinctBy { it.uri }
         batch = (restorePhotos + batch).distinctBy { it.uri }
-        previewIndex = batch.indexOfFirst { it.uri == restorePhotos.first().uri }.takeIf { it >= 0 }
         restorePhotos.forEach { cardBounds.remove(it.uri) }
         consumedRestoreVersion = restoreVersion
     }
@@ -3086,6 +3131,8 @@ private fun VideoOrganizerScreen(
     categories: List<Category>,
     initialGroupUris: List<String>?,
     stagedCount: Int,
+    restoreVideo: VideoItem?,
+    restoreVersion: Int,
     canUndo: Boolean,
     onBack: () -> Unit,
     onTrash: (List<VideoItem>) -> Unit,
@@ -3102,8 +3149,17 @@ private fun VideoOrganizerScreen(
     val restoredVideos = initialGroupUris?.let { ids -> sourceVideos.filter { it.uri.toString() in ids } }.orEmpty()
     var visibleVideos by remember { mutableStateOf(if (initialGroupUris != null) restoredVideos else sourceVideos.shuffled().take(20)) }
     var processedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var consumedUndoVersion by rememberSaveable { mutableStateOf(0) }
     var restoredGroupPending by remember { mutableStateOf(initialGroupUris != null) }
     var viewerUri by remember { mutableStateOf<Uri?>(null) }
+    LaunchedEffect(restoreVersion) {
+        val restored = restoreVideo ?: return@LaunchedEffect
+        if (restoreVersion <= consumedUndoVersion) return@LaunchedEffect
+        processedUris = processedUris - restored.uri
+        visibleVideos = (listOf(restored) + visibleVideos).distinctBy { it.uri }
+        if (viewerUri != null) viewerUri = restored.uri
+        consumedUndoVersion = restoreVersion
+    }
     val count = countText.toIntOrNull()?.coerceIn(1, 500) ?: 20
     val monthOptions = remember(sourceVideos) {
         sourceVideos.mapNotNull { if (it.dateMillis > 0) SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(it.dateMillis)) else null }.distinct()

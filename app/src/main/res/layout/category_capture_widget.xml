@@ -4,13 +4,14 @@
     android:orientation="vertical"
     android:padding="8dp"
     android:background="@drawable/category_capture_widget_background">
-    <ImageView android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="@string/widget_icon_content_description" android:src="@drawable/category_capture_widget_preview" android:layout_gravity="start" />
+    <ImageView android:id="@+id/widget_icon" android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="@string/widget_icon_content_description" android:src="@drawable/category_capture_widget_preview" android:layout_gravity="start" />
     <TextView
+        android:id="@+id/widget_title"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:paddingStart="4dp"
         android:paddingBottom="4dp"
-        android:text="&#x5206;&#x7c7b;&#x76f8;&#x673a;"
+        android:text="@string/widget_category_name"
         android:textColor="#315D4A"
         android:textSize="12sp"
         android:textStyle="bold" />
