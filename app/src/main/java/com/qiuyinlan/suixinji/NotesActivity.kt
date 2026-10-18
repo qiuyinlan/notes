@@ -794,11 +794,24 @@ private fun TagsPage(
     var menuTarget by remember { mutableStateOf<NoteCategory?>(null) }
     var showBulkDelete by remember { mutableStateOf(false) }
     var deleteSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var dragDistance by remember { mutableStateOf(0f) }
+    var startedFromEdge by remember { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     val categories = state.categories
     val visible = (if (selected == null) categories.filter { it.parentId == null } else categories.filter { it.parentId == selected.id }).filter { query.isBlank() || it.name.contains(query, true) || it.path.contains(query, true) }
     val notes = selected?.let { category -> state.notes.filter { note -> category.id in note.categoryIds && (query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) }) }.sortedByDescending { it.createdAt } }.orEmpty()
-    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp).verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp).verticalScroll(rememberScrollState()).pointerInput(selected?.id) {
+        detectHorizontalDragGestures(
+            onDragStart = { start -> startedFromEdge = start.x <= 32.dp.toPx() },
+            onHorizontalDrag = { _, amount -> if (startedFromEdge) dragDistance += amount },
+            onDragEnd = {
+                if (selected != null && startedFromEdge && dragDistance > 80f) onSelect(categories.firstOrNull { it.id == selected.parentId })
+                dragDistance = 0f
+                startedFromEdge = false
+            },
+            onDragCancel = { dragDistance = 0f; startedFromEdge = false },
+        )
+    }) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             if (selected != null) IconButton(onClick = { onSelect(categories.firstOrNull { it.id == selected.parentId }) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回上一级") }
             Column(Modifier.weight(1f)) {
@@ -1840,8 +1853,14 @@ private fun safeExportName(value: String): String = value.replace(Regex("[\\\\/:
 @Composable
 private fun LetterPage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onBack: () -> Unit, onEdit: (FutureLetter) -> Unit, onCreate: () -> Unit, onUpdate: (NotesState) -> Unit) {
     var dragDistance by remember { mutableStateOf(0f) }
+    var startedFromEdge by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp).pointerInput(Unit) {
-        detectHorizontalDragGestures(onHorizontalDrag = { _, amount -> dragDistance += amount }, onDragEnd = { if (dragDistance > 80f) onBack(); dragDistance = 0f }, onDragCancel = { dragDistance = 0f })
+        detectHorizontalDragGestures(
+            onDragStart = { start -> startedFromEdge = start.x <= 32.dp.toPx() },
+            onHorizontalDrag = { _, amount -> if (startedFromEdge) dragDistance += amount },
+            onDragEnd = { if (startedFromEdge && dragDistance > 80f) onBack(); dragDistance = 0f; startedFromEdge = false },
+            onDragCancel = { dragDistance = 0f; startedFromEdge = false },
+        )
     }) { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column { Text("未来的信", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("到日期后打开 App 查看", color = NoteMuted) }; Spacer(Modifier.weight(1f)); Button(onClick = onCreate) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(4.dp)); Text("写信") } }; if (due.isNotEmpty()) { Text("今天给你的信", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp)); due.forEach { letter -> Card(Modifier.fillMaxWidth().padding(top = 10.dp).clickable { onUpdate(state.copy(letters = state.letters.map { if (it.id == letter.id) it.copy(shown = true) else it })) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(16.dp)) { Text(letter.title.ifBlank { "给未来的自己" }, fontWeight = FontWeight.Bold); Text(letter.content, Modifier.padding(top = 8.dp), maxLines = 4, overflow = TextOverflow.Ellipsis) } } } }; Text("全部信件", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 20.dp)); LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 12.dp)) { items(state.letters, key = { it.id }) { letter -> Card(Modifier.fillMaxWidth().clickable { onEdit(letter) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MailOutline, null, tint = NotePrimary); Spacer(Modifier.width(10.dp)); Column { Text(letter.title.ifBlank { "给未来的自己" }, fontWeight = FontWeight.Bold); Text("${letter.deliverDate}${if (letter.shown) " · 已展示" else ""}", color = NoteMuted, style = MaterialTheme.typography.labelSmall) } } } } } }
 }
 
@@ -2034,13 +2053,15 @@ private fun LetterEditor(letter: FutureLetter, onDismiss: () -> Unit, onSave: (F
     var text by remember { mutableStateOf(letter.content) }
     var date by remember { mutableStateOf(letter.deliverDate) }
     var dragDistance by remember { mutableStateOf(0f) }
+    var startedFromEdge by remember { mutableStateOf(false) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             Modifier.fillMaxSize().pointerInput(Unit) {
                 detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, amount -> dragDistance += amount },
-                    onDragEnd = { if (abs(dragDistance) > 80f) onDismiss(); dragDistance = 0f },
-                    onDragCancel = { dragDistance = 0f },
+                    onDragStart = { start -> startedFromEdge = start.x <= 32.dp.toPx() },
+                    onHorizontalDrag = { _, amount -> if (startedFromEdge) dragDistance += amount },
+                    onDragEnd = { if (startedFromEdge && dragDistance > 80f) onDismiss(); dragDistance = 0f; startedFromEdge = false },
+                    onDragCancel = { dragDistance = 0f; startedFromEdge = false },
                 )
             },
             color = NotePaper,
