@@ -307,7 +307,12 @@ private object NotesStore {
     }.getOrDefault(NotesState())
 
     fun save(context: Context, state: NotesState) {
-        val raw = JSONObject().apply {
+        val raw = serialize(state)
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString(KEY, raw).apply()
+        writeBackup(context, raw)
+    }
+
+    fun serialize(state: NotesState): String = JSONObject().apply {
             put("notes", JSONArray().apply {
                 state.notes.forEach { note -> put(JSONObject().apply {
                     put("id", note.id); put("content", note.content); put("createdAt", note.createdAt); put("updatedAt", note.updatedAt)
@@ -320,9 +325,10 @@ private object NotesStore {
             put("diaries", JSONArray().apply { state.diaries.forEach { put(JSONObject().apply { put("id", it.id); put("title", it.title); put("markdown", it.markdown); put("date", it.date) }) } })
             put("letters", JSONArray().apply { state.letters.forEach { put(JSONObject().apply { put("id", it.id); put("title", it.title); put("content", it.content); put("deliverDate", it.deliverDate); put("shown", it.shown) }) } })
         }.toString()
-        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString(KEY, raw).apply()
-        writeBackup(context, raw)
-    }
+
+    fun restore(context: Context, uri: Uri): NotesState? = runCatching {
+        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { parse(it.readText()) }
+    }.getOrNull()
 
     private fun backupUri(context: Context): android.net.Uri? = runCatching {
         // Query the shared files collection so backups remain discoverable even if an older build
@@ -544,7 +550,7 @@ private fun NotesApp() {
                     tagCategory = null
                 })
                 NotesPage.WALK -> WalkPage(state, padding, onEdit = { openEditor(it, NotesPage.WALK) }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
-                NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; page = NotesPage.HOME }, onImport = { bundle ->
+            NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; page = NotesPage.HOME }, onImport = { bundle ->
                     var importState = state
                     val mergedCategories = importState.categories.toMutableList()
                     val idMap = mutableMapOf<String, String>()
@@ -570,7 +576,7 @@ private fun NotesApp() {
                         note.copy(categoryIds = ids.distinct(), status = if (ids.isEmpty()) note.status else "organized")
                     }
                     update(importState.copy(categories = mergedCategories, notes = (state.notes + importedNotes).distinctBy { it.id }.sortedByDescending { it.createdAt }))
-                })
+            }, onRestore = { restored -> update(restored) })
                 NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onBack = { page = NotesPage.MY }, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
         }
@@ -762,7 +768,7 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
                 if (dateFilter != null) Text("${dateFilter} 的记录", color = NoteMuted, modifier = Modifier.padding(top = 3.dp)) else Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
                 if (searchOpen) OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(top = 12.dp), singleLine = true, label = { Text("搜索笔记") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } })
             }
-            if (dateFilter == null) item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); LetterSummaryCard(due.size, onLetters) } }
+            if (dateFilter == null) item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); LetterSummaryIconCard(due.size, onLetters) } }
             item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); if (dateFilter == null) { Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("漫步") } } } }
             if (state.notes.isEmpty()) item { EmptyHint(if (dateFilter == null) "还没有记录，点击底部输入框开始" else "这一天还没有笔记") }
             if (visibleNotes.isEmpty() && query.isNotBlank()) item { EmptyHint("没有找到匹配的笔记") }
@@ -784,6 +790,16 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
 @Composable
 private fun SummaryCard(label: String, count: Int, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
     Card(Modifier.fillMaxWidth(0.48f).height(82.dp).clickable(onClick = onClick), colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = NotePrimary, modifier = Modifier.size(24.dp)); Spacer(Modifier.width(10.dp)); Column { Text(label, color = NoteMuted, style = MaterialTheme.typography.labelMedium); Text(count.toString(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) } } }
+}
+
+@Composable
+private fun LetterSummaryIconCard(count: Int, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth(0.48f).height(82.dp), contentAlignment = Alignment.Center) {
+        IconButton(onClick = onClick, modifier = Modifier.size(58.dp)) { Icon(Icons.Filled.MailOutline, "信", tint = NotePrimary, modifier = Modifier.size(36.dp)) }
+        Surface(color = NoteAccent, shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(22.dp)) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) { Text(count.toString(), color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
+        }
+    }
 }
 
 @Composable
@@ -1129,7 +1145,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 } else {
                     Text("${index + 1} / ${batch.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
                     Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelMedium)
-                    Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 2.dp,
+                    Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 8.dp,
                         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) })) {
                         SelectionContainer {
                             Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
@@ -1634,7 +1650,7 @@ private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit:
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onDayClick: (String) -> Unit, onImport: (ImportBundle) -> Unit) {
+private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onDayClick: (String) -> Unit, onImport: (ImportBundle) -> Unit, onRestore: (NotesState) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showTransfer by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
@@ -1653,6 +1669,15 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
         val format = pendingFormat
         if (uri != null && format != null) result = if (exportNotesToZip(context, state, uri, format)) "导出完成" else "导出失败，请重试"
         pendingFormat = null
+    }
+    val backupExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) result = runCatching { context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(NotesStore.serialize(state)) }; "备份已保存" }.getOrElse { "备份失败，请重试" }
+    }
+    val backupImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val restored = NotesStore.restore(context, uri)
+            if (restored != null) { onRestore(restored); result = "数据已恢复" } else result = "备份文件无效"
+        }
     }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -1727,6 +1752,8 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             TextButton(onClick = { showTransfer = false; importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed")) }, modifier = Modifier.fillMaxWidth()) { Text("导入 Flomo ZIP 压缩包") }
             TextButton(onClick = { showTransfer = false; showWeRead = true; weReadBooks = emptyList(); selectedWeReadIds = emptySet(); weReadTag = "微信读书"; weReadProgress = 0f; weReadProgressText = null }, modifier = Modifier.fillMaxWidth()) { Text("导入微信读书笔记") }
+            TextButton(onClick = { showTransfer = false; backupExportLauncher.launch("suixinji-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("备份全部数据") }
+            TextButton(onClick = { showTransfer = false; backupImportLauncher.launch(arrayOf("application/json", "text/plain")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
             TextButton(onClick = { showTransfer = false; showExport = true }, modifier = Modifier.fillMaxWidth()) { Text("导出记录 ZIP") }
         }
     }, confirmButton = { TextButton(onClick = { showTransfer = false }) { Text("取消") } })
