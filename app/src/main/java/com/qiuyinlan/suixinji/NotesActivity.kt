@@ -155,6 +155,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.Image
@@ -1447,7 +1448,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                             placeholder = { Text("写下此刻的想法…") },
                             maxLines = 30,
                             visualTransformation = MarkdownVisualTransformation(comments),
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 14.sp, color = Color(0xFF9B8170)),
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, color = Color.Black),
                             modifier = Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester).onFocusChanged { editorFocused = it.isFocused },
                             shape = RoundedCornerShape(0.dp),
                             colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Color.Transparent, focusedBorderColor = Color.Transparent, unfocusedContainerColor = Color.White, focusedContainerColor = Color.White),
@@ -1472,7 +1473,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                 }
                 }
                 Box(Modifier.fillMaxWidth().background(Color.White).padding(vertical = 2.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().scale(1.1f), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(16.dp)) }
                         IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(16.dp)) }
                         IconButton(onClick = { wrapSelection("~~") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.StrikethroughS, "删除线", modifier = Modifier.size(16.dp)) }
