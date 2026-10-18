@@ -75,6 +75,8 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Inbox
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MailOutline
@@ -482,6 +484,9 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
 
 @Composable
 private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCategory?, onNavigate: (NotesPage, NoteCategory?) -> Unit) {
+    var expandedTags by remember { mutableStateOf(emptySet<String>()) }
+    val rootTags = state.categories.filter { it.parentId == null }
+
     Column(Modifier.fillMaxSize().background(NotePaper).padding(vertical = 18.dp)) {
         Text("随心记", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp))
         DrawerItem("首页", Icons.Filled.Home, page == NotesPage.HOME) { onNavigate(NotesPage.HOME, null) }
@@ -491,9 +496,63 @@ private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCate
         DrawerItem("我的", Icons.Filled.Person, page == NotesPage.MY || page == NotesPage.LETTERS) { onNavigate(NotesPage.MY, null) }
         Divider(Modifier.padding(vertical = 12.dp))
         Text("分类", style = MaterialTheme.typography.labelLarge, color = NoteMuted, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
-        state.categories.filter { it.parentId == null }.forEach { category -> DrawerItem(category.path, Icons.Filled.Label, selected?.id == category.id) { onNavigate(NotesPage.CATEGORY, category) } }
-        Spacer(Modifier.weight(1f))
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            rootTags.forEach { category ->
+                DrawerTagRow(
+                    category = category,
+                    allCategories = state.categories,
+                    notes = state.notes,
+                    selected = selected,
+                    expandedTags = expandedTags,
+                    onToggle = { id -> expandedTags = if (id in expandedTags) expandedTags - id else expandedTags + id },
+                    onNavigate = onNavigate,
+                )
+            }
+            if (rootTags.isEmpty()) {
+                Text("还没有标签", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 22.dp, vertical = 12.dp))
+            }
+        }
         Text("本地保存 · ${state.notes.size} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 22.dp, vertical = 18.dp))
+    }
+}
+
+@Composable
+private fun DrawerTagRow(
+    category: NoteCategory,
+    allCategories: List<NoteCategory>,
+    notes: List<QuickNote>,
+    selected: NoteCategory?,
+    expandedTags: Set<String>,
+    onToggle: (String) -> Unit,
+    onNavigate: (NotesPage, NoteCategory?) -> Unit,
+) {
+    val children = allCategories.filter { it.parentId == category.id }
+    val isExpanded = category.id in expandedTags
+    val noteCount = notes.count { category.id in it.categoryIds }
+    val selectedRow = selected?.id == category.id
+
+    Row(
+        Modifier.fillMaxWidth()
+            .background(if (selectedRow) NoteSoft else Color.Transparent)
+            .clickable { onNavigate(NotesPage.CATEGORY, category) }
+            .padding(start = (12 + category.path.count { it == '/' } * 16).dp, end = 18.dp, top = 9.dp, bottom = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (children.isNotEmpty()) {
+            IconButton(onClick = { onToggle(category.id) }, modifier = Modifier.size(28.dp)) {
+                Icon(if (isExpanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight, "展开或收起子标签", tint = NoteMuted)
+            }
+        } else {
+            Spacer(Modifier.width(28.dp))
+        }
+        Text("#${category.name}", color = if (selectedRow) NotePrimary else NoteInk, fontWeight = if (selectedRow) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
+        Text(noteCount.toString(), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+    }
+
+    if (isExpanded) {
+        children.forEach { child ->
+            DrawerTagRow(child, allCategories, notes, selected, expandedTags, onToggle, onNavigate)
+        }
     }
 }
 
