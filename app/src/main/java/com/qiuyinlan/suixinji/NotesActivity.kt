@@ -455,28 +455,36 @@ private fun NotesApp() {
             containerColor = NotePaper,
             topBar = {
                 TopAppBar(
-                    title = { Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.TAGS -> "标签"; NotesPage.WALK -> "漫步"; NotesPage.MY -> "我的"; NotesPage.LETTERS -> "信件"; NotesPage.CATEGORY -> selectedCategory?.path ?: "分类" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    navigationIcon = {
+                    title = {
                         val category = selectedCategory
                         if (page == NotesPage.CATEGORY && category != null) {
-                            val parent = category.parentId?.let { parentId -> state.categories.firstOrNull { it.id == parentId } }
-                            val children = state.categories.filter { it.parentId == category.id }
                             Box {
-                                IconButton(onClick = { showCategoryMenu = true }) { Icon(Icons.Filled.Tune, "调整当前标签") }
-                                DropdownMenu(expanded = showCategoryMenu, onDismissRequest = { showCategoryMenu = false }) {
-                                    DropdownMenuItem(text = { Text("编辑标签") }, onClick = { showCategoryMenu = false; renameTarget = category })
-                                    DropdownMenuItem(text = { Text("查看上级标签") }, enabled = parent != null, onClick = { if (parent != null) { selectedCategory = parent; showCategoryMenu = false } })
-                                    DropdownMenuItem(text = { Text(if (children.isEmpty()) "没有下级标签" else "查看下级标签") }, enabled = children.isNotEmpty(), onClick = { showCategoryMenu = false; showChildCategoryMenu = true })
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { showCategoryMenu = true }.padding(horizontal = 4.dp, vertical = 6.dp)) {
+                                    Text("#${category.path}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Icon(Icons.Filled.KeyboardArrowDown, "标签菜单", tint = NotePrimary, modifier = Modifier.size(18.dp))
                                 }
-                                DropdownMenu(expanded = showChildCategoryMenu, onDismissRequest = { showChildCategoryMenu = false }) {
-                                    children.forEach { child ->
-                                        DropdownMenuItem(text = { Text("#${child.name}", fontSize = 11.sp) }, onClick = { selectedCategory = child; showChildCategoryMenu = false })
+                                val parent = category.parentId?.let { parentId -> state.categories.firstOrNull { it.id == parentId } }
+                                val children = state.categories.filter { it.parentId == category.id }
+                                DropdownMenu(expanded = showCategoryMenu, onDismissRequest = { showCategoryMenu = false }, modifier = Modifier.background(Color.White, RoundedCornerShape(18.dp))) {
+                                    Surface(color = Color.White, shape = RoundedCornerShape(18.dp)) {
+                                        Column(Modifier.padding(vertical = 6.dp)) {
+                                            Text("标签操作", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 18.dp, vertical = 7.dp))
+                                            DropdownMenuItem(text = { Text("编辑这个标签") }, onClick = { showCategoryMenu = false; renameTarget = category })
+                                            DropdownMenuItem(text = { Text("查看上级标签") }, enabled = parent != null, onClick = { if (parent != null) { selectedCategory = parent; showCategoryMenu = false } })
+                                            DropdownMenuItem(text = { Text(if (children.isEmpty()) "暂无下级标签" else "查看下级标签") }, enabled = children.isNotEmpty(), onClick = { showCategoryMenu = false; showChildCategoryMenu = true })
+                                        }
                                     }
+                                }
+                                DropdownMenu(expanded = showChildCategoryMenu, onDismissRequest = { showChildCategoryMenu = false }, modifier = Modifier.background(Color.White, RoundedCornerShape(18.dp))) {
+                                    Surface(color = Color.White, shape = RoundedCornerShape(18.dp)) { Column(Modifier.padding(vertical = 6.dp)) { children.forEach { child -> DropdownMenuItem(text = { Text("#${child.name}") }, onClick = { selectedCategory = child; showChildCategoryMenu = false }) } } }
                                 }
                             }
                         } else {
-                            IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Filled.Menu, "打开导航") }
+                            Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.TAGS -> "标签"; NotesPage.WALK -> "漫步"; NotesPage.MY -> "我的"; NotesPage.LETTERS -> "信件"; NotesPage.CATEGORY -> "分类" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Filled.Menu, "打开导航") }
                     },
                     actions = {
                         when (page) {
