@@ -402,6 +402,7 @@ private fun NotesApp() {
     var selectedCategory by remember { mutableStateOf<NoteCategory?>(null) }
     var tagCategory by remember { mutableStateOf<NoteCategory?>(null) }
     var editorNote by remember { mutableStateOf<QuickNote?>(null) }
+    var editorReturnPage by remember { mutableStateOf(NotesPage.HOME) }
     var commentNote by remember { mutableStateOf<QuickNote?>(null) }
     var letterEditor by remember { mutableStateOf<FutureLetter?>(null) }
     var renameTarget by remember { mutableStateOf<NoteCategory?>(null) }
@@ -413,8 +414,13 @@ private fun NotesApp() {
     var showCategorySearch by rememberSaveable { mutableStateOf(false) }
     var newCategoryParent by remember { mutableStateOf<NoteCategory?>(null) }
     var showNewCategory by remember { mutableStateOf(false) }
+    var showTagActions by remember { mutableStateOf(false) }
 
     fun update(next: NotesState) { state = next; NotesStore.save(context, next) }
+    fun openEditor(note: QuickNote, returnPage: NotesPage = page) {
+        editorReturnPage = returnPage
+        editorNote = note
+    }
     fun noteWithTags(note: QuickNote): QuickNote {
         val categories = state.categories.toMutableList()
         val ids = note.categoryIds.toMutableList()
@@ -485,20 +491,50 @@ private fun NotesApp() {
             bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; homeDateFilter = null; showHomeSearch = false; showTagsSearch = false; showCategorySearch = false; if (target != NotesPage.TAGS) tagCategory = null } },
             floatingActionButton = {
                 if (page == NotesPage.TAGS) {
-                    FloatingActionButton(onClick = { newCategoryParent = tagCategory; showNewCategory = true }) { Icon(Icons.Filled.Add, "新建标签") }
+                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (showTagActions) {
+                            Surface(shape = RoundedCornerShape(18.dp), color = Color.White, shadowElevation = 4.dp,
+                                modifier = Modifier.clickable {
+                                    showTagActions = false
+                                    val category = tagCategory
+                                    val now = System.currentTimeMillis()
+                                    val prefix = category?.path?.takeIf { it.isNotBlank() }?.let { "#$it " } ?: ""
+                                    openEditor(QuickNote(UUID.randomUUID().toString(), prefix, now, now, category?.let { listOf(it.id) } ?: emptyList()), NotesPage.TAGS)
+                                }) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                    Icon(Icons.Filled.Edit, "新建笔记", tint = NotePrimary, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp)); Text("新建笔记", color = NoteInk, style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+                            Surface(shape = RoundedCornerShape(18.dp), color = Color.White, shadowElevation = 4.dp,
+                                modifier = Modifier.clickable {
+                                    showTagActions = false
+                                    newCategoryParent = tagCategory
+                                    showNewCategory = true
+                                }) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                    Icon(Icons.Filled.Label, "新建标签", tint = NotePrimary, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp)); Text("新建标签", color = NoteInk, style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+                        }
+                        FloatingActionButton(onClick = { showTagActions = !showTagActions }, containerColor = NotePrimary, contentColor = Color.White) {
+                            Icon(if (showTagActions) Icons.Filled.Close else Icons.Filled.Add, "新建")
+                        }
+                    }
                 }
             },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, dueLetters, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
-                NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
-                NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
-                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
+                NotesPage.HOME -> HomePage(state, dueLetters, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+                NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
+                NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { openEditor(it, NotesPage.ORGANIZER) })
+                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
                     val removedIds = state.categories.filter { item -> selectedCategories.any { category -> item.id == category.id || item.path.startsWith("${category.path}/") } }.map { it.id }.toSet()
                     update(state.copy(categories = state.categories.filterNot { it.id in removedIds }, notes = state.notes.map { note -> note.copy(categoryIds = note.categoryIds.filterNot { it in removedIds }) }))
                     tagCategory = null
                 })
-                NotesPage.WALK -> WalkPage(state, padding, onEdit = { editorNote = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+                NotesPage.WALK -> WalkPage(state, padding, onEdit = { openEditor(it, NotesPage.WALK) }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; page = NotesPage.HOME }, onImport = { bundle ->
                     var importState = state
                     val mergedCategories = importState.categories.toMutableList()
@@ -530,7 +566,7 @@ private fun NotesApp() {
             }
         }
     }
-    editorNote?.let { note -> key(note.id) { QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null; page = NotesPage.HOME }, onSave = { saveNote(it) }, onNext = { val now = System.currentTimeMillis(); editorNote = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()) }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) } }
+    editorNote?.let { note -> key(note.id) { QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null; page = editorReturnPage }, onSave = { saveNote(it) }, onNext = { val now = System.currentTimeMillis(); editorNote = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()) }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) } }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
     letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null; page = NotesPage.MY }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null; page = NotesPage.MY }) }
     renameTarget?.let { category ->
@@ -968,6 +1004,7 @@ private fun TagsPage(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (NotesState) -> Unit, onEdit: (QuickNote) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -1071,17 +1108,20 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 } else {
                     Text("${index + 1} / ${batch.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
                     Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelMedium)
-                    SelectionContainer {
-                        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp)) {
-                            Text(current.content, style = MaterialTheme.typography.bodyLarge, color = NoteInk)
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 18.dp)) {
-                                Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
-                                current.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                                Text(" · ${moodLabel(current.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                    Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 2.dp,
+                        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) })) {
+                        SelectionContainer {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
+                                Text(current.content, style = MaterialTheme.typography.bodyLarge, color = NoteInk)
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 18.dp)) {
+                                    Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                    current.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                    Text(" · ${moodLabel(current.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                }
+                                val paths = current.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }
+                                if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
+                                if (current.comments.isNotEmpty()) CommentedNotePreview(current.content, current.comments, {}, showEye = false, modifier = Modifier.padding(top = 12.dp))
                             }
-                            val paths = current.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }
-                            if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
-                            if (current.comments.isNotEmpty()) CommentedNotePreview(current.content, current.comments, {}, showEye = false, modifier = Modifier.padding(top = 12.dp))
                         }
                     }
                 }
@@ -1442,7 +1482,8 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
     val current = notes.getOrNull(index.coerceIn(0, (notes.size - 1).coerceAtLeast(0)))
     var dragDistance by remember { mutableStateOf(0f) }
     var showDeleteDialog by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp).verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("漫步", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -1457,7 +1498,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             Surface(
                 color = Color.White,
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).combinedClickable(onClick = {}, onLongClick = { showDeleteDialog = true }).pointerInput(current.id) {
+                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) }, onLongClick = { showDeleteDialog = true }).pointerInput(current.id) {
                     detectHorizontalDragGestures(
                         onHorizontalDrag = { _, amount -> dragDistance += amount },
                         onDragEnd = { if (abs(dragDistance) > 80f) index = (index + if (dragDistance < 0f) 1 else -1).coerceIn(0, notes.lastIndex); dragDistance = 0f },
@@ -1470,13 +1511,16 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
                     CommentedNotePreview(current.content, current.comments, {}, showEye = false, modifier = Modifier.fillMaxWidth().padding(top = 16.dp))
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { if (index > 0) index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null); Spacer(Modifier.width(4.dp)); Text("上一篇") }
-                TextButton(onClick = { onEdit(current) }) { Icon(Icons.Filled.Edit, null); Spacer(Modifier.width(4.dp)); Text("编辑") }
-                OutlinedButton(onClick = { if (index < notes.lastIndex) index++ }, enabled = index < notes.lastIndex) { Text("下一篇"); Spacer(Modifier.width(4.dp)); Icon(Icons.AutoMirrored.Filled.ArrowForward, null) }
-            }
             if (index == 0 || index == notes.lastIndex) Text(if (notes.size == 1) "当前只有这一篇" else if (index == 0) "已经到达最早的笔记" else "已经到达最新的笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
         }
+        Surface(color = Color.White, shadowElevation = 6.dp, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { if (index > 0) index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上一篇", tint = NotePrimary) }
+                IconButton(onClick = { current?.let(onEdit) }, enabled = current != null) { Icon(Icons.Filled.Edit, "编辑", tint = NotePrimary) }
+                IconButton(onClick = { if (index < notes.lastIndex) index++ }, enabled = index < notes.lastIndex) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "下一篇", tint = NotePrimary) }
+            }
+        }
+    }
     }
     if (showDeleteDialog && current != null) AlertDialog(onDismissRequest = { showDeleteDialog = false }, title = { Text("删除笔记") }, text = { Text("确定删除这条笔记吗？") }, confirmButton = { TextButton(onClick = { showDeleteDialog = false; onDelete(current) }) { Text("删除") } }, dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("取消") } })
 }
