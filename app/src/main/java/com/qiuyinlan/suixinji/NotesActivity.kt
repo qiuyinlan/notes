@@ -151,6 +151,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.focus.FocusRequester
@@ -823,7 +826,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var text by remember { mutableStateOf(TextFieldValue(note.content)) }
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
-    var showPreview by rememberSaveable { mutableStateOf(true) }
     var showMoreFormatting by remember { mutableStateOf(false) }
     var location by remember { mutableStateOf(note.location) }
     var mood by remember { mutableStateOf(note.mood) }
@@ -962,12 +964,26 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                         }
                     }
                 }
-                Column(Modifier.fillMaxWidth().weight(1f)) {
-                    OutlinedTextField(text, { replaceEditorText(it) }, Modifier.fillMaxWidth().weight(if (showPreview) 0.58f else 1f).focusRequester(focusRequester), placeholder = { Text("写下此刻的想法…") }, maxLines = 30, shape = RoundedCornerShape(14.dp), colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White))
-                    if (showPreview) {
-                        Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().weight(0.42f)) {
-                            if (comments.isEmpty()) MarkdownPreview(text.text, Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp))
-                            else CommentedNotePreview(text.text, comments, { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } }, showEye = true, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp).verticalScroll(rememberScrollState()))
+                Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp)) {
+                        OutlinedTextField(
+                            text,
+                            { replaceEditorText(it) },
+                            Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester),
+                            placeholder = { Text("写下此刻的想法…") },
+                            maxLines = 30,
+                            visualTransformation = MarkdownVisualTransformation,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White),
+                        )
+                        if (comments.isNotEmpty()) {
+                            CommentedNotePreview(
+                                "",
+                                comments,
+                                { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } },
+                                showEye = true,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                            )
                         }
                     }
                 }
@@ -1504,6 +1520,39 @@ private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
                 }
             }
         }
+    }
+}
+
+private object MarkdownVisualTransformation : VisualTransformation {
+    override fun filter(text: androidx.compose.ui.text.AnnotatedString): TransformedText {
+        val styled = buildAnnotatedString {
+            append(text.text)
+            Regex("(?m)^(#{1,6})\\s+.+$").findAll(text.text).forEach { match ->
+                val level = match.groupValues[1].length
+                addStyle(
+                    SpanStyle(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = when (level) { 1 -> 24.sp; 2 -> 21.sp; 3 -> 18.sp; else -> 16.sp },
+                        color = NoteInk,
+                    ),
+                    match.range.first,
+                    match.range.last + 1,
+                )
+            }
+            val inlinePattern = Regex("(\\*\\*|__)(.+?)\\1|(?<!\\*)\\*([^*]+)\\*|~~(.+?)~~|`([^`]+)`|<u>(.+?)</u>|(?<![\\p{L}\\d_])#[\\p{L}\\d][\\p{L}\\d/_-]*(?=\\s|$)")
+            inlinePattern.findAll(text.text).forEach { match ->
+                val style = when {
+                    match.groupValues[1].isNotEmpty() -> SpanStyle(fontWeight = FontWeight.Bold)
+                    match.groupValues[3].isNotEmpty() -> SpanStyle(fontStyle = FontStyle.Italic)
+                    match.groupValues[4].isNotEmpty() -> SpanStyle(textDecoration = TextDecoration.LineThrough)
+                    match.groupValues[5].isNotEmpty() -> SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)
+                    match.groupValues[6].isNotEmpty() -> SpanStyle(textDecoration = TextDecoration.Underline)
+                    else -> SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium)
+                }
+                addStyle(style, match.range.first, match.range.last + 1)
+            }
+        }
+        return TransformedText(styled, OffsetMapping.Identity)
     }
 }
 
