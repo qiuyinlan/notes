@@ -129,6 +129,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.Typography
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.produceState
@@ -199,6 +200,23 @@ private val NotePaper = Color(0xFFF4E8DA)
 private val NoteSoft = Color(0xFFEAD9C7)
 private val NoteMuted = Color(0xFF8A786B)
 private val NoteTagColor = Color(0xFF2878B5)
+private val NoteTypography = Typography().copy(
+    displayLarge = androidx.compose.ui.text.TextStyle(fontSize = 22.sp, lineHeight = 26.sp),
+    displayMedium = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, lineHeight = 24.sp),
+    displaySmall = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 22.sp),
+    headlineLarge = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, lineHeight = 24.sp),
+    headlineMedium = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 22.sp),
+    headlineSmall = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 20.sp),
+    titleLarge = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, lineHeight = 19.sp),
+    titleMedium = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 17.sp),
+    titleSmall = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
+    bodyLarge = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 17.sp),
+    bodyMedium = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, lineHeight = 16.sp),
+    bodySmall = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, lineHeight = 14.sp),
+    labelLarge = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
+    labelMedium = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, lineHeight = 14.sp),
+    labelSmall = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, lineHeight = 13.sp),
+)
 private val NoteTagRegex = Regex("(?<![\\p{L}\\d_])#([\\p{L}\\d][\\p{L}\\d/_-]*)(?=\\s|$)")
 private val TagPalette = listOf(
     0xFFE8D5C4.toInt(), 0xFFD8E2DC.toInt(), 0xFFF6E7CB.toInt(), 0xFFD9E4F5.toInt(),
@@ -357,7 +375,7 @@ class NotesActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme(primary = NotePrimary, secondary = NoteAccent, background = NotePaper, surface = Color.White, onSurface = NoteInk)) {
+            MaterialTheme(typography = NoteTypography, colorScheme = lightColorScheme(primary = NotePrimary, secondary = NoteAccent, background = NotePaper, surface = Color.White, onSurface = NoteInk)) {
                 NotesApp()
             }
         }
@@ -381,6 +399,8 @@ private fun NotesApp() {
     var letterEditor by remember { mutableStateOf<FutureLetter?>(null) }
     var renameTarget by remember { mutableStateOf<NoteCategory?>(null) }
     var homeDateFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var showCategoryMenu by remember { mutableStateOf(false) }
+    var showChildCategoryMenu by remember { mutableStateOf(false) }
 
     fun update(next: NotesState) { state = next; NotesStore.save(context, next) }
     fun noteWithTags(note: QuickNote): QuickNote {
@@ -417,7 +437,28 @@ private fun NotesApp() {
             topBar = {
                 TopAppBar(
                     title = { Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.TAGS -> "标签"; NotesPage.WALK -> "漫步"; NotesPage.MY -> "我的"; NotesPage.LETTERS -> "信件"; NotesPage.CATEGORY -> selectedCategory?.path ?: "分类" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Filled.Menu, "打开导航") } },
+                    navigationIcon = {
+                        val category = selectedCategory
+                        if (page == NotesPage.CATEGORY && category != null) {
+                            val parent = category.parentId?.let { parentId -> state.categories.firstOrNull { it.id == parentId } }
+                            val children = state.categories.filter { it.parentId == category.id }
+                            Box {
+                                IconButton(onClick = { showCategoryMenu = true }) { Icon(Icons.Filled.Tune, "调整当前标签") }
+                                DropdownMenu(expanded = showCategoryMenu, onDismissRequest = { showCategoryMenu = false }) {
+                                    DropdownMenuItem(text = { Text("编辑标签") }, onClick = { showCategoryMenu = false; renameTarget = category })
+                                    DropdownMenuItem(text = { Text("查看上级标签") }, enabled = parent != null, onClick = { if (parent != null) { selectedCategory = parent; showCategoryMenu = false } })
+                                    DropdownMenuItem(text = { Text(if (children.isEmpty()) "没有下级标签" else "查看下级标签") }, enabled = children.isNotEmpty(), onClick = { showCategoryMenu = false; showChildCategoryMenu = true })
+                                }
+                                DropdownMenu(expanded = showChildCategoryMenu, onDismissRequest = { showChildCategoryMenu = false }) {
+                                    children.forEach { child ->
+                                        DropdownMenuItem(text = { Text("#${child.name}", fontSize = 11.sp) }, onClick = { selectedCategory = child; showChildCategoryMenu = false })
+                                    }
+                                }
+                            }
+                        } else {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Filled.Menu, "打开导航") }
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = NotePaper),
                 )
             },
@@ -574,7 +615,7 @@ private fun DrawerTagRow(
         }
         Icon(Icons.Filled.Label, null, tint = if (selectedRow) NotePrimary else NoteMuted, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text("#${category.name}", color = if (selectedRow) NotePrimary else NoteInk, fontWeight = if (selectedRow) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
+        Text("#${category.name}", color = if (selectedRow) NotePrimary else NoteInk, fontSize = 11.sp, fontWeight = if (selectedRow) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
         Text(noteCount.toString(), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
         IconButton(onClick = { onRename(category) }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "修改标签", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
     }
@@ -783,7 +824,7 @@ private fun TagsPage(
                     Surface(color = tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = { onSelect(category) }, onLongClick = { deleteSelection = setOf(category.id); showBulkDelete = true })) {
                         Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
                             Column {
-                                Text(category.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = NoteInk)
+                                Text(category.name, style = MaterialTheme.typography.titleMedium, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = NoteInk)
                                 Text(category.path, style = MaterialTheme.typography.labelSmall, color = NoteMuted, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                             }
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1162,7 +1203,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     }
                 }
                 val inlineTags = NoteTagRegex.findAll(text.text).map { it.groupValues[1] }.distinct().toList()
-                if (inlineTags.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { inlineTags.forEach { Text("#$it", color = NoteTagColor, fontSize = 12.sp, fontWeight = FontWeight.Medium) } }
+                if (inlineTags.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { inlineTags.forEach { Text("#$it", color = NoteTagColor, fontSize = 10.sp, fontWeight = FontWeight.Medium) } }
                 location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 6.dp)) }
                 Text("创建时间：${prettyTime(createdAt)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
                 if (imageUris.isNotEmpty()) {
