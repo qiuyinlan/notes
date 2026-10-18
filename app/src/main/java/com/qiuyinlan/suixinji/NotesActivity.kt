@@ -622,12 +622,12 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
         unselectedIconColor = NoteMuted,
         unselectedTextColor = NoteMuted,
     )
-    NavigationBar(containerColor = Color.White) {
-        NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页") }, label = { Text("首页") }, colors = navColors)
-        NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理") }, label = { Text("整理") }, colors = navColors)
-        NavigationBarItem(page == NotesPage.WALK, { onSelect(NotesPage.WALK) }, icon = { Icon(Icons.Filled.Book, "漫步") }, label = { Text("漫步") }, colors = navColors)
-        NavigationBarItem(page == NotesPage.TAGS, { onSelect(NotesPage.TAGS) }, icon = { Icon(Icons.Filled.Label, "标签") }, label = { Text("标签") }, colors = navColors)
-        NavigationBarItem(page == NotesPage.MY || page == NotesPage.LETTERS, { onSelect(NotesPage.MY) }, icon = { Icon(Icons.Filled.Person, "我的") }, label = { Text("我的") }, colors = navColors)
+    NavigationBar(modifier = Modifier.height(62.dp), containerColor = Color.White, tonalElevation = 0.dp) {
+        NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页", modifier = Modifier.size(18.dp)) }, label = { Text("首页", fontSize = 10.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理", modifier = Modifier.size(18.dp)) }, label = { Text("整理", fontSize = 10.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.WALK, { onSelect(NotesPage.WALK) }, icon = { Icon(Icons.Filled.Book, "漫步", modifier = Modifier.size(18.dp)) }, label = { Text("漫步", fontSize = 10.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.TAGS, { onSelect(NotesPage.TAGS) }, icon = { Icon(Icons.Filled.Label, "标签", modifier = Modifier.size(18.dp)) }, label = { Text("标签", fontSize = 10.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.MY || page == NotesPage.LETTERS, { onSelect(NotesPage.MY) }, icon = { Icon(Icons.Filled.Person, "我的", modifier = Modifier.size(18.dp)) }, label = { Text("我的", fontSize = 10.sp) }, colors = navColors)
     }
 }
 
@@ -770,11 +770,13 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
             if (state.categories.isNotEmpty()) item { Text("分类空间", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             if (state.categories.isNotEmpty()) item { LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height(((state.categories.count { it.parentId == null } + 1) / 2 * 88).coerceAtLeast(88).dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(state.categories.filter { it.parentId == null }) { category -> Card(Modifier.fillMaxWidth().height(78.dp).clickable { onCategory(category) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(category.name, fontWeight = FontWeight.Bold); Text("${state.notes.count { category.id in it.categoryIds }} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp)) } } } } }
         }
-        Box(Modifier.fillMaxWidth().background(NotePaper).padding(horizontal = 16.dp, vertical = 8.dp).clickable {
+        Box(Modifier.fillMaxWidth().background(NotePaper).padding(horizontal = 16.dp, vertical = 6.dp).clickable {
             val now = System.currentTimeMillis()
             onCapture(QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()))
         }) {
-            OutlinedTextField(value = "", onValueChange = {}, enabled = false, modifier = Modifier.fillMaxWidth().height(58.dp), singleLine = true, placeholder = { Text("点击开始记录…") }, shape = RoundedCornerShape(12.dp), trailingIcon = { Icon(Icons.AutoMirrored.Filled.Send, "开始记录", tint = NotePrimary) })
+            Surface(color = Color.White, shape = RoundedCornerShape(18.dp), shadowElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(value = "", onValueChange = {}, enabled = false, modifier = Modifier.fillMaxWidth().height(54.dp), singleLine = true, placeholder = { Text("点击开始记录…") }, shape = RoundedCornerShape(18.dp), trailingIcon = { Icon(Icons.AutoMirrored.Filled.Send, "开始记录", tint = NotePrimary) }, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Color.Transparent, disabledBorderColor = Color.Transparent, disabledContainerColor = Color.Transparent))
+            }
         }
     }
 }
