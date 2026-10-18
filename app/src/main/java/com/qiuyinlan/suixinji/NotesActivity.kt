@@ -1166,8 +1166,9 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 }
                 Text("左右滑动切换记录 · 跳过的记录仍会留在随记箱", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
             }
-            }
-            Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFB8B0A8)), modifier = Modifier.fillMaxWidth()) {
+        }
+        }
+        if (!photoMode) Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFB8B0A8)), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                     IconButton(enabled = current != null, onClick = { if (current != null) { lastWasSkip = true; undoState = null; index++ } }) { Icon(Icons.Filled.SkipNext, "跳过") }
                     IconButton(enabled = current != null, onClick = { if (current != null) selected = current }) { Icon(Icons.Filled.Label, "归类") }
@@ -1176,7 +1177,6 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 }
             }
         }
-    }
     selected?.let { note -> CategoryPicker(state.categories, onDismiss = { selected = null }, onPick = { category -> undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it })); selected = null; index++ }, onCreate = { raw ->
         val clean = raw.trim().trimStart('#')
         if (clean.isNotBlank()) {
