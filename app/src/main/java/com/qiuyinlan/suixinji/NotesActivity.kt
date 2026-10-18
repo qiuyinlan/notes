@@ -877,6 +877,18 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
             imageUris = (imageUris + uri.toString()).distinct()
         }
     }
+    val formatIcons = listOf(
+        Icons.Filled.FormatBold, Icons.Filled.FormatItalic, Icons.Filled.FormatUnderlined,
+        Icons.Filled.StrikethroughS, Icons.Filled.FormatQuote, Icons.Filled.Remove,
+        Icons.Filled.MoreVert, Icons.Filled.MoreVert, Icons.Filled.MoreVert,
+        Icons.Filled.MoreVert, Icons.Filled.Undo, Icons.Filled.Redo,
+    )
+    var formatIconIndex = 0
+    @Composable
+    fun DropdownMenuItem(text: @Composable () -> Unit, enabled: Boolean = true, onClick: () -> Unit) {
+        val icon = formatIcons.getOrNull(formatIconIndex++) ?: Icons.Filled.MoreVert
+        androidx.compose.material3.DropdownMenuItem(text = text, leadingIcon = { Icon(icon, null) }, enabled = enabled, onClick = onClick)
+    }
     Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = NotePaper) {
             Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -1308,7 +1320,7 @@ private fun importWeReadNotes(apiKey: String): ImportBundle = runCatching {
             requestMethod = "POST"; connectTimeout = 15000; readTimeout = 30000; doOutput = true
             setRequestProperty("Authorization", "Bearer $apiKey"); setRequestProperty("Content-Type", "application/json")
         }
-        val body = JSONObject().put("path", path).put("method", "GET").put("params", params)
+        val body = JSONObject(params.toString()).put("api_name", path)
         connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
         val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -1317,23 +1329,49 @@ private fun importWeReadNotes(apiKey: String): ImportBundle = runCatching {
     }
     val categories = mutableListOf<NoteCategory>()
     val notes = mutableListOf<QuickNote>()
-    val notebooks = request("/user/notebooks").optJSONArray("books") ?: JSONArray()
+    val notebookBooks = mutableListOf<JSONObject>()
+    var lastSort = 0L
+    do {
+        val notebookParams = JSONObject().put("count", 100)
+        if (lastSort > 0) notebookParams.put("lastSort", lastSort)
+        val response = request("/user/notebooks", notebookParams)
+        val page = response.optJSONArray("books") ?: JSONArray()
+        for (i in 0 until page.length()) page.optJSONObject(i)?.let { notebookBooks += it }
+        lastSort = page.optJSONObject(page.length() - 1)?.optLong("sort", 0L) ?: 0L
+        if (page.length() == 0 || response.optInt("hasMore", 0) == 0) lastSort = 0L
+    } while (lastSort > 0)
+    val notebooks = JSONArray().apply { notebookBooks.forEach { put(it) } }
     for (i in 0 until notebooks.length()) {
         val book = notebooks.optJSONObject(i) ?: continue
-        val bookName = book.optString("title", book.optString("bookName", "????"))
-        val bookPath = "????/$bookName"
+        val bookInfo = book.optJSONObject("book") ?: book
+        val bookName = bookInfo.optString("title", book.optString("bookName", "WeRead"))
+        val bookId = book.optString("bookId", bookInfo.optString("bookId"))
+        val bookPath = "WeRead/$bookName"
         val bookCategory = NoteCategory(UUID.randomUUID().toString(), bookName, null, bookPath).also { categories += it }
-        val params = JSONObject().put("bookId", book.optString("bookId", book.optString("book_id")))
-        val marks = request("/book/bookmarklist", params).optJSONArray("bookmarks") ?: JSONArray()
+        val params = JSONObject().put("bookId", bookId)
+        val bookmarkResponse = request("/book/bookmarklist", params)
+        val chapterNames = mutableMapOf<Int, String>()
+        bookmarkResponse.optJSONArray("chapters")?.let { chapters ->
+            for (k in 0 until chapters.length()) chapters.optJSONObject(k)?.let { chapterNames[it.optInt("chapterIdx")] = it.optString("title") }
+        }
+        val marks = bookmarkResponse.optJSONArray("updated") ?: JSONArray()
         for (j in 0 until marks.length()) {
             val mark = marks.optJSONObject(j) ?: continue
             val content = mark.optString("markText", mark.optString("text", "")).trim()
             if (content.isBlank()) continue
-            val chapter = mark.optString("chapterName", mark.optString("chapter", ""))
+            val chapter = mark.optString("chapterName", chapterNames[mark.optInt("chapterIdx")] ?: "")
             val path = if (chapter.isBlank()) bookPath else "$bookPath/$chapter"
             val category = categories.firstOrNull { it.path == path } ?: NoteCategory(UUID.randomUUID().toString(), chapter, bookCategory.id, path).also { categories += it }
             val created = mark.optLong("createTime", System.currentTimeMillis()).let { if (it < 100000000000L) it * 1000 else it }
             notes += QuickNote(UUID.randomUUID().toString(), content, created, created, listOf(bookCategory.id, category.id), status = "organized")
+        }
+        val reviews = request("/review/list/mine", JSONObject().put("bookid", bookId).put("count", 100)).optJSONArray("reviews") ?: JSONArray()
+        for (j in 0 until reviews.length()) {
+            val review = reviews.optJSONObject(j) ?: continue
+            val content = review.optString("review", review.optString("content", "")).trim()
+            if (content.isBlank()) continue
+            val created = review.optLong("createTime", System.currentTimeMillis()).let { if (it < 100000000000L) it * 1000 else it }
+            notes += QuickNote(UUID.randomUUID().toString(), content, created, created, listOf(bookCategory.id), status = "organized")
         }
     }
     ImportBundle(notes, categories)
