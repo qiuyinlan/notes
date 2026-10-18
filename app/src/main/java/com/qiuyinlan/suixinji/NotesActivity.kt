@@ -172,6 +172,9 @@ import java.io.BufferedOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -211,6 +214,10 @@ private data class QuickNote(
     val imageUris: List<String> = emptyList(),
 )
 private data class NoteCategory(val id: String, val name: String, val parentId: String?, val path: String, val color: Long = 0L)
+private data class ImportBundle(val notes: List<QuickNote> = emptyList(), val categories: List<NoteCategory> = emptyList()) {
+    val size: Int get() = notes.size
+    fun isEmpty(): Boolean = notes.isEmpty()
+}
 private data class Diary(val id: String, val title: String, val markdown: String, val date: String)
 private data class FutureLetter(val id: String, val title: String, val content: String, val deliverDate: String, val shown: Boolean = false)
 private data class NotesState(
@@ -410,11 +417,18 @@ private fun NotesApp() {
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) })
                 NotesPage.WALK -> WalkPage(state, padding, onEdit = { editorNote = it })
-                NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onImport = { imported ->
+                NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onImport = { bundle ->
                     var importState = state
-                    val importedNotes = imported.map { note ->
+                    val mergedCategories = importState.categories.toMutableList()
+                    val idMap = mutableMapOf<String, String>()
+                    bundle.categories.forEach { incoming ->
+                        val existing = mergedCategories.firstOrNull { it.path == incoming.path }
+                        val target = existing ?: incoming.copy(id = UUID.randomUUID().toString()).also { mergedCategories += it }
+                        idMap[incoming.id] = target.id
+                    }
+                    val importedNotes = bundle.notes.map { note ->
                         val categories = importState.categories.toMutableList()
-                        val ids = note.categoryIds.toMutableList()
+                        val ids = note.categoryIds.mapNotNull { idMap[it] ?: it }.toMutableList()
                         NoteTagRegex.findAll(note.content).forEach { match ->
                             var parent: String? = null
                             var built = ""
@@ -428,7 +442,7 @@ private fun NotesApp() {
                         importState = importState.copy(categories = categories)
                         note.copy(categoryIds = ids.distinct(), status = if (ids.isEmpty()) note.status else "organized")
                     }
-                    update(importState.copy(notes = (state.notes + importedNotes).distinctBy { it.id }.sortedByDescending { it.createdAt }))
+                    update(importState.copy(categories = mergedCategories, notes = (state.notes + importedNotes).distinctBy { it.id }.sortedByDescending { it.createdAt }))
                 })
                 NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onBack = { page = NotesPage.MY }, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
@@ -747,6 +761,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                     EmptyHint("随记箱为空，所有记录都整理好了")
                 } else {
                     Text("${index + 1} / ${batch.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
+                    Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelMedium)
                     SelectionContainer {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp)) {
                             Text(current.content, style = MaterialTheme.typography.bodyLarge, color = NoteInk)
@@ -821,6 +836,9 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var tagInput by remember { mutableStateOf("") }
     var imageUris by remember { mutableStateOf(note.imageUris) }
     var previewUri by remember { mutableStateOf<Uri?>(null) }
+    var showUnsavedDialog by remember { mutableStateOf(false) }
+    fun hasChanges(): Boolean = text.text.trim() != note.content.trim() || location != note.location || mood != note.mood || comments != note.comments || createdAt != note.createdAt || imageUris != note.imageUris
+    fun requestDismiss() { if (hasChanges()) showUnsavedDialog = true else onDismiss() }
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     fun replaceEditorText(value: TextFieldValue) {
@@ -859,11 +877,11 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
             imageUris = (imageUris + uri.toString()).distinct()
         }
     }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = NotePaper) {
             Column(Modifier.fillMaxSize().padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, "关闭") }
+                    IconButton(onClick = ::requestDismiss) { Icon(Icons.Filled.Close, "关闭") }
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = { showTimeDialog = true }) { Icon(Icons.Filled.AccessTime, "修改创建时间") }
@@ -944,6 +962,13 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
             }
         }
     }
+    if (showUnsavedDialog) AlertDialog(
+        onDismissRequest = { showUnsavedDialog = false },
+        title = { Text("保存改动") },
+        text = { Text("此处记录已有改动，是否保存编辑？") },
+        confirmButton = { TextButton(onClick = { showUnsavedDialog = false; onSave(note.copy(content = text.text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() }, imageUris = imageUris)); onDismiss() }) { Text("保存") } },
+        dismissButton = { Row { TextButton(onClick = { showUnsavedDialog = false; onDismiss() }) { Text("放弃") }; TextButton(onClick = { showUnsavedDialog = false }) { Text("继续编辑") } } },
+    )
     activeComment?.let { index ->
         CommentComposer(
             draft = commentDraft,
@@ -1159,12 +1184,16 @@ private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit:
 }
 
 @Composable
-private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onImport: (List<QuickNote>) -> Unit) {
+private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onImport: (ImportBundle) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showTransfer by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
     var pendingFormat by remember { mutableStateOf<String?>(null) }
     var result by remember { mutableStateOf<String?>(null) }
+    var showWeRead by remember { mutableStateOf(false) }
+    var weReadKey by remember { mutableStateOf("") }
+    var importingWeRead by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         val format = pendingFormat
         if (uri != null && format != null) result = if (exportNotesToZip(context, state, uri, format)) "导出完成" else "导出失败，请重试"
@@ -1174,7 +1203,7 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
         if (uri != null) {
             val imported = parseFlomoZip(context, uri)
             onImport(imported)
-            result = if (imported.isEmpty()) "没有解析到可导入的 Flomo 笔记" else "已导入 ${imported.size} 条笔记"
+            result = if (imported.notes.isEmpty()) "没有解析到可导入的 Flomo 笔记" else "已导入 ${imported.notes.size} 条笔记"
         }
     }
     val days = remember { (0 until 90).map { offset -> Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -(89 - offset)) }.time } }
@@ -1199,9 +1228,28 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
     if (showTransfer) AlertDialog(onDismissRequest = { showTransfer = false }, title = { Text("导入 / 导出") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             TextButton(onClick = { showTransfer = false; importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed")) }, modifier = Modifier.fillMaxWidth()) { Text("导入 Flomo ZIP 压缩包") }
+            TextButton(onClick = { showTransfer = false; showWeRead = true }, modifier = Modifier.fillMaxWidth()) { Text("Import WeRead") }
             TextButton(onClick = { showTransfer = false; showExport = true }, modifier = Modifier.fillMaxWidth()) { Text("导出记录 ZIP") }
         }
     }, confirmButton = { TextButton(onClick = { showTransfer = false }) { Text("取消") } })
+    if (showWeRead) AlertDialog(
+        onDismissRequest = { if (!importingWeRead) showWeRead = false },
+        title = { Text("WeRead") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Enter WeRead Agent Gateway API key", color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(weReadKey, { weReadKey = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("API Key") })
+            if (importingWeRead) CircularProgressIndicator(Modifier.size(24.dp))
+            result?.let { Text(it, color = NotePrimary, style = MaterialTheme.typography.labelSmall) }
+        } },
+        confirmButton = { TextButton(enabled = weReadKey.isNotBlank() && !importingWeRead, onClick = {
+            importingWeRead = true
+            scope.launch(Dispatchers.IO) {
+                val imported = importWeReadNotes(weReadKey.trim())
+                withContext(Dispatchers.Main) { importingWeRead = false; if (imported.notes.isNotEmpty()) { onImport(imported); result = "Imported ${imported.notes.size}"; showWeRead = false } else result = "No notes found" }
+            }
+        }) { Text("Import") } },
+        dismissButton = { TextButton(enabled = !importingWeRead, onClick = { showWeRead = false }) { Text("Cancel") } },
+    )
     if (showExport) AlertDialog(onDismissRequest = { showExport = false }, title = { Text("选择导出格式") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             TextButton(onClick = { pendingFormat = "md"; showExport = false; exportLauncher.launch("suixinji-${today()}.zip") }, modifier = Modifier.fillMaxWidth()) { Text("Markdown（.md）") }
@@ -1210,35 +1258,86 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
     }, confirmButton = { TextButton(onClick = { showExport = false }) { Text("取消") } })
 }
 
-private fun parseFlomoZip(context: Context, uri: Uri): List<QuickNote> = runCatching {
+private fun parseFlomoZip(context: Context, uri: Uri): ImportBundle = runCatching {
     val html = StringBuilder()
-    context.contentResolver.openInputStream(uri)?.use { input ->
-        ZipInputStream(BufferedInputStream(input)).use { zip ->
-            while (true) {
-                val entry = zip.nextEntry ?: break
-                if (!entry.isDirectory && entry.name.lowercase(Locale.ROOT).endsWith(".html")) {
-                    val bytes = ByteArrayOutputStream()
-                    zip.copyTo(bytes)
-                    html.append(bytes.toString(Charsets.UTF_8.name()))
-                }
-                zip.closeEntry()
+    context.contentResolver.openInputStream(uri)?.use { input -> ZipInputStream(BufferedInputStream(input)).use { zip ->
+        while (true) {
+            val entry = zip.nextEntry ?: break
+            if (!entry.isDirectory && entry.name.lowercase(Locale.ROOT).endsWith(".html")) {
+                val bytes = ByteArrayOutputStream(); zip.copyTo(bytes); html.append(bytes.toString(Charsets.UTF_8.name()))
             }
+            zip.closeEntry()
         }
-    }
+    } }
     val memoRegex = Regex("(?s)<div\\s+class=\\\"memo\\\".*?<div\\s+class=\\\"files\\\">(.*?)</div>")
     val timeRegex = Regex("(?s)<div\\s+class=\\\"time\\\">(.*?)</div>")
     val contentRegex = Regex("(?s)<div\\s+class=\\\"content\\\">(.*?)</div>\\s*<div\\s+class=\\\"files\\\">")
     val dateParser = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).apply { isLenient = false }
-    memoRegex.findAll(html).mapNotNull { memo ->
+    val categories = mutableListOf<NoteCategory>()
+    fun categoryForPath(path: String): NoteCategory {
+        categories.firstOrNull { it.path == path }?.let { return it }
+        val parentPath = path.substringBeforeLast('/', "")
+        val parent = parentPath.takeIf { it.isNotBlank() }?.let { categoryForPath(it) }
+        return NoteCategory(UUID.randomUUID().toString(), path.substringAfterLast('/'), parent?.id, path).also { categories += it }
+    }
+    val notes = memoRegex.findAll(html).mapNotNull { memo ->
         val block = memo.value
         val timeText = timeRegex.find(block)?.groupValues?.getOrNull(1)?.trim() ?: return@mapNotNull null
         val contentHtml = contentRegex.find(block)?.groupValues?.getOrNull(1) ?: return@mapNotNull null
         val content = Html.fromHtml(contentHtml, Html.FROM_HTML_MODE_LEGACY).toString().replace("\u00a0", " ").trim()
         if (content.isBlank()) return@mapNotNull null
         val created = runCatching { dateParser.parse(timeText)?.time }.getOrNull() ?: return@mapNotNull null
-        QuickNote(UUID.randomUUID().toString(), content, created, created, emptyList())
+        val ids = mutableListOf<String>()
+        val headingStack = mutableListOf<String>()
+        content.lineSequence().forEach { line ->
+            val heading = Regex("^\\s*(#{1,6})\\s+(.+?)\\s*$").find(line) ?: return@forEach
+            val level = heading.groupValues[1].length
+            while (headingStack.size >= level) headingStack.removeAt(headingStack.lastIndex)
+            headingStack += heading.groupValues[2].trim()
+            ids += categoryForPath(headingStack.joinToString("/")).id
+        }
+        NoteTagRegex.findAll(content).forEach { match -> ids += categoryForPath(match.groupValues[1]).id }
+        QuickNote(UUID.randomUUID().toString(), content, created, created, ids.distinct())
     }.toList()
-}.getOrDefault(emptyList())
+    ImportBundle(notes, categories)
+}.getOrDefault(ImportBundle())
+
+private fun importWeReadNotes(apiKey: String): ImportBundle = runCatching {
+    fun request(path: String, params: JSONObject = JSONObject()): JSONObject {
+        val connection = (URL("https://i.weread.qq.com/api/agent/gateway").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; connectTimeout = 15000; readTimeout = 30000; doOutput = true
+            setRequestProperty("Authorization", "Bearer $apiKey"); setRequestProperty("Content-Type", "application/json")
+        }
+        val body = JSONObject().put("path", path).put("method", "GET").put("params", params)
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+        val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
+        return JSONObject(response)
+    }
+    val categories = mutableListOf<NoteCategory>()
+    val notes = mutableListOf<QuickNote>()
+    val notebooks = request("/user/notebooks").optJSONArray("books") ?: JSONArray()
+    for (i in 0 until notebooks.length()) {
+        val book = notebooks.optJSONObject(i) ?: continue
+        val bookName = book.optString("title", book.optString("bookName", "????"))
+        val bookPath = "????/$bookName"
+        val bookCategory = NoteCategory(UUID.randomUUID().toString(), bookName, null, bookPath).also { categories += it }
+        val params = JSONObject().put("bookId", book.optString("bookId", book.optString("book_id")))
+        val marks = request("/book/bookmarklist", params).optJSONArray("bookmarks") ?: JSONArray()
+        for (j in 0 until marks.length()) {
+            val mark = marks.optJSONObject(j) ?: continue
+            val content = mark.optString("markText", mark.optString("text", "")).trim()
+            if (content.isBlank()) continue
+            val chapter = mark.optString("chapterName", mark.optString("chapter", ""))
+            val path = if (chapter.isBlank()) bookPath else "$bookPath/$chapter"
+            val category = categories.firstOrNull { it.path == path } ?: NoteCategory(UUID.randomUUID().toString(), chapter, bookCategory.id, path).also { categories += it }
+            val created = mark.optLong("createTime", System.currentTimeMillis()).let { if (it < 100000000000L) it * 1000 else it }
+            notes += QuickNote(UUID.randomUUID().toString(), content, created, created, listOf(bookCategory.id, category.id), status = "organized")
+        }
+    }
+    ImportBundle(notes, categories)
+}.getOrDefault(ImportBundle())
 
 private fun exportNotesToZip(context: Context, state: NotesState, uri: Uri, format: String): Boolean = runCatching {
     val output = context.contentResolver.openOutputStream(uri) ?: return@runCatching false
