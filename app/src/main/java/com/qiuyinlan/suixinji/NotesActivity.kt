@@ -18,9 +18,18 @@ import android.graphics.BitmapFactory
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -423,6 +432,27 @@ private fun NotesApp() {
     var showNewCategory by remember { mutableStateOf(false) }
     var showTagActions by remember { mutableStateOf(false) }
 
+    BackHandler(
+        enabled = page != NotesPage.HOME && editorNote == null && commentNote == null && letterEditor == null && renameTarget == null && !showNewCategory,
+    ) {
+        when (page) {
+            NotesPage.LETTERS -> page = NotesPage.MY
+            NotesPage.CATEGORY -> {
+                page = NotesPage.TAGS
+                selectedCategory = null
+                showCategorySearch = false
+            }
+            else -> {
+                page = NotesPage.HOME
+                selectedCategory = null
+                homeDateFilter = null
+                showHomeSearch = false
+                showTagsSearch = false
+                showCategorySearch = false
+            }
+        }
+    }
+
     fun update(next: NotesState) { state = next; NotesStore.save(context, next) }
     fun openEditor(note: QuickNote, returnPage: NotesPage = page) {
         editorReturnPage = returnPage
@@ -452,12 +482,33 @@ private fun NotesApp() {
         update(state.copy(notes = notes.sortedByDescending { it.createdAt }))
     }
     val dueLetters = state.letters.filter { it.deliverDate <= today() && !it.shown }
+    fun navigateBackFromPage() {
+        when (page) {
+            NotesPage.CATEGORY -> {
+                val parent = selectedCategory?.parentId?.let { id -> state.categories.firstOrNull { it.id == id } }
+                if (parent != null) selectedCategory = parent else { selectedCategory = null; page = NotesPage.TAGS }
+            }
+            NotesPage.LETTERS -> page = NotesPage.MY
+            NotesPage.MY, NotesPage.TAGS, NotesPage.ORGANIZER, NotesPage.WALK -> page = NotesPage.HOME
+            else -> Unit
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = { ModalDrawerSheet { DrawerContent(state, page, selectedCategory, onRename = { renameTarget = it }) { target, category -> page = target; selectedCategory = category; scope.launch { drawerState.close() } } } },
     ) {
         Scaffold(
+            modifier = Modifier.pointerInput(page) {
+                var startX = 0f
+                var distance = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { start -> startX = start.x; distance = 0f },
+                    onHorizontalDrag = { _, amount -> if (startX <= 36.dp.toPx()) distance += amount },
+                    onDragEnd = { if (startX <= 36.dp.toPx() && distance > 90.dp.toPx()) navigateBackFromPage(); distance = 0f },
+                    onDragCancel = { distance = 0f },
+                )
+            },
             containerColor = NotePaper,
             topBar = {
                 TopAppBar(
@@ -540,7 +591,11 @@ private fun NotesApp() {
                 }
             },
         ) { padding ->
-            when (page) {
+            AnimatedContent(targetState = page, transitionSpec = {
+                (slideInVertically(initialOffsetY = { it }) + fadeIn()) togetherWith
+                    (slideOutVertically(targetOffsetY = { it }) + fadeOut())
+            }, label = "page-transition") { visiblePage ->
+            when (visiblePage) {
                 NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { openEditor(it, NotesPage.ORGANIZER) })
@@ -578,6 +633,7 @@ private fun NotesApp() {
                     update(importState.copy(categories = mergedCategories, notes = (state.notes + importedNotes).distinctBy { it.id }.sortedByDescending { it.createdAt }))
             }, onRestore = { restored -> update(restored) })
                 NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onBack = { page = NotesPage.MY }, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
+            }
             }
         }
     }
@@ -1084,7 +1140,19 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
         undoState = null
         lastWasSkip = false
     }
-    Box(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+    Box(Modifier.fillMaxSize().padding(padding).padding(16.dp).pointerInput(current?.id, photoMode) {
+        if (!photoMode && current != null) {
+            var dragDistance = 0f
+            detectHorizontalDragGestures(
+                onHorizontalDrag = { _, amount -> dragDistance += amount },
+                onDragEnd = {
+                    if (abs(dragDistance) > 80f) index = (index + if (dragDistance < 0f) 1 else -1).coerceIn(0, (batch.size - 1).coerceAtLeast(0))
+                    dragDistance = 0f
+                },
+                onDragCancel = { dragDistance = 0f },
+            )
+        }
+    }) {
         Column(Modifier.fillMaxSize().verticalScroll(pageScroll).padding(bottom = 92.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -1126,22 +1194,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
             }
             if (mode == "MONTH") OutlinedButton(onClick = { showMonthPicker = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text(monthFilter) }
             if (mode == "MONTH" || mode == "RANDOM") OutlinedTextField(batchInput, { value -> batchInput = value.filter { it.isDigit() }.take(3) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("本轮整理数量（1-500）") })
-            Column(
-                Modifier.fillMaxWidth().pointerInput(current?.id) {
-                    if (current != null) {
-                        var dragDistance = 0f
-                        detectHorizontalDragGestures(
-                            onHorizontalDrag = { _, amount -> dragDistance += amount },
-                            onDragEnd = {
-                                if (abs(dragDistance) > 80f) index = (index + if (dragDistance < 0f) 1 else -1).coerceIn(0, (batch.size - 1).coerceAtLeast(0))
-                                dragDistance = 0f
-                            },
-                            onDragCancel = { dragDistance = 0f },
-                        )
-                    }
-                },
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (current == null) {
                     EmptyHint("随记箱为空，所有记录都整理好了")
                 } else {
@@ -1542,9 +1595,20 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
     val notes = remember(state.notes) { state.notes.sortedByDescending { it.createdAt } }
     var index by remember(notes) { mutableStateOf(notes.indices.randomOrNull() ?: 0) }
     val current = notes.getOrNull(index.coerceIn(0, (notes.size - 1).coerceAtLeast(0)))
-    var dragDistance by remember { mutableStateOf(0f) }
     var showDeleteDialog by remember { mutableStateOf(false) }
-    Box(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp)) {
+    Box(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp).pointerInput(current?.id) {
+        if (current != null) {
+            var dragDistance = 0f
+            detectHorizontalDragGestures(
+                onHorizontalDrag = { _, amount -> dragDistance += amount },
+                onDragEnd = {
+                    if (abs(dragDistance) > 80f) index = (index + if (dragDistance < 0f) 1 else -1).coerceIn(0, notes.lastIndex)
+                    dragDistance = 0f
+                },
+                onDragCancel = { dragDistance = 0f },
+            )
+        }
+    }) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 78.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -1560,13 +1624,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             Surface(
                 color = Color.White,
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) }, onLongClick = { showDeleteDialog = true }).pointerInput(current.id) {
-                    detectHorizontalDragGestures(
-                        onHorizontalDrag = { _, amount -> dragDistance += amount },
-                        onDragEnd = { if (abs(dragDistance) > 80f) index = (index + if (dragDistance < 0f) 1 else -1).coerceIn(0, notes.lastIndex); dragDistance = 0f },
-                        onDragCancel = { dragDistance = 0f },
-                    )
-                },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) }, onLongClick = { showDeleteDialog = true }),
             ) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
                     Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
