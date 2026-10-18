@@ -417,10 +417,10 @@ private fun NotesApp() {
             bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; if (target != NotesPage.TAGS) tagCategory = null } },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update)
-                NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }) }
+                NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+                NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
-                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onDelete = { category ->
+                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDelete = { category ->
                     val removedIds = state.categories.filter { it.id == category.id || it.path.startsWith("${category.path}/") }.map { it.id }.toSet()
                     update(state.copy(categories = state.categories.filterNot { it.id in removedIds }, notes = state.notes.map { note -> note.copy(categoryIds = note.categoryIds.filterNot { it in removedIds }) }))
                     tagCategory = state.categories.firstOrNull { it.id == category.parentId }
@@ -505,7 +505,7 @@ private fun DrawerItem(label: String, icon: androidx.compose.ui.graphics.vector.
 }
 
 @Composable
-private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit) {
+private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit, onDelete: (QuickNote) -> Unit) {
     Column(Modifier.fillMaxSize().padding(padding)) {
         LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             item {
@@ -515,7 +515,7 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
             item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); SummaryCard("今日的信", due.size, Icons.Filled.MailOutline, onLetters) } }
             item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("漫步") } } }
             if (state.notes.isEmpty()) item { EmptyHint("还没有记录，点击底部输入框开始") }
-            items(state.notes.sortedByDescending { it.createdAt }, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }) }
+            items(state.notes.sortedByDescending { it.createdAt }, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }, onDelete = { onDelete(note) }) }
             if (state.categories.isNotEmpty()) item { Text("分类空间", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             if (state.categories.isNotEmpty()) item { LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height(((state.categories.count { it.parentId == null } + 1) / 2 * 88).coerceAtLeast(88).dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(state.categories.filter { it.parentId == null }) { category -> Card(Modifier.fillMaxWidth().height(78.dp).clickable { onCategory(category) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(category.name, fontWeight = FontWeight.Bold); Text("${state.notes.count { category.id in it.categoryIds }} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp)) } } } } }
         }
@@ -535,10 +535,11 @@ private fun SummaryCard(label: String, count: Int, icon: androidx.compose.ui.gra
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, onEdit: (QuickNote) -> Unit, onToggleComment: (Int) -> Unit, onComment: () -> Unit = {}, modifier: Modifier = Modifier) {
+private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, onEdit: (QuickNote) -> Unit, onToggleComment: (Int) -> Unit, onComment: () -> Unit = {}, onDelete: () -> Unit = {}, modifier: Modifier = Modifier) {
     var expanded by rememberSaveable(note.id) { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
     val longText = note.content.length > 180 || note.content.count { it == '\n' } > 6
-    Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }, onLongClick = { showDeleteDialog = true }), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(Modifier.padding(16.dp)) {
             CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, showEye = false)
             if (longText) Text(if (expanded) "点击收起 · 双击编辑" else "点击展开 · 双击编辑", color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
@@ -547,6 +548,7 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
             if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
         }
     }
+    if (showDeleteDialog) AlertDialog(onDismissRequest = { showDeleteDialog = false }, title = { Text("删除笔记") }, text = { Text("确定删除这条笔记吗？") }, confirmButton = { TextButton(onClick = { showDeleteDialog = false; onDelete() }) { Text("删除") } }, dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("取消") } })
 }
 
 @Composable
@@ -589,14 +591,14 @@ private fun CommentSheet(note: QuickNote, onDismiss: () -> Unit, onSave: (NoteCo
 private fun moodLabel(mood: String): String = when (mood) { "HAPPY" -> "开心"; "SAD" -> "不开心"; else -> "正常" }
 
 @Composable
-private fun CategoryPage(state: NotesState, category: NoteCategory, padding: PaddingValues, onAdd: () -> Unit, onEdit: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit) {
+private fun CategoryPage(state: NotesState, category: NoteCategory, padding: PaddingValues, onAdd: () -> Unit, onEdit: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onDelete: (QuickNote) -> Unit) {
     val children = state.categories.filter { it.parentId == category.id }
     val notes = state.notes.filter { category.id in it.categoryIds }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("在 ${category.path} 中记录", color = NoteMuted); OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("在这里写一条") } }
         if (children.isNotEmpty()) { item { Text("子分类", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }; items(children) { child -> Surface(Modifier.fillMaxWidth().clickable { onCategory(child) }, color = NoteSoft, shape = RoundedCornerShape(10.dp)) { Text(child.name, modifier = Modifier.padding(14.dp), color = NoteInk, fontWeight = FontWeight.Bold) } } }
         item { Text("本分类记录 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        items(notes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}) }
+        items(notes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onDelete = { onDelete(note) }) }
     }
 }
 
@@ -608,6 +610,7 @@ private fun TagsPage(
     padding: PaddingValues,
     onSelect: (NoteCategory?) -> Unit,
     onEdit: (QuickNote) -> Unit,
+    onDeleteNote: (QuickNote) -> Unit,
     onColorChange: (NoteCategory, Int) -> Unit,
     onDelete: (NoteCategory) -> Unit,
 ) {
@@ -645,7 +648,7 @@ private fun TagsPage(
         if (selected != null) {
             Text("${selected.name} 下的笔记 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
             if (notes.isEmpty()) EmptyHint("这个标签下还没有笔记") else Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 18.dp)) {
-                notes.forEach { note -> NoteTimelineCard(note, state.categories, onEdit, {}) }
+                notes.forEach { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onDelete = { onDeleteNote(note) }) }
             }
         } else if (visible.isEmpty()) {
             EmptyHint("还没有标签，记录中添加 #标签 后会自动创建")
@@ -859,6 +862,8 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var imageUris by remember { mutableStateOf(note.imageUris) }
     var previewUri by remember { mutableStateOf<Uri?>(null) }
     var showUnsavedDialog by remember { mutableStateOf(false) }
+    var showNoteActions by remember { mutableStateOf(false) }
+    var showNoteDeleteDialog by remember { mutableStateOf(false) }
     fun hasChanges(): Boolean = text.text.trim() != note.content.trim() || location != note.location || mood != note.mood || comments != note.comments || createdAt != note.createdAt || imageUris != note.imageUris
     fun requestDismiss() { if (hasChanges()) showUnsavedDialog = true else onDismiss() }
     val focusRequester = remember { FocusRequester() }
@@ -906,6 +911,17 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     IconButton(onClick = ::requestDismiss) { Icon(Icons.Filled.Close, "关闭") }
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
+                    Box {
+                        IconButton(onClick = { showNoteActions = true }) { Icon(Icons.Filled.MoreVert, "笔记操作") }
+                        DropdownMenu(expanded = showNoteActions, onDismissRequest = { showNoteActions = false }) {
+                            DropdownMenuItem(text = { Text("复制全文") }, onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("随心记", text.text))
+                                showNoteActions = false
+                            })
+                            DropdownMenuItem(text = { Text("删除") }, onClick = { showNoteActions = false; showNoteDeleteDialog = true })
+                        }
+                    }
                     IconButton(onClick = { showTimeDialog = true }) { Icon(Icons.Filled.AccessTime, "修改创建时间") }
                     TextButton(onClick = { onSave(note.copy(content = text.text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() }, imageUris = imageUris)) }, enabled = text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) { Icon(Icons.Filled.Save, null); Text("保存") }
                 }
@@ -983,6 +999,13 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         text = { Text("此处记录已有改动，是否保存编辑？") },
         confirmButton = { TextButton(onClick = { showUnsavedDialog = false; onSave(note.copy(content = text.text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() }, imageUris = imageUris)); onDismiss() }) { Text("保存") } },
         dismissButton = { Row { TextButton(onClick = { showUnsavedDialog = false; onDismiss() }) { Text("放弃") }; TextButton(onClick = { showUnsavedDialog = false }) { Text("继续编辑") } } },
+    )
+    if (showNoteDeleteDialog) AlertDialog(
+        onDismissRequest = { showNoteDeleteDialog = false },
+        title = { Text("删除笔记") },
+        text = { Text("确定删除这条笔记吗？删除后无法恢复。") },
+        confirmButton = { TextButton(onClick = { showNoteDeleteDialog = false; onDelete() }) { Text("删除") } },
+        dismissButton = { TextButton(onClick = { showNoteDeleteDialog = false }) { Text("取消") } },
     )
     activeComment?.let { index ->
         CommentComposer(
