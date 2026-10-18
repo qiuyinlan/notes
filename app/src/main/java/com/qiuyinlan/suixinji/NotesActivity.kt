@@ -117,6 +117,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -545,6 +546,8 @@ private fun DrawerTagRow(
         } else {
             Spacer(Modifier.width(28.dp))
         }
+        Icon(Icons.Filled.Label, null, tint = if (selectedRow) NotePrimary else NoteMuted, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
         Text("#${category.name}", color = if (selectedRow) NotePrimary else NoteInk, fontWeight = if (selectedRow) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
         Text(noteCount.toString(), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
     }
@@ -1293,6 +1296,8 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
     var showWeRead by remember { mutableStateOf(false) }
     var weReadKey by remember { mutableStateOf("") }
     var importingWeRead by remember { mutableStateOf(false) }
+    var weReadProgress by remember { mutableStateOf(0f) }
+    var weReadProgressText by remember { mutableStateOf<String?>(null) }
     var weReadBooks by remember { mutableStateOf<List<WeReadBook>>(emptyList()) }
     var selectedWeReadIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var weReadTag by remember { mutableStateOf("微信读书") }
@@ -1331,7 +1336,7 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
     if (showTransfer) AlertDialog(onDismissRequest = { showTransfer = false }, title = { Text("导入 / 导出") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             TextButton(onClick = { showTransfer = false; importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed")) }, modifier = Modifier.fillMaxWidth()) { Text("导入 Flomo ZIP 压缩包") }
-            TextButton(onClick = { showTransfer = false; showWeRead = true; weReadBooks = emptyList(); selectedWeReadIds = emptySet(); weReadTag = "微信读书" }, modifier = Modifier.fillMaxWidth()) { Text("Import WeRead") }
+            TextButton(onClick = { showTransfer = false; showWeRead = true; weReadBooks = emptyList(); selectedWeReadIds = emptySet(); weReadTag = "微信读书"; weReadProgress = 0f; weReadProgressText = null }, modifier = Modifier.fillMaxWidth()) { Text("导入微信读书笔记") }
             TextButton(onClick = { showTransfer = false; showExport = true }, modifier = Modifier.fillMaxWidth()) { Text("导出记录 ZIP") }
         }
     }, confirmButton = { TextButton(onClick = { showTransfer = false }) { Text("取消") } })
@@ -1344,7 +1349,7 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
                 OutlinedTextField(weReadKey, { weReadKey = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("API Key") })
             } else {
                 Text("已选择 ${selectedWeReadIds.size} / ${weReadBooks.size} 本", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
-                OutlinedTextField(weReadTag, { weReadTag = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("导入到标签") })
+                OutlinedTextField(weReadTag, { weReadTag = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("导入到标签") }, supportingText = { Text("可选择已有标签，也可以直接输入新标签") })
                 if (state.categories.any { it.parentId == null }) {
                     Text("选择已有标签", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1353,26 +1358,40 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
                         }
                     }
                 }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { selectedWeReadIds = weReadBooks.map { it.id }.toSet() }) { Text("全选") }
+                    TextButton(onClick = { selectedWeReadIds = emptySet() }) { Text("清空") }
+                }
                 Column(Modifier.fillMaxWidth().heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
                     weReadBooks.forEach { book ->
-                        Row(Modifier.fillMaxWidth().clickable { selectedWeReadIds = if (book.id in selectedWeReadIds) selectedWeReadIds - book.id else selectedWeReadIds + book.id }, verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = book.id in selectedWeReadIds, onCheckedChange = { checked -> selectedWeReadIds = if (checked) selectedWeReadIds + book.id else selectedWeReadIds - book.id })
-                            Column(Modifier.weight(1f).padding(vertical = 5.dp)) { Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis); Text("${book.noteCount} 条笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall) }
+                            Column(Modifier.weight(1f).clickable { selectedWeReadIds = if (book.id in selectedWeReadIds) selectedWeReadIds - book.id else selectedWeReadIds + book.id }.padding(vertical = 5.dp)) { Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis); Text("${book.noteCount} 条笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall) }
                         }
                     }
                 }
             }
-            if (importingWeRead) CircularProgressIndicator(Modifier.size(24.dp))
+            if (importingWeRead) {
+                weReadProgressText?.let { Text(it, color = NoteMuted, style = MaterialTheme.typography.labelSmall) }
+                if (weReadProgress > 0f) LinearProgressIndicator(progress = weReadProgress, modifier = Modifier.fillMaxWidth()) else LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
             result?.let { Text(it, color = NotePrimary, style = MaterialTheme.typography.labelSmall) }
         } },
         confirmButton = { TextButton(enabled = !importingWeRead && ((weReadBooks.isEmpty() && weReadKey.isNotBlank()) || (weReadBooks.isNotEmpty() && selectedWeReadIds.isNotEmpty() && weReadTag.isNotBlank())), onClick = {
             importingWeRead = true
+            weReadProgress = 0f
+            weReadProgressText = if (weReadBooks.isEmpty()) "正在扫描书籍…" else "正在准备导入…"
             scope.launch(Dispatchers.IO) {
                 if (weReadBooks.isEmpty()) {
                     val books = fetchWeReadBooks(weReadKey.trim())
-                    withContext(Dispatchers.Main) { importingWeRead = false; weReadBooks = books; selectedWeReadIds = books.map { it.id }.toSet(); result = if (books.isEmpty()) "没有找到可导入的书" else "请选择要导入的书" }
+                    withContext(Dispatchers.Main) { importingWeRead = false; weReadBooks = books; selectedWeReadIds = emptySet(); weReadProgress = 0f; weReadProgressText = null; result = if (books.isEmpty()) "没有找到可导入的书" else "请选择要导入的书" }
                 } else {
-                    val imported = importWeReadNotes(weReadKey.trim(), selectedWeReadIds, weReadTag.trim())
+                    val imported = importWeReadNotes(weReadKey.trim(), selectedWeReadIds.toSet(), weReadTag.trim()) { current, total, title ->
+                        withContext(Dispatchers.Main) {
+                            weReadProgress = if (total == 0) 0f else current.toFloat() / total.toFloat()
+                            weReadProgressText = "正在导入 $title（$current / $total）"
+                        }
+                    }
                     withContext(Dispatchers.Main) { importingWeRead = false; if (imported.notes.isNotEmpty()) { onImport(imported); result = "已导入 ${imported.notes.size} 条笔记"; showWeRead = false } else result = "所选书籍没有可导入笔记" }
                 }
             }
@@ -1462,7 +1481,7 @@ private fun fetchWeReadBooks(apiKey: String): List<WeReadBook> = runCatching {
     result.distinctBy { it.id }
 }.getOrDefault(emptyList())
 
-private fun importWeReadNotes(apiKey: String, selectedBookIds: Set<String>, rootTag: String): ImportBundle = runCatching {
+private suspend fun importWeReadNotes(apiKey: String, selectedBookIds: Set<String>, rootTag: String, onProgress: suspend (Int, Int, String) -> Unit = { _, _, _ -> }): ImportBundle = try {
     fun request(path: String, params: JSONObject = JSONObject()): JSONObject {
         val connection = (URL("https://i.weread.qq.com/api/agent/gateway").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = 15000; readTimeout = 30000; doOutput = true
@@ -1477,6 +1496,7 @@ private fun importWeReadNotes(apiKey: String, selectedBookIds: Set<String>, root
     }
     val categories = mutableListOf<NoteCategory>()
     val notes = mutableListOf<QuickNote>()
+    onProgress(0, selectedBookIds.size, "正在读取书籍列表")
     val notebookBooks = mutableListOf<JSONObject>()
     var lastSort = 0L
     do {
@@ -1489,14 +1509,27 @@ private fun importWeReadNotes(apiKey: String, selectedBookIds: Set<String>, root
         if (page.length() == 0 || response.optInt("hasMore", 0) == 0) lastSort = 0L
     } while (lastSort > 0)
     val notebooks = JSONArray().apply { notebookBooks.forEach { put(it) } }
+    val rootParts = rootTag.split('/').filter { it.isNotBlank() }
+    var rootParent: NoteCategory? = null
+    var rootPath = ""
+    rootParts.forEach { part ->
+        rootPath = if (rootPath.isBlank()) part else "$rootPath/$part"
+        val rootCategory = categories.firstOrNull { it.path == rootPath } ?: NoteCategory(UUID.randomUUID().toString(), part, rootParent?.id, rootPath).also { categories += it }
+        rootParent = rootCategory
+    }
+    val importRoot = rootParent ?: NoteCategory(UUID.randomUUID().toString(), "微信读书", null, "微信读书").also { categories += it }
+    val selectedTotal = selectedBookIds.size
+    var importedBookCount = 0
     for (i in 0 until notebooks.length()) {
         val book = notebooks.optJSONObject(i) ?: continue
         val bookInfo = book.optJSONObject("book") ?: book
         val bookName = bookInfo.optString("title", book.optString("bookName", "WeRead"))
         val bookId = book.optString("bookId", bookInfo.optString("bookId"))
         if (bookId !in selectedBookIds) continue
-        val bookPath = "$rootTag/$bookName"
-        val bookCategory = NoteCategory(UUID.randomUUID().toString(), bookName, null, bookPath).also { categories += it }
+        val bookPath = "${importRoot.path}/$bookName"
+        val bookCategory = categories.firstOrNull { it.path == bookPath } ?: NoteCategory(UUID.randomUUID().toString(), bookName, importRoot.id, bookPath).also { categories += it }
+        importedBookCount += 1
+        onProgress(importedBookCount - 1, selectedTotal, bookName)
         val params = JSONObject().put("bookId", bookId)
         val bookmarkResponse = request("/book/bookmarklist", params)
         val chapterNames = mutableMapOf<Int, String>()
@@ -1522,9 +1555,12 @@ private fun importWeReadNotes(apiKey: String, selectedBookIds: Set<String>, root
             val created = review.optLong("createTime", System.currentTimeMillis()).let { if (it < 100000000000L) it * 1000 else it }
             notes += QuickNote(UUID.randomUUID().toString(), content, created, created, listOf(bookCategory.id), status = "organized")
         }
+        onProgress(importedBookCount, selectedTotal, bookName)
     }
     ImportBundle(notes, categories)
-}.getOrDefault(ImportBundle())
+} catch (_: Exception) {
+    ImportBundle()
+}
 
 private fun exportNotesToZip(context: Context, state: NotesState, uri: Uri, format: String): Boolean = runCatching {
     val output = context.contentResolver.openOutputStream(uri) ?: return@runCatching false
