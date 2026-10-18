@@ -189,6 +189,7 @@ import java.net.URLEncoder
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -228,7 +229,7 @@ private fun tagColor(category: NoteCategory): Color {
     return Color(stored ?: TagPalette[Math.floorMod(category.id.hashCode(), TagPalette.size)])
 }
 
-private data class NoteComment(val position: Int, val text: String, val expanded: Boolean = true)
+private data class NoteComment(val position: Int, val text: String, val expanded: Boolean = true, val createdAt: Long = System.currentTimeMillis())
 private data class QuickNote(
     val id: String,
     val content: String,
@@ -291,7 +292,7 @@ private object NotesStore {
                     location = item.optNullableString("location"),
                     mood = item.optString("mood", "NORMAL"),
                     comments = item.optJSONArray("comments").toList { comment ->
-                        NoteComment(comment.optInt("position"), comment.optString("text"), comment.optBoolean("expanded", true))
+                        NoteComment(comment.optInt("position"), comment.optString("text"), comment.optBoolean("expanded", true), comment.optLong("createdAt", System.currentTimeMillis()))
                     },
                     imageUris = item.optJSONArray("imageUris").toStringList(),
                 )
@@ -308,7 +309,7 @@ private object NotesStore {
                 state.notes.forEach { note -> put(JSONObject().apply {
                     put("id", note.id); put("content", note.content); put("createdAt", note.createdAt); put("updatedAt", note.updatedAt)
                     put("categoryIds", JSONArray(note.categoryIds)); put("status", note.status); put("location", note.location); put("mood", note.mood)
-                    put("comments", JSONArray().apply { note.comments.forEach { comment -> put(JSONObject().apply { put("position", comment.position); put("text", comment.text); put("expanded", comment.expanded) }) } })
+                    put("comments", JSONArray().apply { note.comments.forEach { comment -> put(JSONObject().apply { put("position", comment.position); put("text", comment.text); put("expanded", comment.expanded); put("createdAt", comment.createdAt) }) } })
                     put("imageUris", JSONArray(note.imageUris))
                 }) }
             })
@@ -527,7 +528,7 @@ private fun NotesApp() {
             }
         }
     }
-    editorNote?.let { note -> QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null }, onSave = { saveNote(it); editorNote = null }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
+    editorNote?.let { note -> QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null }, onSave = { saveNote(it) }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
     letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null; page = NotesPage.MY }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null; page = NotesPage.MY }) }
     renameTarget?.let { category ->
@@ -765,7 +766,12 @@ private fun CommentPreview(comments: List<NoteComment>, onToggle: (Int) -> Unit,
                 }
                 Icon(Icons.Filled.ChatBubbleOutline, "评论", tint = NoteAccent, modifier = Modifier.size(16.dp).padding(start = 2.dp, top = 3.dp))
                 if ((!showEye || comment.expanded) && comment.text.isNotBlank()) {
-                    Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 7.dp).combinedClickable(onClick = {}, onDoubleClick = { onDoubleClick(index) })) { Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) }
+                    Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 7.dp).combinedClickable(onClick = {}, onDoubleClick = { onDoubleClick(index) })) {
+                        Column(Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) {
+                            Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp)
+                            Text(prettyTime(comment.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 9.sp, modifier = Modifier.padding(top = 2.dp))
+                        }
+                    }
                 }
             }
         }
@@ -1140,7 +1146,23 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var showUnsavedDialog by remember { mutableStateOf(false) }
     var showNoteActions by remember { mutableStateOf(false) }
     var showNoteDeleteDialog by remember { mutableStateOf(false) }
-    fun hasChanges(): Boolean = text.text.trim() != note.content.trim() || location != note.location || mood != note.mood || comments != note.comments || createdAt != note.createdAt || imageUris != note.imageUris
+    var savedNote by remember { mutableStateOf(note) }
+    fun currentNote(): QuickNote = savedNote.copy(
+        content = text.text.trim(),
+        createdAt = createdAt,
+        updatedAt = System.currentTimeMillis(),
+        location = location,
+        mood = mood,
+        comments = comments.filter { it.text.isNotBlank() },
+        imageUris = imageUris,
+    )
+    fun saveChanges() {
+        val next = currentNote()
+        onSave(next)
+        comments = next.comments
+        savedNote = next
+    }
+    fun hasChanges(): Boolean = text.text.trim() != savedNote.content.trim() || location != savedNote.location || mood != savedNote.mood || comments != savedNote.comments || createdAt != savedNote.createdAt || imageUris != savedNote.imageUris
     fun requestDismiss() { if (hasChanges()) showUnsavedDialog = true else onDismiss() }
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -1203,6 +1225,12 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         focusRequester.requestFocus()
         keyboardController?.show()
     }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000)
+            if (hasChanges()) saveChanges()
+        }
+    }
     val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true || result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } }
@@ -1220,6 +1248,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     IconButton(onClick = ::requestDismiss) { Icon(Icons.Filled.Close, "关闭") }
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { saveChanges() }, enabled = text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) { Icon(Icons.Filled.Save, "保存") }
                     Box {
                         IconButton(onClick = { showNoteActions = true }) { Icon(Icons.Filled.MoreVert, "笔记操作") }
                         DropdownMenu(expanded = showNoteActions, onDismissRequest = { showNoteActions = false }) {
@@ -1231,8 +1260,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                             DropdownMenuItem(text = { Text("删除") }, onClick = { showNoteActions = false; showNoteDeleteDialog = true })
                         }
                     }
-                    IconButton(onClick = { showTimeDialog = true }) { Icon(Icons.Filled.AccessTime, "修改创建时间") }
-                    TextButton(onClick = { onSave(note.copy(content = text.text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() }, imageUris = imageUris)) }, enabled = text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) { Icon(Icons.Filled.Save, null); Text("保存") }
                 }
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } } else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
@@ -1313,7 +1340,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         onDismissRequest = { showUnsavedDialog = false },
         title = { Text("保存改动") },
         text = { Text("此处记录已有改动，是否保存编辑？") },
-        confirmButton = { TextButton(onClick = { showUnsavedDialog = false; onSave(note.copy(content = text.text.trim(), createdAt = createdAt, updatedAt = System.currentTimeMillis(), location = location, mood = mood, comments = comments.filter { it.text.isNotBlank() }, imageUris = imageUris)); onDismiss() }) { Text("保存") } },
+        confirmButton = { TextButton(onClick = { showUnsavedDialog = false; saveChanges(); onDismiss() }) { Text("保存") } },
         dismissButton = { Row { TextButton(onClick = { showUnsavedDialog = false; onDismiss() }) { Text("放弃") }; TextButton(onClick = { showUnsavedDialog = false }) { Text("继续编辑") } } },
     )
     if (showNoteDeleteDialog) AlertDialog(
