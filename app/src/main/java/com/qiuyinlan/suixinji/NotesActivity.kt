@@ -1144,7 +1144,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var imageUris by remember { mutableStateOf(note.imageUris) }
     var previewUri by remember { mutableStateOf<Uri?>(null) }
     var showUnsavedDialog by remember { mutableStateOf(false) }
-    var showNoteActions by remember { mutableStateOf(false) }
     var showNoteDeleteDialog by remember { mutableStateOf(false) }
     var savedNote by remember { mutableStateOf(note) }
     fun currentNote(): QuickNote = savedNote.copy(
@@ -1249,17 +1248,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = { saveChanges() }, enabled = text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) { Icon(Icons.Filled.Save, "保存") }
-                    Box {
-                        IconButton(onClick = { showNoteActions = true }) { Icon(Icons.Filled.MoreVert, "笔记操作") }
-                        DropdownMenu(expanded = showNoteActions, onDismissRequest = { showNoteActions = false }) {
-                            DropdownMenuItem(text = { Text("复制全文") }, onClick = {
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("随心记", text.text))
-                                showNoteActions = false
-                            })
-                            DropdownMenuItem(text = { Text("删除") }, onClick = { showNoteActions = false; showNoteDeleteDialog = true })
-                        }
-                    }
                 }
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } } else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
@@ -1270,16 +1258,27 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
                     ToolButton(Icons.Filled.PhotoLibrary, "图片", false) { imageLauncher.launch(arrayOf("image/*")) }
                 }
-                Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.End) {
+                val inlineTags = NoteTagRegex.findAll(text.text).map { it.groupValues[1] }.distinct().toList()
+                if (inlineTags.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { inlineTags.forEach { Text("#$it", color = NoteTagColor, fontSize = 10.sp, fontWeight = FontWeight.Medium) } }
+                location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 6.dp)) }
+                Text("创建时间：${prettyTime(createdAt)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
+                if (imageUris.isNotEmpty()) {
+                    Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        imageUris.forEach { uriString ->
+                            FolderPhotoThumb(context, Uri.parse(uriString), Modifier.size(76.dp).combinedClickable(onClick = { previewUri = Uri.parse(uriString) }, onLongClick = { previewUri = Uri.parse(uriString) }))
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { wrapSelection("**") }) { Icon(Icons.Filled.FormatBold, "加粗") }
+                    IconButton(onClick = { wrapSelection("==") }) { Icon(Icons.Filled.FormatColorFill, "荧光笔") }
+                    IconButton(onClick = { wrapSelection("~~") }) { Icon(Icons.Filled.StrikethroughS, "删除线") }
+                    IconButton(onClick = { wrapSelection("<u>", "</u>") }) { Icon(Icons.Filled.FormatUnderlined, "下划线") }
+                    Spacer(Modifier.weight(1f))
                     Box {
                         IconButton(onClick = { showMoreFormatting = true }) { Icon(Icons.Filled.MoreVert, "更多格式") }
                         DropdownMenu(expanded = showMoreFormatting, onDismissRequest = { showMoreFormatting = false }) {
                             Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                IconButton(onClick = { wrapSelection("**"); showMoreFormatting = false }) { Icon(Icons.Filled.FormatBold, "粗体") }
-                                IconButton(onClick = { wrapSelection("*"); showMoreFormatting = false }) { Icon(Icons.Filled.FormatItalic, "斜体") }
-                                IconButton(onClick = { wrapSelection("<u>", "</u>"); showMoreFormatting = false }) { Icon(Icons.Filled.FormatUnderlined, "下划线") }
-                                IconButton(onClick = { wrapSelection("~~"); showMoreFormatting = false }) { Icon(Icons.Filled.StrikethroughS, "删除线") }
-                                IconButton(onClick = { wrapSelection("=="); showMoreFormatting = false }) { Icon(Icons.Filled.FormatColorFill, "荧光笔") }
                                 IconButton(onClick = { prefixCurrentLine("> "); showMoreFormatting = false }) { Icon(Icons.Filled.FormatQuote, "引用") }
                                 IconButton(enabled = undoStack.isNotEmpty(), onClick = {
                                     if (undoStack.isNotEmpty()) { val current = text; val previous = undoStack.removeAt(undoStack.lastIndex); redoStack.add(current); text = previous }
@@ -1290,17 +1289,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                                     showMoreFormatting = false
                                 }) { Icon(Icons.Filled.Redo, "重做") }
                             }
-                        }
-                    }
-                }
-                val inlineTags = NoteTagRegex.findAll(text.text).map { it.groupValues[1] }.distinct().toList()
-                if (inlineTags.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { inlineTags.forEach { Text("#$it", color = NoteTagColor, fontSize = 10.sp, fontWeight = FontWeight.Medium) } }
-                location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 6.dp)) }
-                Text("创建时间：${prettyTime(createdAt)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 8.dp))
-                if (imageUris.isNotEmpty()) {
-                    Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        imageUris.forEach { uriString ->
-                            FolderPhotoThumb(context, Uri.parse(uriString), Modifier.size(76.dp).combinedClickable(onClick = { previewUri = Uri.parse(uriString) }, onLongClick = { previewUri = Uri.parse(uriString) }))
                         }
                     }
                 }
