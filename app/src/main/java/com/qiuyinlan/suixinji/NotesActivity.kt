@@ -1853,9 +1853,9 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
             sourceToDisplay[index] = display.length
             comments.filter { it.position.coerceIn(0, source.length) == index }.forEach {
                 val markerStart = display.length
-                display.append('◉')
-                displayToSourceList += index
-                markerDisplayRanges += markerStart..markerStart
+                display.append("💬")
+                repeat(display.length - markerStart) { displayToSourceList += index }
+                markerDisplayRanges += markerStart until display.length
             }
             sourceToDisplay[index] = display.length
             if (index == source.length) break
