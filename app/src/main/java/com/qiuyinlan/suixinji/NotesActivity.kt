@@ -1330,6 +1330,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
                 }
+                Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } } else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
                     ToolButton(Icons.Filled.Label, "标签", false) { showTagDialog = true; tagInput = "" }
@@ -1409,6 +1410,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     IconButton(onClick = { saveAndNext() }, modifier = Modifier.align(if (text.text.isBlank()) Alignment.BottomEnd else Alignment.TopEnd).padding(4.dp)) { Icon(Icons.Filled.Add, "保存并新建下一篇", tint = NotePrimary) }
                 }
                 if (!editorFocused) Box(Modifier.fillMaxWidth().background(Color.White).padding(vertical = 2.dp)) { formattingToolbar() }
+                }
             }
         }
     }
@@ -1499,7 +1501,7 @@ private fun insertTagAtCursor(tag: String, value: TextFieldValue, onChange: (Tex
 }
 
 @Composable
-private fun ToolButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, selected: Boolean, onClick: () -> Unit) { Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 5.dp)) { Icon(icon, label, tint = if (selected) NoteAccent else NotePrimary, modifier = Modifier.size(23.dp)); Text(label, color = NoteMuted, style = MaterialTheme.typography.labelSmall) } }
+private fun ToolButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, selected: Boolean, onClick: () -> Unit) { IconButton(onClick = onClick, modifier = Modifier.size(34.dp)) { Icon(icon, label, tint = if (selected) NoteAccent else NotePrimary, modifier = Modifier.size(19.dp)) } }
 @Composable
 private fun MarkdownToolButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
     IconButton(onClick = onClick, modifier = Modifier.size(36.dp)) {
