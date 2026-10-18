@@ -939,11 +939,11 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     if (showPreview) {
                         Text("实时预览", color = NoteMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp, bottom = 3.dp))
                         Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().weight(0.42f)) {
-                            MarkdownPreview(text.text, Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp))
+                            if (comments.isEmpty()) MarkdownPreview(text.text, Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp))
+                            else CommentedNotePreview(text.text, comments, { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } }, showEye = true, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp).verticalScroll(rememberScrollState()))
                         }
                     }
                 }
-                if (comments.isNotEmpty()) CommentedNotePreview(text.text, comments, { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } }, showEye = true, modifier = Modifier.fillMaxWidth().heightIn(max = 128.dp).padding(top = 8.dp).verticalScroll(rememberScrollState()))
             }
         }
     }
