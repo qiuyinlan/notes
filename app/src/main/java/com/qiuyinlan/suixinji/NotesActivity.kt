@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FormatBold
+import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.FormatUnderlined
@@ -1135,6 +1136,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                                 IconButton(onClick = { wrapSelection("*"); showMoreFormatting = false }) { Icon(Icons.Filled.FormatItalic, "斜体") }
                                 IconButton(onClick = { wrapSelection("<u>", "</u>"); showMoreFormatting = false }) { Icon(Icons.Filled.FormatUnderlined, "下划线") }
                                 IconButton(onClick = { wrapSelection("~~"); showMoreFormatting = false }) { Icon(Icons.Filled.StrikethroughS, "删除线") }
+                                IconButton(onClick = { wrapSelection("=="); showMoreFormatting = false }) { Icon(Icons.Filled.FormatColorFill, "荧光笔") }
                                 IconButton(onClick = { prefixCurrentLine("> "); showMoreFormatting = false }) { Icon(Icons.Filled.FormatQuote, "引用") }
                                 IconButton(enabled = undoStack.isNotEmpty(), onClick = {
                                     if (undoStack.isNotEmpty()) { val current = text; val previous = undoStack.removeAt(undoStack.lastIndex); redoStack.add(current); text = previous }
@@ -1835,7 +1837,7 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
         fun hide(start: Int, end: Int) {
             for (index in start.coerceAtLeast(0) until end.coerceAtMost(source.length)) hidden[index] = true
         }
-        val inlinePattern = Regex("(\\*\\*|__)(.*?)\\1|(?<!\\*)\\*([^*]*?)\\*|~~(.*?)~~|`([^`]*?)`|<u>(.*?)</u>")
+        val inlinePattern = Regex("(\\*\\*|__)(.*?)\\1|(?<!\\*)\\*([^*]*?)\\*|~~(.*?)~~|`([^`]*?)`|<u>(.*?)</u>|==([^=]*?)==")
         inlinePattern.findAll(source).forEach { match ->
             when {
                 match.groupValues[1].isNotEmpty() -> { val size = match.groupValues[1].length; hide(match.range.first, match.range.first + size); hide(match.range.last + 1 - size, match.range.last + 1) }
@@ -1843,6 +1845,7 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
                 match.groupValues[4].isNotEmpty() -> { hide(match.range.first, match.range.first + 2); hide(match.range.last + 1 - 2, match.range.last + 1) }
                 match.groupValues[5].isNotEmpty() -> { hide(match.range.first, match.range.first + 1); hide(match.range.last, match.range.last + 1) }
                 match.groupValues[6].isNotEmpty() -> { hide(match.range.first, match.range.first + 3); hide(match.range.last + 1 - 4, match.range.last + 1) }
+                match.groupValues[7].isNotEmpty() -> { hide(match.range.first, match.range.first + 2); hide(match.range.last + 1 - 2, match.range.last + 1) }
             }
         }
         val sourceToDisplay = IntArray(source.length + 1)
@@ -1884,7 +1887,9 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
                     match.groupValues[3].isNotEmpty() -> match.groups[3]?.range
                     match.groupValues[4].isNotEmpty() -> match.groups[4]?.range
                     match.groupValues[5].isNotEmpty() -> match.groups[5]?.range
-                    else -> match.groups[6]?.range
+                    match.groupValues[6].isNotEmpty() -> match.groups[6]?.range
+                    match.groupValues[7].isNotEmpty() -> match.groups[7]?.range
+                    else -> null
                 }
                 if (contentRange != null) {
                     val style = when {
@@ -1892,7 +1897,8 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
                         match.groupValues[3].isNotEmpty() -> SpanStyle(fontStyle = FontStyle.Italic)
                         match.groupValues[4].isNotEmpty() -> SpanStyle(textDecoration = TextDecoration.LineThrough)
                         match.groupValues[5].isNotEmpty() -> SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)
-                        else -> SpanStyle(textDecoration = TextDecoration.Underline)
+                        match.groupValues[6].isNotEmpty() -> SpanStyle(textDecoration = TextDecoration.Underline)
+                        else -> SpanStyle(background = Color(0xFFFFF1A8))
                     }
                     styleRange(contentRange, style)
                 }
@@ -1910,7 +1916,7 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
 }
 
 private fun markdownInline(value: String) = buildAnnotatedString {
-    val pattern = Regex("""(\*\*|__)(.*?)\1|(?<!\*)\*([^*]*?)\*|~~(.*?)~~|`([^`]*?)`|<u>(.*?)</u>|\[([^]]+)]\([^)]+\)|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/_-]*(?=\s|$)""")
+    val pattern = Regex("""(\*\*|__)(.*?)\1|(?<!\*)\*([^*]*?)\*|~~(.*?)~~|`([^`]*?)`|<u>(.*?)</u>|\[([^]]+)]\([^)]+\)|==([^=]*?)==|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/_-]*(?=\s|$)""")
     var cursor = 0
     pattern.findAll(value).forEach { match ->
         append(value.substring(cursor, match.range.first))
@@ -1921,6 +1927,7 @@ private fun markdownInline(value: String) = buildAnnotatedString {
             match.groupValues[5].isNotEmpty() -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)) { append(match.groupValues[5]) }
             match.groupValues[6].isNotEmpty() -> withStyle(SpanStyle(textDecoration = TextDecoration.Underline)) { append(match.groupValues[6]) }
             match.groupValues[7].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[7]) }
+            match.groupValues[8].isNotEmpty() -> withStyle(SpanStyle(background = Color(0xFFFFF1A8))) { append(match.groupValues[8]) }
             match.value.startsWith("#") -> withStyle(SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium, fontSize = 12.sp)) { append(match.value) }
         }
         cursor = match.range.last + 1
