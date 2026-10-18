@@ -321,13 +321,16 @@ private object NotesStore {
     }
 
     private fun backupUri(context: Context): android.net.Uri? = runCatching {
+        // Query the shared files collection so backups remain discoverable even if an older build
+        // wrote the file under Documents instead of Downloads.
+        val collection = MediaStore.Files.getContentUri("external")
         context.contentResolver.query(
-            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Downloads._ID),
-            "${MediaStore.Downloads.DISPLAY_NAME}=?",
+            collection,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
             arrayOf(BACKUP_NAME),
-            "${MediaStore.Downloads.DATE_MODIFIED} DESC",
-        )?.use { cursor -> if (cursor.moveToFirst()) ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0)) else null }
+            "${MediaStore.MediaColumns.DATE_MODIFIED} DESC",
+        )?.use { cursor -> if (cursor.moveToFirst()) ContentUris.withAppendedId(collection, cursor.getLong(0)) else null }
     }.getOrNull()
 
     private fun readBackup(context: Context): String? = runCatching {
@@ -341,7 +344,7 @@ private object NotesStore {
             val uri = backupUri(context) ?: resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, BACKUP_NAME)
                 put(MediaStore.Downloads.MIME_TYPE, "application/json")
-                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOCUMENTS}/随心记")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }) ?: return
             resolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use { it.write(raw) }
