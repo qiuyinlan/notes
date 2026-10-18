@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">随心记</string>
+    <string name="widget_category_name">分类相机</string>
+    <string name="media_organizer_widget_name">整理媒体</string>
+    <string name="widget_icon_content_description">随心记图标</string>
+    <string name="widget_category_action">%1$s · 拍照</string>
+    <string name="widget_default_category">分类</string>
+    <string name="widget_config_title">选择桌面拍照分类</string>
+    <string name="widget_config_description">选择后，此组件将固定使用该分类拍照。</string>
+    <string name="widget_description">固定分类的拍照快捷入口</string>
+    <string name="media_organizer_widget_description">整理图片和视频的快捷入口</string>
+</resources>

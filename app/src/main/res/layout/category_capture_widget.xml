@@ -1,0 +1,27 @@
+﻿<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="8dp"
+    android:background="@drawable/category_capture_widget_background">
+    <ImageView android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="@string/widget_icon_content_description" android:src="@mipmap/ic_launcher" android:layout_gravity="start" />
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="4dp"
+        android:paddingBottom="4dp"
+        android:text="&#x5206;&#x7c7b;&#x76f8;&#x673a;"
+        android:textColor="#315D4A"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+    <TextView
+        android:id="@+id/widget_category_action"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/category_capture_widget_button"
+        android:gravity="center"
+        android:text="&#x62cd;&#x7167;"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+</LinearLayout>

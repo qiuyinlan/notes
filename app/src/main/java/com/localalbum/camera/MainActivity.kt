@@ -3,8 +3,11 @@ package com.localalbum.camera
 import android.Manifest
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.ContentObserver
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.media.MediaMetadataRetriever
@@ -14,8 +17,11 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
+import android.util.Log
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.view.TextureView
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
@@ -58,6 +64,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.pager.HorizontalPager
@@ -104,6 +111,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -130,6 +138,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
@@ -143,6 +152,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.asImageBitmap
@@ -168,7 +181,6 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
 import androidx.media3.exoplayer.source.preload.TargetPreloadStatusControl
-import androidx.media3.ui.PlayerView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -183,11 +195,12 @@ private val Mint = Color(0xFFE4F0E8)
 private val Paper = Color(0xFFF5F7F4)
 private val Muted = Color(0xFF707A74)
 
-private data class Category(val name: String, val folderUri: String? = null)
+internal data class Category(val name: String, val folderUri: String? = null, val relativePath: String? = null)
 private data class ImportFolder(val name: String, val uri: Uri, val imageCount: Int)
 private data class PhotoItem(val uri: Uri, val name: String, val sourceKey: String? = null, val dateMillis: Long = 0L, val sizeBytes: Long = 0L)
 private data class VideoItem(val uri: Uri, val name: String, val durationMillis: Long, val dateMillis: Long, val sizeBytes: Long = 0L, val sourceKey: String? = null)
 private data class PendingVideoMove(val video: VideoItem, val target: Category)
+private data class PendingPhotoMove(val photo: PhotoItem, val target: Category)
 private enum class VideoMoveResult { MOVED, NEEDS_CONFIRMATION, FAILED }
 private data class MediaStorage(
     val photoCount: Int = 0,
@@ -195,19 +208,32 @@ private data class MediaStorage(
     val photoBytes: Long = 0L,
     val videoBytes: Long = 0L,
 )
+private data class MediaCatalogSnapshot(val photos: List<PhotoItem>, val videos: List<VideoItem>, val lastSyncedAtSeconds: Long)
+
+private enum class UndoOrigin { CATEGORY, ORGANIZE, VIDEOS }
 
 private sealed interface UndoableStage {
     val organizedAmount: Int
-    data class Photos(val items: List<PhotoItem>, val reviewedItems: List<PhotoItem>) : UndoableStage {
+    val origin: UndoOrigin
+    data class Photos(val items: List<PhotoItem>, val reviewedItems: List<PhotoItem>, override val origin: UndoOrigin) : UndoableStage {
         override val organizedAmount: Int = reviewedItems.size
     }
-    data class Video(val item: VideoItem, override val organizedAmount: Int) : UndoableStage
+    data class PhotoMove(val original: PhotoItem, val moved: PhotoItem, val reviewedItems: List<PhotoItem>, override val origin: UndoOrigin) : UndoableStage {
+        override val organizedAmount: Int = reviewedItems.size
+    }
+    data class Video(val item: VideoItem, override val organizedAmount: Int, override val origin: UndoOrigin) : UndoableStage
 }
 
 private fun PhotoItem.belongsTo(category: Category): Boolean =
     sourceKey == (category.folderUri ?: "DCIM/${category.name}")
 
 private enum class AppScreen { HOME, MORE, CATEGORY, ORGANIZE, TRASH, IMPORT, VIDEOS, VIDEO_TRASH }
+
+internal const val WIDGET_ACTION_EXTRA = "com.localalbum.camera.widget.ACTION"
+internal const val WIDGET_CATEGORY_EXTRA = "com.localalbum.camera.widget.CATEGORY"
+internal const val WIDGET_ACTION_CAMERA = "camera"
+internal const val WIDGET_ACTION_PHOTOS = "photos"
+internal const val WIDGET_ACTION_VIDEOS = "videos"
 
 private const val MODE_RANDOM = "\u968f\u673a\u6574\u7406"
 private const val MODE_MONTH = "\u6309\u6708\u4efd\u6574\u7406"
@@ -231,20 +257,35 @@ class MainActivity : ComponentActivity() {
                 onSurface = Ink,
                 secondaryContainer = Mint,
             )) {
-                AlbumCameraApp()
+                AlbumCameraApp(
+                    widgetAction = intent.getStringExtra(WIDGET_ACTION_EXTRA),
+                    widgetCategory = intent.getStringExtra(WIDGET_CATEGORY_EXTRA),
+                )
             }
         }
     }
 }
 
 @Composable
-private fun AlbumCameraApp() {
+private fun AlbumCameraApp(widgetAction: String? = null, widgetCategory: String? = null) {
     val context = LocalContext.current
     val screenScope = rememberCoroutineScope()
+    val screenStateHolder = rememberSaveableStateHolder()
     var categories by remember { mutableStateOf(CategoryStore.load(context)) }
     var selectedCategory by rememberSaveable { mutableStateOf(categories.firstOrNull()?.name ?: "日常") }
     var showCreateDialog by remember { mutableStateOf(false) }
     var cameraOpen by rememberSaveable { mutableStateOf(false) }
+    var pendingExternalCapture by remember { mutableStateOf<Uri?>(null) }
+    val externalCameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri = pendingExternalCapture
+        pendingExternalCapture = null
+        if (result.resultCode == android.app.Activity.RESULT_OK && uri != null) {
+            runCatching { context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null) }
+            Toast.makeText(context, "照片已保存到 $selectedCategory", Toast.LENGTH_SHORT).show()
+        } else if (uri != null) {
+            runCatching { context.contentResolver.delete(uri, null, null) }
+        }
+    }
     var screen by rememberSaveable { mutableStateOf(AppScreen.HOME) }
     var previewCategory by remember { mutableStateOf<Category?>(null) }
     var trashCategory by remember { mutableStateOf<Category?>(null) }
@@ -264,10 +305,15 @@ private fun AlbumCameraApp() {
     var loadingOrganize by remember { mutableStateOf(false) }
     var photoCatalog by remember { mutableStateOf<List<PhotoItem>?>(null) }
     var videoCatalog by remember { mutableStateOf<List<VideoItem>?>(null) }
+    var catalogLastSyncedAtSeconds by remember { mutableStateOf(0L) }
     var mediaStorage by remember { mutableStateOf(MediaStorage()) }
-    var mediaCatalogLoading by remember { mutableStateOf(false) }
-    var mediaChangeToken by remember { mutableStateOf(0) }
+    var mediaCatalogLoading by remember { mutableStateOf(true) }
+    var mediaCatalogLoadFailed by remember { mutableStateOf(false) }
+    val catalogRefreshRequests = remember { Channel<Unit>(Channel.CONFLATED) }
+    val catalogRefreshMutex = remember { Mutex() }
+    val latestCategories by rememberUpdatedState(categories)
     var openOrganizerWhenLoaded by remember { mutableStateOf(false) }
+    var openVideoOrganizerWhenLoaded by remember { mutableStateOf(false) }
     var pendingPreview by remember { mutableStateOf<Category?>(null) }
     var pendingOrganize by remember { mutableStateOf(false) }
     var pendingCategoryName by remember { mutableStateOf("") }
@@ -278,6 +324,10 @@ private fun AlbumCameraApp() {
     var pendingVideoDelete by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var pendingVideoMove by remember { mutableStateOf<PendingVideoMove?>(null) }
     val undoableStages = remember { mutableStateListOf<UndoableStage>() }
+    var undoRestoredPhotos by remember { mutableStateOf<List<PhotoItem>>(emptyList()) }
+    var undoRestoreVersion by remember { mutableStateOf(0) }
+    var undoRestoredVideo by remember { mutableStateOf<VideoItem?>(null) }
+    var undoVideoRestoreVersion by remember { mutableStateOf(0) }
     var pendingVideoReview by remember { mutableStateOf(false) }
     fun recordOrganized(amount: Int) {
         if (amount != 0) {
@@ -293,6 +343,36 @@ private fun AlbumCameraApp() {
         if (bytes > 0L) {
             StatsStore.addDeletedBytes(context, bytes)
             clearedBytes += bytes
+        }
+    }
+    fun removePhotosFromCatalog(items: Collection<PhotoItem>) {
+        val current = photoCatalog ?: return
+        val keys = items.mapTo(HashSet()) { it.uri }
+        val removed = current.filter { it.uri in keys }
+        if (removed.isEmpty()) return
+        photoCatalog = current.filterNot { it.uri in keys }
+        mediaStorage = mediaStorage.copy(
+            photoCount = (mediaStorage.photoCount - removed.size).coerceAtLeast(0),
+            photoBytes = (mediaStorage.photoBytes - removed.sumOf { it.sizeBytes }).coerceAtLeast(0L),
+        )
+        screenScope.launch(Dispatchers.IO) {
+            runCatching { MediaCatalogStore.removePhotos(context, removed) }
+                .onFailure { Log.e("PhotoCatalog", "cache:remove-photos-failed", it) }
+        }
+    }
+    fun removeVideosFromCatalog(items: Collection<VideoItem>) {
+        val current = videoCatalog ?: return
+        val keys = items.mapTo(HashSet()) { it.uri }
+        val removed = current.filter { it.uri in keys }
+        if (removed.isEmpty()) return
+        videoCatalog = current.filterNot { it.uri in keys }
+        mediaStorage = mediaStorage.copy(
+            videoCount = (mediaStorage.videoCount - removed.size).coerceAtLeast(0),
+            videoBytes = (mediaStorage.videoBytes - removed.sumOf { it.sizeBytes }).coerceAtLeast(0L),
+        )
+        screenScope.launch(Dispatchers.IO) {
+            runCatching { MediaCatalogStore.removeVideos(context, removed) }
+                .onFailure { Log.e("PhotoCatalog", "cache:remove-videos-failed", it) }
         }
     }
     fun markPhotosReviewed(items: Collection<PhotoItem>): List<PhotoItem> {
@@ -311,29 +391,59 @@ private fun AlbumCameraApp() {
         recordOrganized(1)
         return true
     }
+    fun recordPhotoMove(original: PhotoItem, moved: PhotoItem, review: Boolean, origin: UndoOrigin) {
+        val reviewedItems = if (review) markPhotosReviewed(listOf(original)) else emptyList()
+        undoableStages.add(UndoableStage.PhotoMove(original, moved, reviewedItems, origin))
+    }
     fun undoLastStage() {
         val action = undoableStages.removeLastOrNull() ?: return
+        undoRestoredPhotos = emptyList()
+        undoRestoredVideo = null
         when (action) {
             is UndoableStage.Photos -> {
-                trash = (trash + action.items).distinctBy { it.uri }
+                trash = trash.filterNot { item -> action.items.any { it.uri == item.uri } }
+                undoRestoredPhotos = action.items
+                undoRestoreVersion += 1
                 if (action.reviewedItems.isNotEmpty()) {
                     action.reviewedItems.forEach { ReviewedStore.unmarkPhoto(context, it.uri) }
                     reviewedPhotoKeys = reviewedPhotoKeys - action.reviewedItems.map { it.uri.toString() }.toSet()
                 }
                 recordOrganized(-action.organizedAmount)
+                screen = if (action.origin == UndoOrigin.CATEGORY) AppScreen.CATEGORY else AppScreen.ORGANIZE
+            }
+            is UndoableStage.PhotoMove -> {
+                val source = photoSourceCategory(action.original)
+                var restoredPhoto = action.original
+                val restored = source?.let { movePhoto(context, action.moved, it) { restoredPhoto = it } }
+                if (restored == true) {
+                    undoRestoredPhotos = listOf(restoredPhoto)
+                    undoRestoreVersion += 1
+                    if (action.reviewedItems.isNotEmpty()) {
+                        action.reviewedItems.forEach { ReviewedStore.unmarkPhoto(context, it.uri) }
+                        reviewedPhotoKeys = reviewedPhotoKeys - action.reviewedItems.map { it.uri.toString() }.toSet()
+                    }
+                    recordOrganized(-action.organizedAmount)
+                    screen = if (action.origin == UndoOrigin.CATEGORY) AppScreen.CATEGORY else AppScreen.ORGANIZE
+                } else {
+                    undoableStages.add(action)
+                    Toast.makeText(context, "照片无法移回原位置", Toast.LENGTH_SHORT).show()
+                }
             }
             is UndoableStage.Video -> {
                 videoTrash = videoTrash.filterNot { it.uri == action.item.uri }
                 ReviewedStore.unmarkVideo(context, action.item.uri)
                 reviewedVideoKeys = reviewedVideoKeys - action.item.uri.toString()
                 recordOrganized(-action.organizedAmount)
+                undoRestoredVideo = action.item
+                undoVideoRestoreVersion += 1
+                screen = AppScreen.VIDEOS
             }
         }
-        Toast.makeText(context, "已撤回上一次暂存删除", Toast.LENGTH_SHORT).show()
     }
     val deleteRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             trash = trash.filterNot { item -> pendingSystemDelete.any { it.uri == item.uri } }
+            removePhotosFromCatalog(pendingSystemDelete)
             recordDeleted(pendingSystemDelete.size, pendingSystemDelete.sumOf { it.sizeBytes })
             Toast.makeText(context, "照片已删除", Toast.LENGTH_SHORT).show()
         }
@@ -343,6 +453,7 @@ private fun AlbumCameraApp() {
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             videos = videos.filterNot { item -> pendingVideoDelete.any { it.uri == item.uri } }
             videoTrash = videoTrash.filterNot { item -> pendingVideoDelete.any { it.uri == item.uri } }
+            removeVideosFromCatalog(pendingVideoDelete)
             recordDeleted(pendingVideoDelete.size, pendingVideoDelete.sumOf { it.sizeBytes })
             Toast.makeText(context, "视频已删除", Toast.LENGTH_SHORT).show()
         }
@@ -356,7 +467,6 @@ private fun AlbumCameraApp() {
             }.getOrDefault(false)
             if (moved) {
                 videos = videos.filterNot { it.uri == move.video.uri }
-                videoCatalog = videoCatalog?.filterNot { it.uri == move.video.uri }
                 markVideoReviewed(move.video)
                 Toast.makeText(context, "\u89c6\u9891\u5df2\u79fb\u52a8\u5230${move.target.name}", Toast.LENGTH_SHORT).show()
             } else {
@@ -367,38 +477,69 @@ private fun AlbumCameraApp() {
     }
     val photoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
     val videoPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
-    suspend fun refreshMediaCatalog() {
-        val canReadPhotos = ContextCompat.checkSelfPermission(context, photoPermission) == PackageManager.PERMISSION_GRANTED
-        val canReadVideos = ContextCompat.checkSelfPermission(context, videoPermission) == PackageManager.PERMISSION_GRANTED
-        if (!canReadPhotos && !canReadVideos) {
-            photoCatalog = null
-            videoCatalog = null
-            mediaStorage = MediaStorage()
-            mediaCatalogLoading = false
-            return
-        }
-        mediaCatalogLoading = true
-        try {
-            coroutineScope {
-                val photos = async(Dispatchers.IO) {
-                    if (canReadPhotos) queryAllPhotos(context, categories) else emptyList()
-                }
-                val loadedVideos = async(Dispatchers.IO) {
-                    if (canReadVideos) queryAllVideos(context) else emptyList()
-                }
-                val loadedPhotos = photos.await()
-                val loadedVideoList = loadedVideos.await()
-                photoCatalog = if (canReadPhotos) loadedPhotos else null
-                videoCatalog = if (canReadVideos) loadedVideoList else null
-                mediaStorage = MediaStorage(
-                    photoCount = loadedPhotos.size,
-                    videoCount = loadedVideoList.size,
-                    photoBytes = loadedPhotos.sumOf { it.sizeBytes },
-                    videoBytes = loadedVideoList.sumOf { it.sizeBytes },
-                )
+    suspend fun refreshMediaCatalog(incremental: Boolean = false) {
+        catalogRefreshMutex.withLock {
+            val canReadPhotos = ContextCompat.checkSelfPermission(context, photoPermission) == PackageManager.PERMISSION_GRANTED
+            val canReadVideos = ContextCompat.checkSelfPermission(context, videoPermission) == PackageManager.PERMISSION_GRANTED
+            if (!canReadPhotos && !canReadVideos) {
+                photoCatalog = null
+                videoCatalog = null
+                mediaStorage = MediaStorage()
+                mediaCatalogLoadFailed = false
+                mediaCatalogLoading = false
+                return@withLock
             }
-        } finally {
-            mediaCatalogLoading = false
+            mediaCatalogLoading = true
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            val cachedPhotos = photoCatalog.takeIf { incremental }
+            val cachedVideos = videoCatalog.takeIf { incremental }
+            val watermark = catalogLastSyncedAtSeconds.takeIf { incremental && it > 0L }?.minus(2L)
+            Log.i("PhotoCatalog", "refresh:start incremental=${cachedPhotos != null || cachedVideos != null} photos=$canReadPhotos videos=$canReadVideos")
+            try {
+                coroutineScope {
+                    val photos = async(Dispatchers.IO) {
+                        val additions = if (canReadPhotos) queryAllPhotos(context, latestCategories, watermark) else emptyList()
+                        val items = cachedPhotos?.let { mergePhotos(it, additions) } ?: additions
+                        Triple(items, items.sumOf { it.sizeBytes }, additions)
+                    }
+                    val loadedVideos = async(Dispatchers.IO) {
+                        val additions = if (canReadVideos) queryAllVideos(context, watermark) else emptyList()
+                        val items = cachedVideos?.let { mergeVideos(it, additions) } ?: additions
+                        Triple(items, items.sumOf { it.sizeBytes }, additions)
+                    }
+                    val (loadedPhotos, photoBytes, photoChanges) = photos.await()
+                    val (loadedVideoList, videoBytes, videoChanges) = loadedVideos.await()
+                    val syncedAt = System.currentTimeMillis() / 1000L
+                    withContext(Dispatchers.IO) {
+                        MediaCatalogStore.save(
+                            context = context,
+                            photos = if (cachedPhotos == null) loadedPhotos else photoChanges,
+                            videos = if (cachedVideos == null) loadedVideoList else videoChanges,
+                            replace = !incremental,
+                            lastSyncedAtSeconds = syncedAt,
+                        )
+                    }
+                    photoCatalog = if (canReadPhotos) loadedPhotos else null
+                    videoCatalog = if (canReadVideos) loadedVideoList else null
+                    mediaStorage = MediaStorage(
+                        photoCount = loadedPhotos.size,
+                        videoCount = loadedVideoList.size,
+                        photoBytes = photoBytes,
+                        videoBytes = videoBytes,
+                    )
+                    catalogLastSyncedAtSeconds = syncedAt
+                    mediaCatalogLoadFailed = false
+                    Log.i("PhotoCatalog", "refresh:complete incremental=${cachedPhotos != null || cachedVideos != null} photos=${loadedPhotos.size} videos=${loadedVideoList.size} elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                mediaCatalogLoadFailed = true
+                Log.e("PhotoCatalog", "refresh:failed elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}", error)
+                throw error
+            } finally {
+                mediaCatalogLoading = false
+            }
         }
     }
 
@@ -406,7 +547,7 @@ private fun AlbumCameraApp() {
         val handler = Handler(Looper.getMainLooper())
         val observer = object : ContentObserver(handler) {
             override fun onChange(selfChange: Boolean, uri: Uri?) {
-                mediaChangeToken++
+                catalogRefreshRequests.trySend(Unit)
             }
         }
         context.contentResolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, observer)
@@ -414,14 +555,85 @@ private fun AlbumCameraApp() {
         onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
 
-    LaunchedEffect(categories, mediaChangeToken) {
-        if (mediaChangeToken > 0) delay(300)
-        refreshMediaCatalog()
+    LaunchedEffect(Unit) {
+        val canReadPhotos = ContextCompat.checkSelfPermission(context, photoPermission) == PackageManager.PERMISSION_GRANTED
+        val canReadVideos = ContextCompat.checkSelfPermission(context, videoPermission) == PackageManager.PERMISSION_GRANTED
+        val cachedCatalog = withContext(Dispatchers.IO) {
+            MediaCatalogStore.load(context)?.let { snapshot ->
+                val photos = if (canReadPhotos) snapshot.photos else emptyList()
+                val videos = if (canReadVideos) snapshot.videos else emptyList()
+                snapshot to MediaStorage(
+                    photoCount = photos.size,
+                    videoCount = videos.size,
+                    photoBytes = photos.sumOf { it.sizeBytes },
+                    videoBytes = videos.sumOf { it.sizeBytes },
+                )
+            }
+        }
+        if (cachedCatalog != null) {
+            val (snapshot, storage) = cachedCatalog
+            photoCatalog = snapshot.photos.takeIf { canReadPhotos }
+            videoCatalog = snapshot.videos.takeIf { canReadVideos }
+            mediaStorage = storage
+            catalogLastSyncedAtSeconds = snapshot.lastSyncedAtSeconds
+            Log.i("PhotoCatalog", "cache:loaded photos=${storage.photoCount} videos=${storage.videoCount}")
+        }
         if (openOrganizerWhenLoaded && photoCatalog != null) {
             organizePhotos = photoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedPhotoKeys }
             screen = AppScreen.ORGANIZE
             loadingOrganize = false
             openOrganizerWhenLoaded = false
+        }
+        if (openVideoOrganizerWhenLoaded && videoCatalog != null) {
+            videos = videoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedVideoKeys }
+            screen = AppScreen.VIDEOS
+            openVideoOrganizerWhenLoaded = false
+        }
+        runCatching { refreshMediaCatalog(incremental = cachedCatalog != null) }
+            .onFailure {
+                if (it is CancellationException) throw it
+                Toast.makeText(context, "读取媒体库失败，可返回后重试", Toast.LENGTH_LONG).show()
+            }
+        if (openOrganizerWhenLoaded && photoCatalog != null) {
+            organizePhotos = photoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedPhotoKeys }
+            screen = AppScreen.ORGANIZE
+            loadingOrganize = false
+            openOrganizerWhenLoaded = false
+        }
+        if (openVideoOrganizerWhenLoaded && videoCatalog != null) {
+            videos = videoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedVideoKeys }
+            screen = AppScreen.VIDEOS
+            openVideoOrganizerWhenLoaded = false
+        }
+        for (ignored in catalogRefreshRequests) {
+            delay(400)
+            while (catalogRefreshRequests.tryReceive().isSuccess) Unit
+            runCatching { refreshMediaCatalog(incremental = true) }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    Toast.makeText(context, "读取媒体库失败，可返回后重试", Toast.LENGTH_LONG).show()
+                }
+            if (openOrganizerWhenLoaded && photoCatalog != null) {
+                organizePhotos = photoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedPhotoKeys }
+                screen = AppScreen.ORGANIZE
+                loadingOrganize = false
+                openOrganizerWhenLoaded = false
+            }
+            if (openVideoOrganizerWhenLoaded && videoCatalog != null) {
+                videos = videoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedVideoKeys }
+                screen = AppScreen.VIDEOS
+                openVideoOrganizerWhenLoaded = false
+            }
+        }
+    }
+
+    LaunchedEffect(categories) {
+        if (photoCatalog != null) {
+            runCatching { refreshMediaCatalog() }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    Toast.makeText(context, "读取媒体库失败，可返回后重试", Toast.LENGTH_LONG).show()
+                }
         }
     }
 
@@ -471,6 +683,84 @@ private fun AlbumCameraApp() {
         pendingPreview = null
         pendingOrganize = false
     }
+    LaunchedEffect(widgetAction, widgetCategory) {
+        when (widgetAction) {
+            WIDGET_ACTION_CAMERA -> {
+                selectedCategory = categories.firstOrNull { it.name == widgetCategory }?.name
+                    ?: categories.firstOrNull()?.name
+                    ?: selectedCategory
+                val category = categories.firstOrNull { it.name == widgetCategory }
+                    ?: categories.firstOrNull { it.name == selectedCategory }
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, "camera_${System.currentTimeMillis()}.jpg")
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, category?.relativePath ?: "DCIM/${category?.name ?: selectedCategory}")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val outputUri = runCatching { context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) }.getOrNull()
+                if (outputUri != null) {
+                    pendingExternalCapture = outputUri
+                    externalCameraLauncher.launch(Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                        putExtra(MediaStore.EXTRA_OUTPUT, outputUri)
+                        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }.let { Intent.createChooser(it, "选择相机") })
+                } else {
+                    Toast.makeText(context, "无法准备照片保存位置", Toast.LENGTH_SHORT).show()
+                }
+            }
+            WIDGET_ACTION_PHOTOS -> {
+                restorePhotoGroupUris = null
+                if (ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
+                    pendingOrganize = true
+                    photoPermissionLauncher.launch(photoPermission)
+                } else {
+                    val cachedPhotos = photoCatalog
+                    if (cachedPhotos != null) {
+                        organizePhotos = cachedPhotos.filterNot { it.uri.toString() in reviewedPhotoKeys }
+                        screen = AppScreen.ORGANIZE
+                    } else if (mediaCatalogLoading) {
+                        openOrganizerWhenLoaded = true
+                        loadingOrganize = true
+                    } else {
+                        loadingOrganize = true
+                        screenScope.launch {
+                            runCatching {
+                                refreshMediaCatalog()
+                                photoCatalog.orEmpty()
+                            }.onSuccess {
+                                organizePhotos = it.filterNot { photo -> photo.uri.toString() in reviewedPhotoKeys }
+                                screen = AppScreen.ORGANIZE
+                            }.onFailure {
+                                Toast.makeText(context, "\u8bfb\u53d6\u7167\u7247\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5", Toast.LENGTH_LONG).show()
+                            }
+                            loadingOrganize = false
+                        }
+                    }
+                }
+            }
+            WIDGET_ACTION_VIDEOS -> {
+                restoreVideoGroupUris = null
+                if (ContextCompat.checkSelfPermission(context, videoPermission) != PackageManager.PERMISSION_GRANTED) {
+                    pendingVideoReview = true
+                    videoPermissionLauncher.launch(videoPermission)
+                } else {
+                    val cachedVideos = videoCatalog
+                    if (cachedVideos != null && !mediaCatalogLoading) {
+                        videos = cachedVideos.filterNot { it.uri.toString() in reviewedVideoKeys }
+                        screen = AppScreen.VIDEOS
+                    } else if (!mediaCatalogLoading) {
+                        screenScope.launch {
+                            refreshMediaCatalog()
+                            videos = videoCatalog.orEmpty().filterNot { it.uri.toString() in reviewedVideoKeys }
+                            screen = AppScreen.VIDEOS
+                        }
+                    } else {
+                        openVideoOrganizerWhenLoaded = true
+                    }
+                }
+            }
+        }
+    }
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         val name = safeFolderName(pendingCategoryName).ifBlank { uri?.let { folderDisplayName(context, it) }.orEmpty() }
         if (uri != null && name.isNotBlank() && categories.none { it.name == name }) {
@@ -513,7 +803,11 @@ private fun AlbumCameraApp() {
             trashCount = trash.size,
             videoTrashCount = videoTrash.size,
             organizeLoading = loadingOrganize,
-            onMore = { screen = AppScreen.MORE },
+            catalogLoading = mediaCatalogLoading,
+            onMore = {
+                Log.i("PhotoCatalog", "more:open catalogLoading=$mediaCatalogLoading photoCount=${photoCatalog?.size ?: -1}")
+                screen = AppScreen.MORE
+            },
             onSelect = { category ->
                 selectedCategory = category.name
                 if (category.folderUri == null && ContextCompat.checkSelfPermission(context, photoPermission) != PackageManager.PERMISSION_GRANTED) {
@@ -537,7 +831,7 @@ private fun AlbumCameraApp() {
                     photoPermissionLauncher.launch(photoPermission)
                 } else {
                     val cachedPhotos = photoCatalog
-                    if (cachedPhotos != null && !mediaCatalogLoading) {
+                    if (cachedPhotos != null) {
                         organizePhotos = cachedPhotos.filterNot { it.uri.toString() in reviewedPhotoKeys }
                         screen = AppScreen.ORGANIZE
                     } else if (mediaCatalogLoading) {
@@ -554,7 +848,7 @@ private fun AlbumCameraApp() {
                                 organizePhotos = it.filterNot { photo -> photo.uri.toString() in reviewedPhotoKeys }
                                 screen = AppScreen.ORGANIZE
                             }.onFailure {
-                                Toast.makeText(context, "读取照片失败，请稍后重试", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "\u8bfb\u53d6\u7167\u7247\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5", Toast.LENGTH_LONG).show()
                             }
                             loadingOrganize = false
                         }
@@ -591,6 +885,13 @@ private fun AlbumCameraApp() {
             deletedCount = deletedCount,
             clearedBytes = clearedBytes,
             storage = mediaStorage,
+            storageLoading = mediaCatalogLoading,
+            storageStatus = when {
+                mediaCatalogLoading -> "正在同步媒体库…"
+                mediaCatalogLoadFailed -> "读取失败，返回首页后可重试"
+                photoCatalog == null && videoCatalog == null -> "需要媒体读取权限"
+                else -> "媒体库数据已更新"
+            },
             onHome = { screen = AppScreen.HOME },
         )
         AppScreen.CATEGORY -> previewCategory?.let { category ->
@@ -598,34 +899,42 @@ private fun AlbumCameraApp() {
                 category = category,
                 categories = categories,
                 stagedPhotos = trash.filter { it.belongsTo(category) },
+                restorePhotos = undoRestoredPhotos,
+                restoreVersion = undoRestoreVersion,
                 canUndo = undoableStages.isNotEmpty(),
                 onUndo = ::undoLastStage,
                 onBack = { screen = AppScreen.HOME },
                 onShoot = { selectedCategory = category.name; screen = AppScreen.HOME; cameraOpen = true },
-                onStageDelete = { photos -> undoableStages.add(UndoableStage.Photos(photos, emptyList())); trash = (trash + photos).distinctBy { it.uri } },
+                onStageDelete = { photos -> undoableStages.add(UndoableStage.Photos(photos, emptyList(), UndoOrigin.CATEGORY)); trash = (trash + photos).distinctBy { it.uri } },
+                onPhotoMoved = { original, moved -> recordPhotoMove(original, moved, false, UndoOrigin.CATEGORY) },
                 onTrash = { trashCategory = category; trashReturnScreen = AppScreen.CATEGORY; screen = AppScreen.TRASH },
             )
         }
-        AppScreen.ORGANIZE -> OrganizePhotosScreen(
-            photos = organizePhotos.filter { photo ->
-                photo.uri !in trashedPhotoUris &&
-                    (photo.uri.toString() !in reviewedPhotoKeys || restorePhotoGroupUris?.contains(photo.uri.toString()) == true)
-            },
-            categories = categories,
-            initialGroupUris = restorePhotoGroupUris,
-            onBack = { restorePhotoGroupUris = null; screen = AppScreen.HOME },
-            onStageDelete = { photos -> undoableStages.add(UndoableStage.Photos(photos, markPhotosReviewed(photos))); trash = (trash + photos).distinctBy { it.uri } },
-            onUndo = ::undoLastStage,
-            canUndo = undoableStages.isNotEmpty(),
-            onSeen = ::markPhotosReviewed,
-            onTrash = { group ->
-                restorePhotoGroupUris = group.map { it.uri.toString() }
-                trashCategory = null
-                trashReturnScreen = AppScreen.ORGANIZE
-                screen = AppScreen.TRASH
-            },
-            trashCount = trash.size,
-        )
+        AppScreen.ORGANIZE -> screenStateHolder.SaveableStateProvider(AppScreen.ORGANIZE.name) {
+            OrganizePhotosScreen(
+                photos = organizePhotos.filter { photo ->
+                    photo.uri !in trashedPhotoUris &&
+                        (photo.uri.toString() !in reviewedPhotoKeys || restorePhotoGroupUris?.contains(photo.uri.toString()) == true)
+                },
+                categories = categories,
+                initialGroupUris = restorePhotoGroupUris,
+                restorePhotos = undoRestoredPhotos,
+                restoreVersion = undoRestoreVersion,
+                onBack = { restorePhotoGroupUris = null; screen = AppScreen.HOME },
+                onStageDelete = { photos -> undoableStages.add(UndoableStage.Photos(photos, markPhotosReviewed(photos), UndoOrigin.ORGANIZE)); trash = (trash + photos).distinctBy { it.uri } },
+                onPhotoMoved = { original, moved -> recordPhotoMove(original, moved, true, UndoOrigin.ORGANIZE) },
+                onUndo = ::undoLastStage,
+                canUndo = undoableStages.isNotEmpty(),
+                onSeen = ::markPhotosReviewed,
+                onTrash = { group ->
+                    restorePhotoGroupUris = group.map { it.uri.toString() }
+                    trashCategory = null
+                    trashReturnScreen = AppScreen.ORGANIZE
+                    screen = AppScreen.TRASH
+                },
+                trashCount = trash.size,
+            )
+        }
         AppScreen.TRASH -> TrashScreen(
             photos = trashCategory?.let { category -> trash.filter { it.belongsTo(category) } } ?: trash,
             categoryName = trashCategory?.name,
@@ -637,6 +946,7 @@ private fun AlbumCameraApp() {
                 val removedDocuments = documentPhotos.filter { deletePhoto(context, it) }
                 if (removedDocuments.isNotEmpty()) {
                     trash = trash.filterNot { item -> removedDocuments.any { it.uri == item.uri } }
+                    removePhotosFromCatalog(removedDocuments)
                     recordDeleted(removedDocuments.size, removedDocuments.sumOf { it.sizeBytes })
                 }
                 if (removedDocuments.size < documentPhotos.size) {
@@ -687,7 +997,7 @@ private fun AlbumCameraApp() {
                 trashReturnScreen = AppScreen.VIDEOS
                 screen = AppScreen.VIDEO_TRASH
             },
-            onStageDelete = { video -> undoableStages.add(UndoableStage.Video(video, if (markVideoReviewed(video)) 1 else 0)); videoTrash = (videoTrash + video).distinctBy { it.uri } },
+            onStageDelete = { video -> undoableStages.add(UndoableStage.Video(video, if (markVideoReviewed(video)) 1 else 0, UndoOrigin.VIDEOS)); videoTrash = (videoTrash + video).distinctBy { it.uri } },
             onUndo = ::undoLastStage,
             onKeep = ::markVideoReviewed,
             onMove = { video, target ->
@@ -842,6 +1152,7 @@ private fun HomeScreen(
     trashCount: Int,
     videoTrashCount: Int,
     organizeLoading: Boolean,
+    catalogLoading: Boolean,
     onMore: () -> Unit,
     onSelect: (Category) -> Unit,
     onAdd: () -> Unit,
@@ -863,6 +1174,7 @@ private fun HomeScreen(
         Column(
             modifier = Modifier.fillMaxSize().padding(padding),
         ) {
+            if (catalogLoading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Moss)
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 12.dp),
@@ -971,6 +1283,8 @@ private fun MoreScreen(
     deletedCount: Int,
     clearedBytes: Long,
     storage: MediaStorage,
+    storageLoading: Boolean,
+    storageStatus: String,
     onHome: () -> Unit,
 ) {
     BackHandler(onBack = onHome)
@@ -987,6 +1301,9 @@ private fun MoreScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
+                if (storageLoading) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth(), color = Moss)
+                }
                 Text("更多", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Ink)
                 Text("查看本机相册的整理记录和空间占用", style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 5.dp))
             }
@@ -1022,7 +1339,10 @@ private fun MoreScreen(
                 }
             }
             item {
-                Text("空间数据来自手机本地媒体库，打开此页面时会自动刷新。", style = MaterialTheme.typography.labelSmall, color = Muted)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (storageLoading) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Moss)
+                    Text(storageStatus, style = MaterialTheme.typography.labelSmall, color = Muted)
+                }
             }
         }
     }
@@ -1283,7 +1603,7 @@ private fun takePhoto(context: Context, imageCapture: ImageCapture?, category: C
     })
 }
 
-private object CategoryStore {
+internal object CategoryStore {
     private const val PREFS = "categories"
     private const val KEY_NAMES = "names"
 
@@ -1295,6 +1615,7 @@ private object CategoryStore {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putStringSet(KEY_NAMES, categories.map { it.name + (it.folderUri?.let { u -> "|$u" } ?: "") }.toSet())
             .apply()
+        CategoryCaptureWidget.updateAll(context)
     }
 }
 
@@ -1380,8 +1701,134 @@ private object ReviewedStore {
     }
 }
 
+private class MediaCatalogDatabase(context: Context) : SQLiteOpenHelper(
+    context.applicationContext,
+    "media_catalog.db",
+    null,
+    1,
+) {
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE photos (uri TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, source_key TEXT, date_millis INTEGER NOT NULL, size_bytes INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE videos (uri TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, source_key TEXT, date_millis INTEGER NOT NULL, size_bytes INTEGER NOT NULL, duration_millis INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE catalog_meta (id INTEGER PRIMARY KEY CHECK (id = 1), updated_at INTEGER NOT NULL)")
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("DROP TABLE IF EXISTS photos")
+        db.execSQL("DROP TABLE IF EXISTS videos")
+        db.execSQL("DROP TABLE IF EXISTS catalog_meta")
+        onCreate(db)
+    }
+}
+
+private object MediaCatalogStore {
+    fun load(context: Context): MediaCatalogSnapshot? = try {
+        withDatabase(context) { db ->
+            val syncedAt = db.rawQuery("SELECT updated_at FROM catalog_meta WHERE id = 1", null).use {
+                if (!it.moveToFirst()) return@withDatabase null
+                it.getLong(0) / 1000L
+            }
+            val photos = mutableListOf<PhotoItem>()
+            db.query("photos", arrayOf("uri", "name", "source_key", "date_millis", "size_bytes"), null, null, null, null, "date_millis DESC").use { cursor ->
+                while (cursor.moveToNext()) {
+                    photos += PhotoItem(
+                        uri = Uri.parse(cursor.getString(0)),
+                        name = cursor.getString(1),
+                        sourceKey = cursor.getString(2),
+                        dateMillis = cursor.getLong(3),
+                        sizeBytes = cursor.getLong(4),
+                    )
+                }
+            }
+            val videos = mutableListOf<VideoItem>()
+            db.query("videos", arrayOf("uri", "name", "source_key", "date_millis", "size_bytes", "duration_millis"), null, null, null, null, "date_millis DESC").use { cursor ->
+                while (cursor.moveToNext()) {
+                    videos += VideoItem(
+                        uri = Uri.parse(cursor.getString(0)),
+                        name = cursor.getString(1),
+                        sourceKey = cursor.getString(2),
+                        dateMillis = cursor.getLong(3),
+                        sizeBytes = cursor.getLong(4),
+                        durationMillis = cursor.getLong(5),
+                    )
+                }
+            }
+            MediaCatalogSnapshot(photos, videos, syncedAt)
+        }
+    } catch (error: Exception) {
+        Log.e("PhotoCatalog", "cache:load-failed", error)
+        context.deleteDatabase("media_catalog.db")
+        null
+    }
+
+    fun save(context: Context, photos: List<PhotoItem>, videos: List<VideoItem>, replace: Boolean, lastSyncedAtSeconds: Long) = withDatabase(context) { db ->
+        db.beginTransaction()
+        try {
+            if (replace) {
+                db.delete("photos", null, null)
+                db.delete("videos", null, null)
+            }
+            photos.forEach { item -> db.insertWithOnConflict("photos", null, item.values(), SQLiteDatabase.CONFLICT_REPLACE) }
+            videos.forEach { item -> db.insertWithOnConflict("videos", null, item.values(), SQLiteDatabase.CONFLICT_REPLACE) }
+            db.insertWithOnConflict("catalog_meta", null, ContentValues().apply {
+                put("id", 1)
+                put("updated_at", lastSyncedAtSeconds * 1000L)
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun removePhotos(context: Context, items: Collection<PhotoItem>) = withDatabase(context) { db ->
+        db.beginTransaction()
+        try {
+            items.forEach { db.delete("photos", "uri = ?", arrayOf(it.uri.toString())) }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun removeVideos(context: Context, items: Collection<VideoItem>) = withDatabase(context) { db ->
+        db.beginTransaction()
+        try {
+            items.forEach { db.delete("videos", "uri = ?", arrayOf(it.uri.toString())) }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun PhotoItem.values() = ContentValues().apply {
+        put("uri", uri.toString())
+        put("name", name)
+        put("source_key", sourceKey)
+        put("date_millis", dateMillis)
+        put("size_bytes", sizeBytes)
+    }
+
+    private fun VideoItem.values() = ContentValues().apply {
+        put("uri", uri.toString())
+        put("name", name)
+        put("source_key", sourceKey)
+        put("date_millis", dateMillis)
+        put("size_bytes", sizeBytes)
+        put("duration_millis", durationMillis)
+    }
+
+    private inline fun <T> withDatabase(context: Context, block: (SQLiteDatabase) -> T): T {
+        val helper = MediaCatalogDatabase(context)
+        return try {
+            block(helper.writableDatabase)
+        } finally {
+            helper.close()
+        }
+    }
+}
+
 @Composable
-private fun CategoryPhotosScreen(category: Category, categories: List<Category>, stagedPhotos: List<PhotoItem>, canUndo: Boolean, onUndo: () -> Unit, onBack: () -> Unit, onShoot: () -> Unit, onStageDelete: (List<PhotoItem>) -> Unit, onTrash: () -> Unit) {
+private fun CategoryPhotosScreen(category: Category, categories: List<Category>, stagedPhotos: List<PhotoItem>, restorePhotos: List<PhotoItem>, restoreVersion: Int, canUndo: Boolean, onUndo: () -> Unit, onBack: () -> Unit, onShoot: () -> Unit, onStageDelete: (List<PhotoItem>) -> Unit, onPhotoMoved: (PhotoItem, PhotoItem) -> Unit = { _, _ -> }, onTrash: () -> Unit) {
     val context = LocalContext.current
     var photos by remember(category) { mutableStateOf(emptyList<PhotoItem>()) }
     var loadingPhotos by remember(category) { mutableStateOf(true) }
@@ -1389,6 +1836,7 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
     var previewIndex by remember { mutableStateOf<Int?>(null) }
+    var consumedRestoreVersion by rememberSaveable { mutableStateOf(0) }
     val selectionBounds = remember { mutableStateMapOf<Uri, Rect>() }
     var selectionGridOrigin by remember { mutableStateOf(Offset.Zero) }
     val stagedPhotoUris = remember(stagedPhotos) { stagedPhotos.mapTo(HashSet()) { it.uri } }
@@ -1397,6 +1845,13 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
         val loaded = withContext(Dispatchers.IO) { queryPhotos(context, category) }
         photos = loaded.filterNot { it.uri in stagedPhotoUris }
         loadingPhotos = false
+    }
+    LaunchedEffect(restoreVersion, stagedPhotoUris) {
+        if (restoreVersion <= consumedRestoreVersion || restorePhotos.isEmpty()) return@LaunchedEffect
+        val loaded = withContext(Dispatchers.IO) { queryPhotos(context, category) }
+        photos = loaded.filterNot { it.uri in stagedPhotoUris }
+        viewerIndex = photos.indexOfFirst { it.uri == restorePhotos.first().uri }.takeIf { it >= 0 }
+        consumedRestoreVersion = restoreVersion
     }
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Paper, topBar = {
@@ -1470,9 +1925,13 @@ private fun CategoryPhotosScreen(category: Category, categories: List<Category>,
                 Toast.makeText(context, "已放入删除暂存区", Toast.LENGTH_SHORT).show()
             },
             onMove = { photo, target ->
-                if (movePhoto(context, photo, target)) {
+                var movedPhoto = photo
+                val moved = movePhoto(context, photo, target) { movedPhoto = it }
+                if (moved) {
                     photos = photos.filterNot { it.uri == photo.uri }
+                    onPhotoMoved(photo, movedPhoto)
                 }
+                moved
             },
             stagedCount = stagedPhotos.size,
             canUndo = canUndo,
@@ -1619,7 +2078,7 @@ private fun PhotoViewerScreen(
     onClose: () -> Unit,
     onOpenTrash: () -> Unit,
     onStageDelete: (PhotoItem) -> Unit,
-    onMove: (PhotoItem, Category) -> Unit,
+    onMove: (PhotoItem, Category) -> Boolean,
     onKeep: (PhotoItem) -> Unit = {},
     onSeen: (PhotoItem) -> Unit = {},
     stagedCount: Int,
@@ -1630,6 +2089,86 @@ private fun PhotoViewerScreen(
     if (photos.isEmpty()) { onClose(); return }
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, photos.lastIndex), pageCount = { photos.size })
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var pendingPhotoMove by remember { mutableStateOf<PendingPhotoMove?>(null) }
+    val photoMoveRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val pending = pendingPhotoMove
+        pendingPhotoMove = null
+        if (pending != null) {
+            val moved = result.resultCode == android.app.Activity.RESULT_OK && runCatching {
+                onMove(pending.photo, pending.target)
+            }.getOrDefault(false)
+            Toast.makeText(
+                context,
+                if (moved) "已移动到${pending.target.name}" else "移动失败，照片保留在原处",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+    fun requestPhotoWriteConfirmation(pending: PendingPhotoMove) {
+        val intentSender = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && isMediaStorePhoto(context, pending.photo)) {
+            runCatching { MediaStore.createWriteRequest(context.contentResolver, listOf(pending.photo.uri)).intentSender }.getOrNull()
+        } else null
+        if (intentSender == null) {
+            pendingPhotoMove = null
+            Toast.makeText(context, "移动失败，照片保留在原处", Toast.LENGTH_SHORT).show()
+        } else {
+            pendingPhotoMove = pending
+            photoMoveRequest.launch(androidx.activity.result.IntentSenderRequest.Builder(intentSender).build())
+        }
+    }
+    val manageMediaRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val pending = pendingPhotoMove ?: return@rememberLauncherForActivityResult
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && MediaStore.canManageMedia(context)) {
+            pendingPhotoMove = null
+            val result = runCatching { onMove(pending.photo, pending.target) }
+            if (result.isSuccess) {
+                Toast.makeText(
+                    context,
+                    if (result.getOrDefault(false)) "已移动到${pending.target.name}" else "移动失败，照片保留在原处",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            } else {
+                requestPhotoWriteConfirmation(pending)
+            }
+        } else {
+            requestPhotoWriteConfirmation(pending)
+        }
+    }
+    fun movePhotoFromViewer(photo: PhotoItem, target: Category) {
+        val result = runCatching { onMove(photo, target) }
+        if (result.isSuccess) {
+            Toast.makeText(context, if (result.getOrDefault(false)) "已移动到${target.name}" else "移动失败，照片保留在原处", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val error = result.exceptionOrNull()
+        val pending = PendingPhotoMove(photo, target)
+        when {
+            error is android.app.RecoverableSecurityException -> {
+                pendingPhotoMove = pending
+                photoMoveRequest.launch(androidx.activity.result.IntentSenderRequest.Builder(error.userAction.actionIntent.intentSender).build())
+            }
+            error is SecurityException && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && isMediaStorePhoto(context, photo) -> {
+                pendingPhotoMove = pending
+                if (MediaStore.canManageMedia(context)) {
+                    requestPhotoWriteConfirmation(pending)
+                } else {
+                    val settingsIntent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_MANAGE_MEDIA).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    }
+                    manageMediaRequest.launch(settingsIntent)
+                }
+            }
+            else -> {
+                Log.e("PhotoMove", "move-failed", error)
+                Toast.makeText(context, "移动失败，照片保留在原处", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    LaunchedEffect(initialIndex) {
+        val targetPage = initialIndex.coerceIn(0, photos.lastIndex)
+        if (pagerState.currentPage != targetPage) pagerState.scrollToPage(targetPage)
+    }
     var autoPlaying by remember { mutableStateOf(false) }
     var expandedImage by remember { mutableStateOf(false) }
     val currentPhoto = photos.getOrNull(pagerState.currentPage)
@@ -1685,7 +2224,7 @@ private fun PhotoViewerScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(categories, key = { it.name }) { target ->
-                            TextButton(onClick = { currentPhoto?.let { onMove(it, target) } }) {
+                            TextButton(onClick = { currentPhoto?.let { movePhotoFromViewer(it, target) } }) {
                                 Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = Color(0xFFB9E7C8), modifier = Modifier.size(16.dp))
                                 Text(" ${target.name}", color = Color.White, maxLines = 1)
                             }
@@ -1827,8 +2366,11 @@ private fun OrganizePhotosScreen(
     photos: List<PhotoItem>,
     categories: List<Category>,
     initialGroupUris: List<String>?,
+    restorePhotos: List<PhotoItem>,
+    restoreVersion: Int,
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
+    onPhotoMoved: (PhotoItem, PhotoItem) -> Unit = { _, _ -> },
     canUndo: Boolean,
     onUndo: () -> Unit,
     onSeen: (Collection<PhotoItem>) -> Unit,
@@ -1837,6 +2379,7 @@ private fun OrganizePhotosScreen(
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val gridState = rememberLazyGridState()
     val sourcePhotos = remember { photos }
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var selecting by remember { mutableStateOf(false) }
@@ -1846,14 +2389,15 @@ private fun OrganizePhotosScreen(
     var previewIndex by remember { mutableStateOf<Int?>(null) }
     var gameMode by rememberSaveable { mutableStateOf(false) }
     var modeMenuExpanded by remember { mutableStateOf(false) }
-    var mode by remember { mutableStateOf(MODE_RANDOM) }
-    var countText by remember { mutableStateOf("20") }
-    var selectedMonth by remember { mutableStateOf<String?>(null) }
+    var mode by rememberSaveable { mutableStateOf(MODE_RANDOM) }
+    var countText by rememberSaveable { mutableStateOf("20") }
+    var selectedMonth by rememberSaveable { mutableStateOf<String?>(null) }
     val count = countText.toIntOrNull()?.coerceIn(1, 500) ?: 20
     val restoredPhotos = initialGroupUris?.let { ids -> sourcePhotos.filter { it.uri.toString() in ids } }.orEmpty()
     var batchPhotos by remember { mutableStateOf(if (initialGroupUris != null) restoredPhotos else sourcePhotos.shuffled().take(count)) }
     var visiblePhotos by remember { mutableStateOf(batchPhotos) }
     var processedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var consumedRestoreVersion by rememberSaveable { mutableStateOf(0) }
     var restoredGroupPending by remember { mutableStateOf(initialGroupUris != null) }
     val monthOptions = remember(sourcePhotos) {
         sourcePhotos.mapNotNull { if (it.dateMillis > 0) SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(it.dateMillis)) else null }.distinct()
@@ -1872,6 +2416,16 @@ private fun OrganizePhotosScreen(
         batchPhotos = nextBatch
         visiblePhotos = nextBatch
     }
+    LaunchedEffect(restoreVersion) {
+        if (restoreVersion <= consumedRestoreVersion || restorePhotos.isEmpty()) return@LaunchedEffect
+        val restoredUris = restorePhotos.mapTo(HashSet()) { it.uri }
+        processedUris = processedUris - restoredUris
+        val restored = restorePhotos
+        visiblePhotos = (restored + visiblePhotos).distinctBy { it.uri }
+        batchPhotos = (restored + batchPhotos).distinctBy { it.uri }
+        if (!gameMode) viewerIndex = visiblePhotos.indexOfFirst { it.uri in restoredUris }.takeIf { it >= 0 }
+        consumedRestoreVersion = restoreVersion
+    }
     val remainingCount = sourcePhotos.count { it.uri !in processedUris }
     val batchComplete = batchPhotos.isNotEmpty() && batchPhotos.all { it.uri in processedUris }
     BackHandler(onBack = onBack)
@@ -1881,10 +2435,13 @@ private fun OrganizePhotosScreen(
             photos = sourcePhotos,
             categories = categories,
             stagedCount = trashCount,
+            restorePhotos = restorePhotos,
+            restoreVersion = restoreVersion,
             canUndo = canUndo,
             onUndo = onUndo,
             onBack = onBack,
             onStageDelete = onStageDelete,
+            onPhotoMoved = onPhotoMoved,
             onSeen = onSeen,
             onTrash = onTrash,
             onExitGame = { gameMode = false },
@@ -1985,7 +2542,7 @@ private fun OrganizePhotosScreen(
                         selected = if (shouldSelect) selected + uri else selected - uri
                     },
             ) {
-                LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(4.dp)) {
+                LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), state = gridState, contentPadding = PaddingValues(4.dp)) {
                     items(visiblePhotos, key = { it.uri.toString() }) { photo ->
                         PhotoThumb(photo, photo.uri in selected, onBoundsChanged = { rect -> if (rect == null) selectionBounds.remove(photo.uri) else selectionBounds[photo.uri] = rect }, onClick = {
                             if (selecting) selected = if (photo.uri in selected) selected - photo.uri else selected + photo.uri
@@ -2032,13 +2589,15 @@ private fun OrganizePhotosScreen(
             onMove = { photo, target ->
                 val group = visiblePhotos
                 val wasLast = visiblePhotos.size <= 1
-                if (movePhoto(context, photo, target)) {
+                var movedPhoto = photo
+                val moved = movePhoto(context, photo, target) { movedPhoto = it }
+                if (moved) {
                     processedUris = processedUris + photo.uri
                     visiblePhotos = visiblePhotos.filterNot { it.uri == photo.uri }
-                    onSeen(listOf(photo))
-                    viewerIndex = null
+                    onPhotoMoved(photo, movedPhoto)
                     if (wasLast && trashCount > 0) onTrash(group)
                 }
+                moved
             },
             stagedCount = trashCount,
             canUndo = canUndo,
@@ -2062,10 +2621,13 @@ private fun PhotoDeleteGameScreen(
     photos: List<PhotoItem>,
     categories: List<Category>,
     stagedCount: Int,
+    restorePhotos: List<PhotoItem>,
+    restoreVersion: Int,
     canUndo: Boolean,
     onUndo: () -> Unit,
     onBack: () -> Unit,
     onStageDelete: (List<PhotoItem>) -> Unit,
+    onPhotoMoved: (PhotoItem, PhotoItem) -> Unit = { _, _ -> },
     onSeen: (Collection<PhotoItem>) -> Unit,
     onTrash: (List<PhotoItem>) -> Unit,
     onExitGame: () -> Unit,
@@ -2083,7 +2645,17 @@ private fun PhotoDeleteGameScreen(
     var gameRootOrigin by remember { mutableStateOf(Offset.Zero) }
     var comboCount by remember { mutableStateOf(0) }
     var comboToken by remember { mutableStateOf(0) }
+    var consumedRestoreVersion by rememberSaveable { mutableStateOf(0) }
     val flyingPhotos = remember { mutableStateMapOf<Uri, Pair<PhotoItem, Rect>>() }
+
+    LaunchedEffect(restoreVersion) {
+        if (restoreVersion <= consumedRestoreVersion || restorePhotos.isEmpty()) return@LaunchedEffect
+        remaining = (restorePhotos + remaining).distinctBy { it.uri }
+        batch = (restorePhotos + batch).distinctBy { it.uri }
+        previewIndex = batch.indexOfFirst { it.uri == restorePhotos.first().uri }.takeIf { it >= 0 }
+        restorePhotos.forEach { cardBounds.remove(it.uri) }
+        consumedRestoreVersion = restoreVersion
+    }
 
     fun stage(photosToStage: Collection<PhotoItem>) {
         val staged = photosToStage.distinctBy { it.uri }.filter { photo -> batch.any { it.uri == photo.uri } }
@@ -2109,12 +2681,15 @@ private fun PhotoDeleteGameScreen(
         onSeen(listOf(photo))
     }
 
-    fun move(photo: PhotoItem, target: Category) {
-        if (movePhoto(context, photo, target)) {
+    fun move(photo: PhotoItem, target: Category): Boolean {
+        var movedPhoto = photo
+        val moved = movePhoto(context, photo, target) { movedPhoto = it }
+        if (moved) {
             remaining = remaining.filterNot { it.uri == photo.uri }
             batch = batch.filterNot { it.uri == photo.uri }
-            onSeen(listOf(photo))
+            onPhotoMoved(photo, movedPhoto)
         }
+        return moved
     }
 
     LaunchedEffect(comboToken) {
@@ -2334,8 +2909,9 @@ BackHandler(onBack = onBack)
             onMove = { photo, target ->
                 val group = batch
                 val wasLast = batch.size <= 1
-                move(photo, target)
-                if (wasLast && stagedCount > 0) onTrash(group)
+                val moved = move(photo, target)
+                if (moved && wasLast && stagedCount > 0) onTrash(group)
+                moved
             },
             stagedCount = stagedCount,
             canUndo = canUndo,
@@ -2443,7 +3019,10 @@ private fun TrashScreen(
 @Composable
 private fun VideoPoster(video: VideoItem) {
     val context = LocalContext.current
-    val bitmapState = produceState<Bitmap?>(initialValue = null, key1 = video.uri) {
+    val bitmapState = produceState<Bitmap?>(
+        initialValue = VideoThumbnailCache.get(video.uri.toString()),
+        key1 = video.uri,
+    ) {
         value = withContext(Dispatchers.IO) { loadVideoThumbnail(context, video) }
     }
     Box(Modifier.fillMaxSize().background(Color(0xFF17211D)), contentAlignment = Alignment.Center) {
@@ -2529,7 +3108,7 @@ private fun VideoOrganizerScreen(
     val monthOptions = remember(sourceVideos) {
         sourceVideos.mapNotNull { if (it.dateMillis > 0) SimpleDateFormat(MONTH_FORMAT, Locale.CHINA).format(Date(it.dateMillis)) else null }.distinct()
     }
-    LaunchedEffect(mode, countText, selectedMonth, sourceVideos) {
+    LaunchedEffect(mode, countText, selectedMonth) {
         if (restoredGroupPending) {
             restoredGroupPending = false
             return@LaunchedEffect
@@ -2555,15 +3134,9 @@ private fun VideoOrganizerScreen(
             onTrash = { viewerUri = null; onTrash(visibleVideos) },
             onUndo = onUndo,
             onStageDelete = { video ->
-                val group = visibleVideos
-                val wasLast = visibleVideos.size <= 1
                 processedUris = processedUris + video.uri
                 visibleVideos = visibleVideos.filterNot { it.uri == video.uri }
                 onStageDelete(video)
-                if (wasLast) {
-                    viewerUri = null
-                    onTrash(group)
-                }
             },
             onKeep = { video ->
                 val group = visibleVideos
@@ -2712,6 +3285,9 @@ private fun VideoReviewScreen(
     val preloadManager = remember(preloadManagerBuilder) { preloadManagerBuilder.build() }
     val player = remember(preloadManagerBuilder) { preloadManagerBuilder.buildExoPlayer() }
     var renderedVideoUri by remember(player) { mutableStateOf<Uri?>(null) }
+    var videoAspectRatio by remember(player) { mutableStateOf(0f) }
+    val videoFrameState = remember(player) { mutableStateOf<androidx.media3.ui.AspectRatioFrameLayout?>(null) }
+    val textureViewState = remember(player) { mutableStateOf<TextureView?>(null) }
     val mediaItems = remember(videos) { videos.map { ExoMediaItem.fromUri(it.uri) } }
     val managedMediaItems = remember(preloadManager) { mutableMapOf<Uri, Pair<Int, ExoMediaItem>>() }
     LaunchedEffect(videos, currentIndex, mediaItems) {
@@ -2752,6 +3328,13 @@ private fun VideoReviewScreen(
             override fun onRenderedFirstFrame() {
                 renderedVideoUri = player.currentMediaItem?.localConfiguration?.uri
             }
+
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                if (videoSize.height > 0) {
+                    videoAspectRatio = (videoSize.width * videoSize.pixelWidthHeightRatio) / videoSize.height
+                    videoFrameState.value?.setAspectRatio(videoAspectRatio)
+                }
+            }
         }
         player.addListener(listener)
         onDispose { player.removeListener(listener) }
@@ -2763,6 +3346,8 @@ private fun VideoReviewScreen(
         playbackPosition = 0L
         playbackDuration = 0L
         sliderPosition = 0f
+        videoAspectRatio = 0f
+        videoFrameState.value?.setAspectRatio(0f)
         if (currentVideo != null && currentIndex in mediaItems.indices) {
             val mediaItem = mediaItems[currentIndex]
             val registeredItem = managedMediaItems[currentVideo.uri]
@@ -2794,7 +3379,13 @@ private fun VideoReviewScreen(
         }
         isPlaying = false
     }
-    DisposableEffect(player, preloadManager) { onDispose { player.release(); preloadManager.release() } }
+    DisposableEffect(player, preloadManager) {
+        onDispose {
+            textureViewState.value?.let(player::clearVideoTextureView)
+            player.release()
+            preloadManager.release()
+        }
+    }
     BackHandler(onBack = onBack)
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
@@ -2820,12 +3411,37 @@ private fun VideoReviewScreen(
         }
         if (currentVideo != null) {
             AndroidView(
-                    factory = { ctx -> PlayerView(ctx).apply { useController = false; setKeepContentOnPlayerReset(false); resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
-                    update = { it.player = player },
+                    factory = { ctx ->
+                        val textureView = TextureView(ctx).apply {
+                            isOpaque = false
+                            layoutParams = FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                            )
+                        }
+                        androidx.media3.ui.AspectRatioFrameLayout(ctx).apply {
+                            setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT)
+                            addView(textureView)
+                            setAspectRatio(videoAspectRatio)
+                            videoFrameState.value = this
+                            textureViewState.value = textureView
+                            player.setVideoTextureView(textureView)
+                        }
+                    },
+                    update = { frame ->
+                        videoFrameState.value = frame
+                        frame.setAspectRatio(videoAspectRatio)
+                        val textureView = frame.getChildAt(0) as? TextureView
+                        if (textureView != null && textureViewState.value !== textureView) {
+                            textureViewState.value = textureView
+                            player.setVideoTextureView(textureView)
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(top = 72.dp, bottom = 170.dp)
                         .offset { IntOffset(0, swipeOffset.value.roundToInt()) }
+                        .graphicsLayer { alpha = if (renderedVideoUri == currentVideo.uri) 1f else 0f }
                         .zIndex(1f)
                         .pointerInput(currentVideo.uri) {
                         awaitEachGesture {
@@ -2891,7 +3507,6 @@ private fun VideoReviewScreen(
                                     else -> -1
                                 }
                                 if (nextIndex in videos.indices) {
-                                    val outgoingVideo = currentVideo
                                     val targetVideo = videos[nextIndex]
                                     val finalOffset = if (totalVertical < 0f) -contentHeight else contentHeight
                                     swipeJob?.cancel()
@@ -2899,7 +3514,6 @@ private fun VideoReviewScreen(
                                         swipeOffset.animateTo(finalOffset, tween(180))
                                         currentUri = targetVideo.uri
                                         swipeOffset.snapTo(0f)
-                                        outgoingVideo?.let(onKeep)
                                     }
                                 } else if (kotlin.math.abs(totalVertical) > viewConfiguration.touchSlop) {
                                     swipeJob?.cancel()
@@ -3180,16 +3794,18 @@ private fun countImagesInTree(context: Context, treeUri: Uri, documentId: String
     return count
 }
 
-private fun queryAllPhotos(context: Context, categories: List<Category>): List<PhotoItem> {
+private fun queryAllPhotos(context: Context, categories: List<Category>, addedAfterSeconds: Long? = null): List<PhotoItem> {
     val byUri = LinkedHashMap<String, PhotoItem>()
     val volumes = runCatching { MediaStore.getExternalVolumeNames(context) }.getOrDefault(emptySet())
     (volumes.ifEmpty { setOf("external_primary") }).forEach { volumeName ->
         val collection = MediaStore.Images.Media.getContentUri(volumeName)
+        val selection = addedAfterSeconds?.let { "${MediaStore.Images.Media.DATE_ADDED} >= ?" }
+        val selectionArgs = addedAfterSeconds?.let { arrayOf(it.toString()) }
         runCatching {
             context.contentResolver.query(
                 collection,
                 arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.RELATIVE_PATH, MediaStore.MediaColumns.SIZE),
-                null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC",
+                selection, selectionArgs, "${MediaStore.Images.Media.DATE_ADDED} DESC",
             )?.use { cursor ->
                 while (cursor.moveToNext()) {
                     val item = PhotoItem(
@@ -3204,22 +3820,32 @@ private fun queryAllPhotos(context: Context, categories: List<Category>): List<P
             }
         }
     }
-    categories.forEach { category ->
+
+    categories.filter { it.folderUri != null }.forEach { category ->
         queryPhotos(context, category).forEach { item -> byUri.putIfAbsent(item.uri.toString(), item) }
     }
     return byUri.values.sortedByDescending { it.dateMillis }
 }
 
-private fun queryAllVideos(context: Context): List<VideoItem> {
+private fun mergePhotos(existing: List<PhotoItem>, additions: List<PhotoItem>): List<PhotoItem> {
+    val byUri = LinkedHashMap<String, PhotoItem>(existing.size + additions.size)
+    existing.forEach { byUri[it.uri.toString()] = it }
+    additions.forEach { byUri[it.uri.toString()] = it }
+    return byUri.values.sortedByDescending { it.dateMillis }
+}
+
+private fun queryAllVideos(context: Context, addedAfterSeconds: Long? = null): List<VideoItem> {
     val videos = mutableListOf<VideoItem>()
     val volumes = runCatching { MediaStore.getExternalVolumeNames(context) }.getOrDefault(emptySet())
     (volumes.ifEmpty { setOf("external_primary") }).forEach { volumeName ->
         val collection = MediaStore.Video.Media.getContentUri(volumeName)
+        val selection = addedAfterSeconds?.let { "${MediaStore.Video.Media.DATE_ADDED} >= ?" }
+        val selectionArgs = addedAfterSeconds?.let { arrayOf(it.toString()) }
         runCatching {
             context.contentResolver.query(
                 collection,
                 arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_ADDED, MediaStore.MediaColumns.SIZE, MediaStore.Video.Media.RELATIVE_PATH),
-                null, null, "${MediaStore.Video.Media.DATE_ADDED} DESC",
+                selection, selectionArgs, "${MediaStore.Video.Media.DATE_ADDED} DESC",
             )?.use { cursor ->
                 while (cursor.moveToNext()) {
                     videos += VideoItem(
@@ -3235,6 +3861,13 @@ private fun queryAllVideos(context: Context): List<VideoItem> {
         }
     }
     return videos.sortedByDescending { it.dateMillis }
+}
+
+private fun mergeVideos(existing: List<VideoItem>, additions: List<VideoItem>): List<VideoItem> {
+    val byUri = LinkedHashMap<String, VideoItem>(existing.size + additions.size)
+    existing.forEach { byUri[it.uri.toString()] = it }
+    additions.forEach { byUri[it.uri.toString()] = it }
+    return byUri.values.sortedByDescending { it.dateMillis }
 }
 private fun queryMediaStorage(context: Context): MediaStorage = MediaStorage(
     photoBytes = queryMediaBytes(context, MediaStore.Images.Media.EXTERNAL_CONTENT_URI),
@@ -3280,7 +3913,7 @@ private fun deletePhoto(context: Context, photo: PhotoItem): Boolean = runCatchi
 private data class MediaStoreTarget(val volumeName: String, val relativePath: String)
 
 private fun mediaStoreTarget(target: Category): MediaStoreTarget? {
-    if (target.folderUri == null) return MediaStoreTarget("external_primary", "DCIM/${target.name}/")
+    if (target.folderUri == null) return MediaStoreTarget("external_primary", target.relativePath ?: "DCIM/${target.name}/")
     val targetUri = Uri.parse(target.folderUri)
     val documentId = runCatching { DocumentsContract.getDocumentId(targetUri) }
         .getOrElse { runCatching { DocumentsContract.getTreeDocumentId(targetUri) }.getOrNull() }
@@ -3297,16 +3930,16 @@ private fun mediaStoreTarget(target: Category): MediaStoreTarget? {
 
 private fun moveMediaStoreItem(context: Context, uri: Uri, target: Category): Boolean? {
     if (uri.authority != "media") return null
-    val destination = mediaStoreTarget(target) ?: return null
+    val destination = (if (target.relativePath == null) mediaStoreTarget(target) else MediaStoreTarget("external_primary", target.relativePath.let { if (it.endsWith("/")) it else "$it/" })) ?: return null
     val sourceVolume = runCatching { MediaStore.getVolumeName(uri) }.getOrNull() ?: return null
     if (!sourceVolume.equals(destination.volumeName, ignoreCase = true)) return null
     val values = ContentValues().apply { put(MediaStore.MediaColumns.RELATIVE_PATH, destination.relativePath) }
     return context.contentResolver.update(uri, values, null, null) > 0
 }
 
-private fun movePhoto(context: Context, photo: PhotoItem, target: Category): Boolean {
-    val targetKey = target.folderUri ?: "DCIM/${target.name}"
-    if (photo.sourceKey == targetKey) return true
+private fun movePhoto(context: Context, photo: PhotoItem, target: Category, onMoved: (PhotoItem) -> Unit = {}): Boolean {
+    val targetKey = target.folderUri ?: target.relativePath ?: "DCIM/${target.name}"
+    if (photo.sourceKey?.trimEnd('/' ) == targetKey.trimEnd('/')) return true
     val resolver = context.contentResolver
     if (target.folderUri != null && DocumentsContract.isDocumentUri(context, photo.uri) && photo.sourceKey != null) {
         val sourceParent = Uri.parse(photo.sourceKey)
@@ -3315,11 +3948,17 @@ private fun movePhoto(context: Context, photo: PhotoItem, target: Category): Boo
             val movedUri = runCatching {
                 DocumentsContract.moveDocument(resolver, photo.uri, sourceParent, targetParent)
             }.getOrNull()
-            if (movedUri != null) return true
+            if (movedUri != null) {
+                onMoved(photo.copy(uri = movedUri, sourceKey = targetKey))
+                return true
+            }
         }
     }
     val directMove = moveMediaStoreItem(context, photo.uri, target)
-    if (directMove != null) return directMove
+    if (directMove != null) {
+        if (directMove) onMoved(photo.copy(sourceKey = targetKey))
+        return directMove
+    }
     val targetUri = runCatching {
         if (target.folderUri != null) {
             DocumentsContract.createDocument(resolver, Uri.parse(target.folderUri), resolver.getType(photo.uri) ?: "image/jpeg", photo.name)
@@ -3344,8 +3983,17 @@ private fun movePhoto(context: Context, photo: PhotoItem, target: Category): Boo
         runCatching { deletePhoto(context, PhotoItem(targetUri, photo.name)) }
         return false
     }
+    onMoved(photo.copy(uri = targetUri, sourceKey = targetKey))
     return true
 }
+
+private fun photoSourceCategory(photo: PhotoItem): Category? {
+    val sourceKey = photo.sourceKey?.takeIf { it.isNotBlank() } ?: return null
+    if (sourceKey.startsWith("content://")) return Category("Original", folderUri = sourceKey)
+    val path = sourceKey.trimEnd('/')
+    return Category(path.substringAfterLast('/').ifBlank { "Original" }, relativePath = "$path/")
+}
+
 private fun moveVideoToCategory(context: Context, video: VideoItem, target: Category): Boolean {
     val directMove = moveMediaStoreItem(context, video.uri, target)
     if (directMove != null) return directMove
