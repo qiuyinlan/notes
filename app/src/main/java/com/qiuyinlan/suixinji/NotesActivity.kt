@@ -879,18 +879,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
             imageUris = (imageUris + uri.toString()).distinct()
         }
     }
-    val formatIcons = listOf(
-        Icons.Filled.FormatBold, Icons.Filled.FormatItalic, Icons.Filled.FormatUnderlined,
-        Icons.Filled.StrikethroughS, Icons.Filled.FormatQuote, Icons.Filled.Remove,
-        Icons.Filled.MoreVert, Icons.Filled.MoreVert, Icons.Filled.MoreVert,
-        Icons.Filled.MoreVert, Icons.Filled.Undo, Icons.Filled.Redo,
-    )
-    var formatIconIndex = 0
-    @Composable
-    fun DropdownMenuItem(text: @Composable () -> Unit, enabled: Boolean = true, onClick: () -> Unit) {
-        val icon = formatIcons.getOrNull(formatIconIndex++) ?: Icons.Filled.MoreVert
-        androidx.compose.material3.DropdownMenuItem(text = text, leadingIcon = { Icon(icon, null) }, enabled = enabled, onClick = onClick)
-    }
     Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = NotePaper) {
             Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -914,42 +902,21 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     Box {
                         IconButton(onClick = { showMoreFormatting = true }) { Icon(Icons.Filled.MoreVert, "更多格式") }
                         DropdownMenu(expanded = showMoreFormatting, onDismissRequest = { showMoreFormatting = false }) {
-                            DropdownMenuItem(text = { Text("粗体") }, onClick = { wrapSelection("**"); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text("斜体") }, onClick = { wrapSelection("*"); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text("下划线") }, onClick = { wrapSelection("<u>", "</u>"); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text("删除线") }, onClick = { wrapSelection("~~"); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text("引用") }, onClick = { prefixCurrentLine("> "); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text("分隔线") }, onClick = {
-                                val insertion = if (text.text.isBlank()) "---\n" else "\n\n---\n"
-                                replaceEditorText(TextFieldValue(text.text + insertion, TextRange(text.text.length + insertion.length)))
-                                showMoreFormatting = false
-                            })
-                            DropdownMenuItem(text = { Text("行内代码") }, onClick = { wrapSelection("`"); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text("代码块") }, onClick = {
-                                prefixCurrentLine("```\n")
-                                replaceEditorText(TextFieldValue(text.text + "\n```", TextRange(text.text.length + 4)))
-                                showMoreFormatting = false
-                            })
-                            DropdownMenuItem(text = { Text("无序列表") }, onClick = { prefixCurrentLine("- "); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text("有序列表") }, onClick = { prefixCurrentLine("1. "); showMoreFormatting = false })
-                            DropdownMenuItem(text = { Text("撤销") }, enabled = undoStack.isNotEmpty(), onClick = {
-                                if (undoStack.isNotEmpty()) {
-                                    val current = text
-                                    val previous = undoStack.removeAt(undoStack.lastIndex)
-                                    redoStack.add(current)
-                                    text = previous
-                                }
-                                showMoreFormatting = false
-                            })
-                            DropdownMenuItem(text = { Text("重做") }, enabled = redoStack.isNotEmpty(), onClick = {
-                                if (redoStack.isNotEmpty()) {
-                                    val current = text
-                                    val next = redoStack.removeAt(redoStack.lastIndex)
-                                    undoStack.add(current)
-                                    text = next
-                                }
-                                showMoreFormatting = false
-                            })
+                            Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                IconButton(onClick = { wrapSelection("**"); showMoreFormatting = false }) { Icon(Icons.Filled.FormatBold, "粗体") }
+                                IconButton(onClick = { wrapSelection("*"); showMoreFormatting = false }) { Icon(Icons.Filled.FormatItalic, "斜体") }
+                                IconButton(onClick = { wrapSelection("<u>", "</u>"); showMoreFormatting = false }) { Icon(Icons.Filled.FormatUnderlined, "下划线") }
+                                IconButton(onClick = { wrapSelection("~~"); showMoreFormatting = false }) { Icon(Icons.Filled.StrikethroughS, "删除线") }
+                                IconButton(onClick = { prefixCurrentLine("> "); showMoreFormatting = false }) { Icon(Icons.Filled.FormatQuote, "引用") }
+                                IconButton(enabled = undoStack.isNotEmpty(), onClick = {
+                                    if (undoStack.isNotEmpty()) { val current = text; val previous = undoStack.removeAt(undoStack.lastIndex); redoStack.add(current); text = previous }
+                                    showMoreFormatting = false
+                                }) { Icon(Icons.Filled.Undo, "撤销") }
+                                IconButton(enabled = redoStack.isNotEmpty(), onClick = {
+                                    if (redoStack.isNotEmpty()) { val current = text; val next = redoStack.removeAt(redoStack.lastIndex); undoStack.add(current); text = next }
+                                    showMoreFormatting = false
+                                }) { Icon(Icons.Filled.Redo, "重做") }
+                            }
                         }
                     }
                 }
@@ -1526,7 +1493,10 @@ private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
 private object MarkdownVisualTransformation : VisualTransformation {
     override fun filter(text: androidx.compose.ui.text.AnnotatedString): TransformedText {
         val styled = buildAnnotatedString {
-            append(text.text)
+            text.text.forEachIndexed { index, character ->
+                val atLineStart = index == 0 || text.text[index - 1] == '\n'
+                append(if (character == '-' && atLineStart && text.text.getOrNull(index + 1) == ' ') '•' else character)
+            }
             Regex("(?m)^(#{1,6})\\s+.+$").findAll(text.text).forEach { match ->
                 val level = match.groupValues[1].length
                 addStyle(
