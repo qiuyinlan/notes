@@ -84,6 +84,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SentimentDissatisfied
 import androidx.compose.material.icons.filled.SentimentNeutral
@@ -377,6 +378,7 @@ private fun NotesApp() {
     var editorNote by remember { mutableStateOf<QuickNote?>(null) }
     var commentNote by remember { mutableStateOf<QuickNote?>(null) }
     var letterEditor by remember { mutableStateOf<FutureLetter?>(null) }
+    var renameTarget by remember { mutableStateOf<NoteCategory?>(null) }
 
     fun update(next: NotesState) { state = next; NotesStore.save(context, next) }
     fun noteWithTags(note: QuickNote): QuickNote {
@@ -406,7 +408,7 @@ private fun NotesApp() {
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        drawerContent = { ModalDrawerSheet { DrawerContent(state, page, selectedCategory) { target, category -> page = target; selectedCategory = category; scope.launch { drawerState.close() } } } },
+        drawerContent = { ModalDrawerSheet { DrawerContent(state, page, selectedCategory, onRename = { renameTarget = it }) { target, category -> page = target; selectedCategory = category; scope.launch { drawerState.close() } } } },
     ) {
         Scaffold(
             containerColor = NotePaper,
@@ -423,10 +425,10 @@ private fun NotesApp() {
                 NotesPage.HOME -> HomePage(state, dueLetters, padding, onCapture = { editorNote = it }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { page = NotesPage.MY }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { editorNote = it }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, onAdd = { editorNote = QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)) }, onEdit = { editorNote = it }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { editorNote = it })
-                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDelete = { category ->
-                    val removedIds = state.categories.filter { it.id == category.id || it.path.startsWith("${category.path}/") }.map { it.id }.toSet()
+                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, onSelect = { tagCategory = it }, onEdit = { editorNote = it }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
+                    val removedIds = state.categories.filter { item -> selectedCategories.any { category -> item.id == category.id || item.path.startsWith("${category.path}/") } }.map { it.id }.toSet()
                     update(state.copy(categories = state.categories.filterNot { it.id in removedIds }, notes = state.notes.map { note -> note.copy(categoryIds = note.categoryIds.filterNot { it in removedIds }) }))
-                    tagCategory = state.categories.firstOrNull { it.id == category.parentId }
+                    tagCategory = null
                 })
                 NotesPage.WALK -> WalkPage(state, padding, onEdit = { editorNote = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
                 NotesPage.MY -> MyPage(state, padding, onLetters = { page = NotesPage.LETTERS }, onImport = { bundle ->
@@ -463,6 +465,26 @@ private fun NotesApp() {
     editorNote?.let { note -> QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null }, onSave = { saveNote(it); editorNote = null }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
     letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null }) }
+    renameTarget?.let { category ->
+        RenameCategoryDialog(category, onDismiss = { renameTarget = null }, onSave = { newName ->
+            val cleanName = newName.trim().trimStart('#')
+            if (cleanName.isNotBlank() && !cleanName.contains('/')) {
+                val oldPath = category.path
+                val parentPath = oldPath.substringBeforeLast('/', "")
+                val renamed = state.categories.map { item ->
+                    if (item.id == category.id || item.path.startsWith("$oldPath/")) {
+                        val suffix = item.path.removePrefix(oldPath)
+                        val newPath = "$parentPath${if (parentPath.isBlank()) "" else "/"}$cleanName$suffix"
+                        item.copy(name = if (item.id == category.id) cleanName else item.name, path = newPath)
+                    } else item
+                }
+                update(state.copy(categories = renamed))
+                selectedCategory = selectedCategory?.let { current -> renamed.firstOrNull { it.id == current.id } }
+                tagCategory = tagCategory?.let { current -> renamed.firstOrNull { it.id == current.id } }
+                renameTarget = null
+            }
+        })
+    }
 }
 
 @Composable
@@ -484,7 +506,7 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
 }
 
 @Composable
-private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCategory?, onNavigate: (NotesPage, NoteCategory?) -> Unit) {
+private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCategory?, onRename: (NoteCategory) -> Unit, onNavigate: (NotesPage, NoteCategory?) -> Unit) {
     var expandedTags by remember { mutableStateOf(emptySet<String>()) }
     val rootTags = state.categories.filter { it.parentId == null }
 
@@ -506,6 +528,7 @@ private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCate
                     selected = selected,
                     expandedTags = expandedTags,
                     onToggle = { id -> expandedTags = if (id in expandedTags) expandedTags - id else expandedTags + id },
+                    onRename = onRename,
                     onNavigate = onNavigate,
                 )
             }
@@ -525,6 +548,7 @@ private fun DrawerTagRow(
     selected: NoteCategory?,
     expandedTags: Set<String>,
     onToggle: (String) -> Unit,
+    onRename: (NoteCategory) -> Unit,
     onNavigate: (NotesPage, NoteCategory?) -> Unit,
 ) {
     val children = allCategories.filter { it.parentId == category.id }
@@ -550,13 +574,26 @@ private fun DrawerTagRow(
         Spacer(Modifier.width(8.dp))
         Text("#${category.name}", color = if (selectedRow) NotePrimary else NoteInk, fontWeight = if (selectedRow) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
         Text(noteCount.toString(), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+        IconButton(onClick = { onRename(category) }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "修改标签", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
     }
 
     if (isExpanded) {
         children.forEach { child ->
-            DrawerTagRow(child, allCategories, notes, selected, expandedTags, onToggle, onNavigate)
+            DrawerTagRow(child, allCategories, notes, selected, expandedTags, onToggle, onRename, onNavigate)
         }
     }
+}
+
+@Composable
+private fun RenameCategoryDialog(category: NoteCategory, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var name by remember(category.id) { mutableStateOf(category.name) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("修改标签名") },
+        text = { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("标签名") }) },
+        confirmButton = { TextButton(onClick = { onSave(name) }, enabled = name.trim().isNotBlank()) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -568,16 +605,20 @@ private fun DrawerItem(label: String, icon: androidx.compose.ui.graphics.vector.
 
 @Composable
 private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit, onDelete: (QuickNote) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val visibleNotes = state.notes.sortedByDescending { it.createdAt }.filter { note -> query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) } }
     Column(Modifier.fillMaxSize().padding(padding)) {
         LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             item {
                 Text("时间线", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Text("想到什么，先留下来", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(top = 12.dp), singleLine = true, label = { Text("搜索笔记") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } })
             }
             item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryCard("随记箱", state.notes.count { it.status == "inbox" }, Icons.Filled.Inbox, onOrganize); SummaryCard("今日的信", due.size, Icons.Filled.MailOutline, onLetters) } }
             item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("漫步") } } }
             if (state.notes.isEmpty()) item { EmptyHint("还没有记录，点击底部输入框开始") }
-            items(state.notes.sortedByDescending { it.createdAt }, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }, onDelete = { onDelete(note) }) }
+            if (visibleNotes.isEmpty() && query.isNotBlank()) item { EmptyHint("没有找到匹配的笔记") }
+            items(visibleNotes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }, onDelete = { onDelete(note) }) }
             if (state.categories.isNotEmpty()) item { Text("分类空间", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             if (state.categories.isNotEmpty()) item { LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height(((state.categories.count { it.parentId == null } + 1) / 2 * 88).coerceAtLeast(88).dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(state.categories.filter { it.parentId == null }) { category -> Card(Modifier.fillMaxWidth().height(78.dp).clickable { onCategory(category) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(category.name, fontWeight = FontWeight.Bold); Text("${state.notes.count { category.id in it.categoryIds }} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp)) } } } } }
         }
@@ -674,13 +715,17 @@ private fun TagsPage(
     onEdit: (QuickNote) -> Unit,
     onDeleteNote: (QuickNote) -> Unit,
     onColorChange: (NoteCategory, Int) -> Unit,
-    onDelete: (NoteCategory) -> Unit,
+    onRename: (NoteCategory) -> Unit,
+    onDeleteMany: (Set<NoteCategory>) -> Unit,
 ) {
     var colorTarget by remember { mutableStateOf<NoteCategory?>(null) }
-    var deleteTarget by remember { mutableStateOf<NoteCategory?>(null) }
+    var menuTarget by remember { mutableStateOf<NoteCategory?>(null) }
+    var showBulkDelete by remember { mutableStateOf(false) }
+    var deleteSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var query by rememberSaveable { mutableStateOf("") }
     val categories = state.categories
-    val visible = if (selected == null) categories.filter { it.parentId == null } else categories.filter { it.parentId == selected.id }
-    val notes = selected?.let { category -> state.notes.filter { category.id in it.categoryIds }.sortedByDescending { it.createdAt } }.orEmpty()
+    val visible = (if (selected == null) categories.filter { it.parentId == null } else categories.filter { it.parentId == selected.id }).filter { query.isBlank() || it.name.contains(query, true) || it.path.contains(query, true) }
+    val notes = selected?.let { category -> state.notes.filter { note -> category.id in note.categoryIds && (query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) }) }.sortedByDescending { it.createdAt } }.orEmpty()
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             if (selected != null) IconButton(onClick = { onSelect(categories.firstOrNull { it.id == selected.parentId }) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回上一级") }
@@ -690,18 +735,36 @@ private fun TagsPage(
             }
             if (selected != null) IconButton(onClick = { colorTarget = selected }) { Icon(Icons.Filled.Tune, "调整颜色", tint = NotePrimary) }
         }
+        OutlinedTextField(
+            query,
+            { query = it },
+            Modifier.fillMaxWidth().padding(top = 10.dp),
+            singleLine = true,
+            label = { Text("搜索标签和笔记") },
+            leadingIcon = { Icon(Icons.Filled.Search, null) },
+            trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } },
+        )
         if (visible.isNotEmpty()) {
             LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height((((visible.size + 1) / 2) * 126).coerceAtLeast(126).dp).padding(top = 12.dp), contentPadding = PaddingValues(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(visible, key = { it.id }) { category ->
                     val childCount = categories.count { it.parentId == category.id }
                     val noteCount = state.notes.count { category.id in it.categoryIds }
-                    Surface(color = tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = { onSelect(category) }, onLongClick = { deleteTarget = category })) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                    Surface(color = tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = { onSelect(category) }, onLongClick = { deleteSelection = setOf(category.id); showBulkDelete = true })) {
+                        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
                             Column {
                                 Text(category.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = NoteInk)
                                 Text(category.path, style = MaterialTheme.typography.labelSmall, color = NoteMuted, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                             }
-                            Text("$noteCount 条记录${if (childCount > 0) "  ·  $childCount 个子标签" else ""}", style = MaterialTheme.typography.labelSmall, color = NoteMuted)
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("$noteCount 条记录${if (childCount > 0) "  ·  $childCount 个子标签" else ""}", style = MaterialTheme.typography.labelSmall, color = NoteMuted, modifier = Modifier.weight(1f))
+                                Box {
+                                    IconButton(onClick = { menuTarget = category }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "标签操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
+                                    DropdownMenu(expanded = menuTarget?.id == category.id, onDismissRequest = { menuTarget = null }) {
+                                        DropdownMenuItem(text = { Text("修改名字") }, onClick = { menuTarget = null; onRename(category) })
+                                        DropdownMenuItem(text = { Text("调整颜色") }, onClick = { menuTarget = null; colorTarget = category })
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -735,13 +798,28 @@ private fun TagsPage(
             confirmButton = { TextButton(onClick = { colorTarget = null }) { Text("取消") } },
         )
     }
-    deleteTarget?.let { category ->
+    if (showBulkDelete) {
         AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("清理标签") },
-            text = { Text("长按选中的标签将被删除，标签下的子标签也会移除，笔记正文不会删除。") },
-            confirmButton = { TextButton(onClick = { deleteTarget = null; onDelete(category) }) { Text("删除") } },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+            onDismissRequest = { showBulkDelete = false },
+            title = { Text("选择要删除的标签") },
+            text = {
+                Column {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { deleteSelection = categories.map { it.id }.toSet() }) { Text("全选") }
+                        TextButton(onClick = { deleteSelection = emptySet() }) { Text("清空") }
+                    }
+                    Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                        categories.forEach { category ->
+                            Row(Modifier.fillMaxWidth().clickable { deleteSelection = if (category.id in deleteSelection) deleteSelection - category.id else deleteSelection + category.id }, verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(category.id in deleteSelection, onCheckedChange = null)
+                                Text("#${category.path}", color = NoteInk, modifier = Modifier.padding(vertical = 3.dp))
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(enabled = deleteSelection.isNotEmpty(), onClick = { val selectedCategories = categories.filter { it.id in deleteSelection }.toSet(); showBulkDelete = false; deleteSelection = emptySet(); onDeleteMany(selectedCategories) }) { Text("删除") } },
+            dismissButton = { TextButton(onClick = { showBulkDelete = false; deleteSelection = emptySet() }) { Text("取消") } },
         )
     }
 }
@@ -938,6 +1016,39 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
             text = value
         }
     }
+    fun handleEditorInput(value: TextFieldValue) {
+        val oldText = text.text
+        val newText = value.text
+        val insertedNewline = newText.length == oldText.length + 1 && value.selection.start > 0 && newText.getOrNull(value.selection.start - 1) == '\n'
+        if (!insertedNewline) {
+            replaceEditorText(value)
+            return
+        }
+        val newline = value.selection.start - 1
+        val lineStart = newText.lastIndexOf('\n', (newline - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+        val previousLine = newText.substring(lineStart, newline)
+        val emptyBullet = Regex("^(\\s*)([-*+])\\s*$").find(previousLine)
+        val bullet = Regex("^(\\s*)([-*+])\\s+.+$").find(previousLine)
+        val numbered = Regex("^(\\s*)(\\d+)[.)]\\s+(.+)$").find(previousLine)
+        when {
+            emptyBullet != null -> {
+                val cleaned = newText.removeRange(lineStart, newline)
+                replaceEditorText(TextFieldValue(cleaned, TextRange(value.selection.start - (newline - lineStart))))
+            }
+            bullet != null -> {
+                val prefix = bullet.groupValues[1] + bullet.groupValues[2] + " "
+                val next = newText.substring(0, value.selection.start) + prefix + newText.substring(value.selection.start)
+                replaceEditorText(TextFieldValue(next, TextRange(value.selection.start + prefix.length)))
+            }
+            numbered != null -> {
+                val nextNumber = numbered.groupValues[2].toIntOrNull()?.plus(1) ?: 1
+                val prefix = numbered.groupValues[1] + nextNumber + ". "
+                val next = newText.substring(0, value.selection.start) + prefix + newText.substring(value.selection.start)
+                replaceEditorText(TextFieldValue(next, TextRange(value.selection.start + prefix.length)))
+            }
+            else -> replaceEditorText(value)
+        }
+    }
     fun wrapSelection(prefix: String, suffix: String = prefix) {
         val start = text.selection.start.coerceIn(0, text.text.length)
         val end = text.selection.end.coerceIn(start, text.text.length)
@@ -1033,7 +1144,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                     Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp)) {
                         OutlinedTextField(
                             text,
-                            { replaceEditorText(it) },
+                            { handleEditorInput(it) },
                             Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester),
                             placeholder = { Text("写下此刻的想法…") },
                             maxLines = 30,
@@ -1694,42 +1805,77 @@ private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
 
 private object MarkdownVisualTransformation : VisualTransformation {
     override fun filter(text: androidx.compose.ui.text.AnnotatedString): TransformedText {
-        val styled = buildAnnotatedString {
-            text.text.forEachIndexed { index, character ->
-                val atLineStart = index == 0 || text.text[index - 1] == '\n'
-                append(if (character == '-' && atLineStart && text.text.getOrNull(index + 1) == ' ') '•' else character)
-            }
-            Regex("(?m)^(#{1,6})\\s+.+$").findAll(text.text).forEach { match ->
-                val level = match.groupValues[1].length
-                addStyle(
-                    SpanStyle(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = when (level) { 1 -> 24.sp; 2 -> 21.sp; 3 -> 18.sp; else -> 16.sp },
-                        color = NoteInk,
-                    ),
-                    match.range.first,
-                    match.range.last + 1,
-                )
-            }
-            val inlinePattern = Regex("(\\*\\*|__)(.+?)\\1|(?<!\\*)\\*([^*]+)\\*|~~(.+?)~~|`([^`]+)`|<u>(.+?)</u>|(?<![\\p{L}\\d_])#[\\p{L}\\d][\\p{L}\\d/_-]*(?=\\s|$)")
-            inlinePattern.findAll(text.text).forEach { match ->
-                val style = when {
-                    match.groupValues[1].isNotEmpty() -> SpanStyle(fontWeight = FontWeight.Bold)
-                    match.groupValues[3].isNotEmpty() -> SpanStyle(fontStyle = FontStyle.Italic)
-                    match.groupValues[4].isNotEmpty() -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-                    match.groupValues[5].isNotEmpty() -> SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)
-                    match.groupValues[6].isNotEmpty() -> SpanStyle(textDecoration = TextDecoration.Underline)
-                    else -> SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium)
-                }
-                addStyle(style, match.range.first, match.range.last + 1)
+        val source = text.text
+        val hidden = BooleanArray(source.length)
+        fun hide(start: Int, end: Int) {
+            for (index in start.coerceAtLeast(0) until end.coerceAtMost(source.length)) hidden[index] = true
+        }
+        val inlinePattern = Regex("(\\*\\*|__)(.*?)\\1|(?<!\\*)\\*([^*]*?)\\*|~~(.*?)~~|`([^`]*?)`|<u>(.*?)</u>")
+        inlinePattern.findAll(source).forEach { match ->
+            when {
+                match.groupValues[1].isNotEmpty() -> { val size = match.groupValues[1].length; hide(match.range.first, match.range.first + size); hide(match.range.last + 1 - size, match.range.last + 1) }
+                match.groupValues[3].isNotEmpty() -> { hide(match.range.first, match.range.first + 1); hide(match.range.last, match.range.last + 1) }
+                match.groupValues[4].isNotEmpty() -> { hide(match.range.first, match.range.first + 2); hide(match.range.last + 1 - 2, match.range.last + 1) }
+                match.groupValues[5].isNotEmpty() -> { hide(match.range.first, match.range.first + 1); hide(match.range.last, match.range.last + 1) }
+                match.groupValues[6].isNotEmpty() -> { hide(match.range.first, match.range.first + 3); hide(match.range.last + 1 - 4, match.range.last + 1) }
             }
         }
-        return TransformedText(styled, OffsetMapping.Identity)
+        val sourceToDisplay = IntArray(source.length + 1)
+        val displayToSourceList = mutableListOf<Int>()
+        val display = StringBuilder()
+        source.forEachIndexed { index, character ->
+            sourceToDisplay[index] = display.length
+            if (!hidden[index]) {
+                val atLineStart = index == 0 || source[index - 1] == '\n'
+                display.append(if (character == '-' && atLineStart && source.getOrNull(index + 1) == ' ') '•' else character)
+                displayToSourceList += index
+            }
+        }
+        sourceToDisplay[source.length] = display.length
+        val styled = buildAnnotatedString {
+            append(display.toString())
+            fun styleRange(range: IntRange, style: SpanStyle) {
+                val start = sourceToDisplay[range.first.coerceIn(0, source.length)]
+                val end = sourceToDisplay[(range.last + 1).coerceIn(0, source.length)]
+                if (start < end) addStyle(style, start, end)
+            }
+            Regex("(?m)^(#{1,6})\\s+.+$").findAll(source).forEach { match ->
+                val level = match.groupValues[1].length
+                styleRange(match.range, SpanStyle(fontWeight = FontWeight.Bold, fontSize = when (level) { 1 -> 24.sp; 2 -> 21.sp; 3 -> 18.sp; else -> 16.sp }, color = NoteInk))
+            }
+            inlinePattern.findAll(source).forEach { match ->
+                val contentRange = when {
+                    match.groupValues[2].isNotEmpty() -> match.groups[2]?.range
+                    match.groupValues[3].isNotEmpty() -> match.groups[3]?.range
+                    match.groupValues[4].isNotEmpty() -> match.groups[4]?.range
+                    match.groupValues[5].isNotEmpty() -> match.groups[5]?.range
+                    else -> match.groups[6]?.range
+                }
+                if (contentRange != null) {
+                    val style = when {
+                        match.groupValues[2].isNotEmpty() -> SpanStyle(fontWeight = FontWeight.Bold)
+                        match.groupValues[3].isNotEmpty() -> SpanStyle(fontStyle = FontStyle.Italic)
+                        match.groupValues[4].isNotEmpty() -> SpanStyle(textDecoration = TextDecoration.LineThrough)
+                        match.groupValues[5].isNotEmpty() -> SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)
+                        else -> SpanStyle(textDecoration = TextDecoration.Underline)
+                    }
+                    styleRange(contentRange, style)
+                }
+            }
+            Regex("(?<![\\p{L}\\d_])#[\\p{L}\\d][\\p{L}\\d/_-]*(?=\\s|$)").findAll(source).forEach { match -> styleRange(match.range, SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium)) }
+        }
+        val displayToSource = IntArray(displayToSourceList.size + 1)
+        displayToSourceList.forEachIndexed { index, sourceIndex -> displayToSource[index] = sourceIndex }
+        displayToSource[displayToSource.lastIndex] = source.length
+        return TransformedText(styled, object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int = sourceToDisplay[offset.coerceIn(0, source.length)]
+            override fun transformedToOriginal(offset: Int): Int = displayToSource[offset.coerceIn(0, displayToSource.lastIndex)]
+        })
     }
 }
 
 private fun markdownInline(value: String) = buildAnnotatedString {
-    val pattern = Regex("""(\*\*|__)(.+?)\1|(?<!\*)\*([^*]+)\*|~~(.+?)~~|`([^`]+)`|<u>(.+?)</u>|\[([^]]+)]\([^)]+\)|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/_-]*(?=\s|$)""")
+    val pattern = Regex("""(\*\*|__)(.*?)\1|(?<!\*)\*([^*]*?)\*|~~(.*?)~~|`([^`]*?)`|<u>(.*?)</u>|\[([^]]+)]\([^)]+\)|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/_-]*(?=\s|$)""")
     var cursor = 0
     pattern.findAll(value).forEach { match ->
         append(value.substring(cursor, match.range.first))
