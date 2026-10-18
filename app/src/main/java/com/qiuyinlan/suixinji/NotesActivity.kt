@@ -212,15 +212,15 @@ private val NoteTypography = Typography().copy(
     headlineLarge = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, lineHeight = 24.sp),
     headlineMedium = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 22.sp),
     headlineSmall = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 20.sp),
-    titleLarge = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, lineHeight = 19.sp),
-    titleMedium = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 17.sp),
-    titleSmall = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
-    bodyLarge = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 17.sp),
-    bodyMedium = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, lineHeight = 16.sp),
-    bodySmall = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, lineHeight = 14.sp),
-    labelLarge = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
-    labelMedium = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, lineHeight = 14.sp),
-    labelSmall = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, lineHeight = 13.sp),
+    titleLarge = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 24.sp),
+    titleMedium = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 22.sp),
+    titleSmall = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+    bodyLarge = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
+    bodyMedium = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+    bodySmall = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
+    labelLarge = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+    labelMedium = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
+    labelSmall = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
 )
 private val NoteTagRegex = Regex("(?<![\\p{L}\\d_])#([\\p{L}\\d][\\p{L}\\d/_-]*)(?=\\s|$)")
 private val TagPalette = listOf(
@@ -629,11 +629,11 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
         unselectedTextColor = NoteMuted,
     )
     NavigationBar(modifier = Modifier.height(62.dp), containerColor = Color.White, tonalElevation = 0.dp) {
-        NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页", modifier = Modifier.size(18.dp)) }, label = { Text("首页", fontSize = 10.sp) }, colors = navColors)
-        NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理", modifier = Modifier.size(18.dp)) }, label = { Text("整理", fontSize = 10.sp) }, colors = navColors)
-        NavigationBarItem(page == NotesPage.WALK, { onSelect(NotesPage.WALK) }, icon = { Icon(Icons.Filled.Book, "漫步", modifier = Modifier.size(18.dp)) }, label = { Text("漫步", fontSize = 10.sp) }, colors = navColors)
-        NavigationBarItem(page == NotesPage.TAGS, { onSelect(NotesPage.TAGS) }, icon = { Icon(Icons.Filled.Label, "标签", modifier = Modifier.size(18.dp)) }, label = { Text("标签", fontSize = 10.sp) }, colors = navColors)
-        NavigationBarItem(page == NotesPage.MY || page == NotesPage.LETTERS, { onSelect(NotesPage.MY) }, icon = { Icon(Icons.Filled.Person, "我的", modifier = Modifier.size(18.dp)) }, label = { Text("我的", fontSize = 10.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页", modifier = Modifier.size(20.dp)) }, label = { Text("首页", fontSize = 12.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理", modifier = Modifier.size(20.dp)) }, label = { Text("整理", fontSize = 12.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.WALK, { onSelect(NotesPage.WALK) }, icon = { Icon(Icons.Filled.Book, "漫步", modifier = Modifier.size(20.dp)) }, label = { Text("漫步", fontSize = 12.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.TAGS, { onSelect(NotesPage.TAGS) }, icon = { Icon(Icons.Filled.Label, "标签", modifier = Modifier.size(20.dp)) }, label = { Text("标签", fontSize = 12.sp) }, colors = navColors)
+        NavigationBarItem(page == NotesPage.MY || page == NotesPage.LETTERS, { onSelect(NotesPage.MY) }, icon = { Icon(Icons.Filled.Person, "我的", modifier = Modifier.size(20.dp)) }, label = { Text("我的", fontSize = 12.sp) }, colors = navColors)
     }
 }
 
@@ -704,7 +704,7 @@ private fun DrawerTagRow(
         }
         Icon(Icons.Filled.Label, null, tint = if (selectedRow) NotePrimary else NoteMuted, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text("#${category.name}", color = if (selectedRow) NotePrimary else NoteInk, fontSize = 11.sp, fontWeight = if (selectedRow) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
+        Text("#${category.name}", color = if (selectedRow) NotePrimary else NoteInk, fontSize = 14.sp, fontWeight = if (selectedRow) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
         Text(noteCount.toString(), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
         IconButton(onClick = { onRename(category) }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "修改标签", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
     }
@@ -971,8 +971,8 @@ private fun TagsPage(
                     Surface(color = tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = { onSelect(category) }, onLongClick = { deleteSelection = setOf(category.id); showBulkDelete = true })) {
                         Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
                             Column {
-                                Text(category.name, style = MaterialTheme.typography.titleMedium, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = NoteInk)
-                                Text(category.path, style = MaterialTheme.typography.labelSmall, color = NoteMuted, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                                Text(category.name, style = MaterialTheme.typography.titleMedium, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = NoteInk)
+                                if (category.parentId != null) Text(category.path, style = MaterialTheme.typography.labelSmall, color = NoteMuted, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                             }
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Text("$noteCount 条记录${if (childCount > 0) "  ·  $childCount 个子标签" else ""}", style = MaterialTheme.typography.labelSmall, color = NoteMuted, modifier = Modifier.weight(1f))
