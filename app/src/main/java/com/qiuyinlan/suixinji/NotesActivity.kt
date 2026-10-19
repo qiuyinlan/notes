@@ -8,6 +8,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentUris
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.LocationManager
@@ -51,6 +52,8 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -72,9 +75,11 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -98,8 +103,10 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloseFullscreen
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -116,10 +123,12 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocationOn
@@ -286,7 +295,7 @@ private val NoteTypography = Typography().copy(
     labelMedium = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
     labelSmall = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
 )
-private val NoteTagRegex = Regex("(?<![\\p{L}\\d_])#([\\p{L}\\d][\\p{L}\\d/._-]*)(?=\\s|$)")
+private val NoteTagRegex = Regex("(?<![\\p{L}\\d_])#([\\p{L}\\d](?:[\\p{L}\\d/._-]*[\\p{L}\\d])?)(?=$|[^\\p{L}\\d/._-])")
 private val NoteReferenceRegex = Regex("\\[\\[note:([^|\\]]+)\\|([^\\]]*)]]")
 private val TagPalette = listOf(
     0xFFE8D5C4.toInt(), 0xFFD8E2DC.toInt(), 0xFFF6E7CB.toInt(), 0xFFD9E4F5.toInt(),
@@ -342,6 +351,44 @@ private data class NotesState(
     val diaries: List<Diary> = emptyList(),
     val letters: List<FutureLetter> = emptyList(),
 )
+
+private fun noteTagPaths(note: QuickNote, categories: List<NoteCategory>): List<String> =
+    (note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path } +
+        NoteTagRegex.findAll(note.content).map { it.groupValues[1] }).distinct()
+
+private fun noteLeafTags(note: QuickNote, categories: List<NoteCategory>): List<NoteCategory> {
+    val paths = noteTagPaths(note, categories)
+    return paths.filterNot { path -> paths.any { other -> other.startsWith("$path/") } }
+        .map { path -> categories.firstOrNull { it.path == path } ?: NoteCategory("inline:$path", path.substringAfterLast('/'), null, path) }
+}
+
+private fun noteReferences(note: QuickNote, allNotes: List<QuickNote>): List<QuickNote> =
+    NoteReferenceRegex.findAll(note.content)
+        .mapNotNull { match -> allNotes.firstOrNull { it.id == match.groupValues[1] } }
+        .distinctBy { it.id }
+        .toList()
+
+private fun indexExistingNoteTags(state: NotesState): NotesState {
+    val categories = state.categories.toMutableList()
+    val notes = state.notes.map { note ->
+        val ids = note.categoryIds.toMutableList()
+        NoteTagRegex.findAll(note.content).forEach { match ->
+            var parentId: String? = null
+            var path = ""
+            match.groupValues[1].split('/').filter { it.isNotBlank() }.forEach { name ->
+                path = if (path.isBlank()) name else "$path/$name"
+                val category = categories.firstOrNull { it.path == path } ?: NoteCategory(UUID.randomUUID().toString(), name, parentId, path).also { categories += it }
+                if (category.id !in ids) ids += category.id
+                parentId = category.id
+            }
+        }
+        note.copy(categoryIds = ids.distinct())
+    }
+    return state.copy(notes = notes, categories = categories)
+}
+
+private fun noteHasCategoryPath(note: QuickNote, path: String, categories: List<NoteCategory>): Boolean =
+    noteTagPaths(note, categories).any { it == path || it.startsWith("$path/") }
 
 private fun JSONObject.toQuickNote(): QuickNote = QuickNote(
     id = optString("id"),
@@ -536,6 +583,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     var page by remember { mutableStateOf(NotesPage.HOME) }
     var favoriteWidgetId by remember { mutableStateOf<Int?>(null) }
     var selectedCategory by remember { mutableStateOf<NoteCategory?>(null) }
+    var categoryReturnPage by remember { mutableStateOf(NotesPage.TAGS) }
     var tagCategory by remember { mutableStateOf<NoteCategory?>(null) }
     var editorNote by remember { mutableStateOf<QuickNote?>(null) }
     var editorReturnPage by remember { mutableStateOf(NotesPage.HOME) }
@@ -549,18 +597,24 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     var showHomeSearch by rememberSaveable { mutableStateOf(false) }
     var showTagsSearch by rememberSaveable { mutableStateOf(false) }
     var showCategorySearch by rememberSaveable { mutableStateOf(false) }
+    var showGlobalSearch by remember { mutableStateOf(false) }
     var newCategoryParent by remember { mutableStateOf<NoteCategory?>(null) }
     var showNewCategory by remember { mutableStateOf(false) }
     var showTagActions by remember { mutableStateOf(false) }
 
     BackHandler(
-        enabled = page != NotesPage.HOME && editorNote == null && commentNote == null && letterEditor == null && renameTarget == null && !showNewCategory,
+        enabled = showGlobalSearch || (page != NotesPage.HOME && editorNote == null && commentNote == null && letterEditor == null && renameTarget == null && !showNewCategory),
     ) {
-        when (page) {
+        if (showGlobalSearch) showGlobalSearch = false else when (page) {
             NotesPage.LETTERS -> { page = lettersReturnPage; selectedCategory = null }
             NotesPage.CATEGORY -> {
-                val parent = selectedCategory?.parentId?.let { id -> state.categories.firstOrNull { it.id == id } }
-                if (parent != null) selectedCategory = parent else { page = NotesPage.TAGS; selectedCategory = null }
+                if (categoryReturnPage == NotesPage.HOME) {
+                    page = NotesPage.HOME
+                    selectedCategory = null
+                } else {
+                    val parent = selectedCategory?.parentId?.let { id -> state.categories.firstOrNull { it.id == id } }
+                    if (parent != null) selectedCategory = parent else { page = categoryReturnPage; selectedCategory = null }
+                }
                 showCategorySearch = false
             }
             NotesPage.TAGS -> {
@@ -580,6 +634,10 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     }
 
     fun update(next: NotesState) { state = next; NotesStore.save(context, next); NoteWidgets.refreshAll(context) }
+    LaunchedEffect(Unit) {
+        val indexed = indexExistingNoteTags(state)
+        if (indexed != state) update(indexed)
+    }
     fun restoreFromTrash(noteId: String): Boolean {
         val deleted = state.trash.firstOrNull { it.note.id == noteId } ?: return false
         val restored = if (deleted.note.pinned && state.notes.count { it.pinned } >= MAX_PINNED_NOTES) deleted.note.copy(pinned = false) else deleted.note
@@ -667,8 +725,13 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     fun navigateBackFromPage() {
         when (page) {
             NotesPage.CATEGORY -> {
-                val parent = selectedCategory?.parentId?.let { id -> state.categories.firstOrNull { it.id == id } }
-                if (parent != null) selectedCategory = parent else { selectedCategory = null; page = NotesPage.TAGS }
+                if (categoryReturnPage == NotesPage.HOME) {
+                    selectedCategory = null
+                    page = NotesPage.HOME
+                } else {
+                    val parent = selectedCategory?.parentId?.let { id -> state.categories.firstOrNull { it.id == id } }
+                    if (parent != null) selectedCategory = parent else { selectedCategory = null; page = categoryReturnPage }
+                }
             }
             NotesPage.TAGS -> {
                 val parent = tagCategory?.parentId?.let { id -> state.categories.firstOrNull { it.id == id } }
@@ -695,6 +758,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                     },
                 ) { target, category ->
                     if (target != NotesPage.FAVORITES) favoriteWidgetId = null
+                    if (target == NotesPage.CATEGORY) categoryReturnPage = NotesPage.TAGS
                     page = target
                     selectedCategory = category
                     scope.launch { drawerState.close() }
@@ -770,9 +834,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                     },
                     actions = {
                         when (page) {
-                            NotesPage.HOME -> IconButton(onClick = { showHomeSearch = !showHomeSearch }) { Icon(Icons.Filled.Search, "搜索笔记") }
-                            NotesPage.TAGS -> IconButton(onClick = { showTagsSearch = !showTagsSearch }) { Icon(Icons.Filled.Search, "搜索标签和笔记") }
-                            NotesPage.CATEGORY -> IconButton(onClick = { showCategorySearch = !showCategorySearch }) { Icon(Icons.Filled.Search, "搜索当前标签") }
+                            NotesPage.HOME, NotesPage.TAGS, NotesPage.CATEGORY -> IconButton(onClick = { showGlobalSearch = true }) { Icon(Icons.Filled.Search, "搜索标签和笔记") }
                             else -> Unit
                         }
                     },
@@ -817,7 +879,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
             },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { lettersReturnPage = NotesPage.HOME; page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote)
+                NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; categoryReturnPage = NotesPage.HOME; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { lettersReturnPage = NotesPage.HOME; page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote)
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onSaveNote = ::saveNote, onEdit = { openEditor(it, NotesPage.ORGANIZER) }, onDelete = { deleteNote(it, showUndoNotice = false) }, onDismissDeleteNotice = { snackbarHostState.currentSnackbarData?.dismiss() })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onTogglePinned = { category ->
@@ -876,6 +938,15 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                 NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onBack = { page = lettersReturnPage }, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
         }
+    }
+    if (showGlobalSearch) {
+        SearchBrowserDialog(
+            notes = state.notes,
+            categories = state.categories,
+            onDismiss = { showGlobalSearch = false },
+            onSelectNote = null,
+            onEditNote = { selected -> showGlobalSearch = false; openEditor(selected, page) },
+        )
     }
     editorNote?.let { note -> key(note.id) { QuickNoteEditor(
         note,
@@ -1190,9 +1261,9 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
                 } else {
                     onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(pinned = !current.pinned) else current }))
                 }
-            }) }
+            }, allNotes = state.notes, onTagClick = onCategory) }
             if (state.categories.isNotEmpty()) item { Text("分类空间", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
-            if (state.categories.isNotEmpty()) item { LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height(((state.categories.count { it.parentId == null } + 1) / 2 * 88).coerceAtLeast(88).dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(state.categories.filter { it.parentId == null }) { category -> Card(Modifier.fillMaxWidth().height(78.dp).clickable { onCategory(category) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(category.name, fontWeight = FontWeight.Bold); Text("${state.notes.count { category.id in it.categoryIds }} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp)) } } } } }
+            if (state.categories.isNotEmpty()) item { LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height(((state.categories.count { it.parentId == null } + 1) / 2 * 88).coerceAtLeast(88).dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(state.categories.filter { it.parentId == null }) { category -> Card(Modifier.fillMaxWidth().height(78.dp).clickable { onCategory(category) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(category.name, fontWeight = FontWeight.Bold); Text("${state.notes.count { noteHasCategoryPath(it, category.path, state.categories) }} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp)) } } } } }
         }
         Box(Modifier.fillMaxWidth().background(NotePaper).padding(horizontal = 16.dp, vertical = 6.dp).clickable {
             val now = System.currentTimeMillis()
@@ -1291,11 +1362,13 @@ private fun NoteActionMenuItem(
 }
 
 @Composable
-private fun NoteOverflowMenu(note: QuickNote, onToggleFavorite: () -> Unit, onTogglePinned: (() -> Unit)?, onDelete: () -> Unit, showDeleteDialog: Boolean, onDeleteDialogChange: (Boolean) -> Unit) {
+private fun NoteOverflowMenu(note: QuickNote, onToggleFavorite: () -> Unit, onTogglePinned: (() -> Unit)?, onDelete: () -> Unit, showDeleteDialog: Boolean, onDeleteDialogChange: (Boolean) -> Unit, onFlip: () -> Unit = {}) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showActions by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { showActions = true }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.MoreVert, "笔记操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onFlip, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.Flip, "翻转卡片", tint = NotePrimary, modifier = Modifier.size(19.dp)) }
+        Box {
+            IconButton(onClick = { showActions = true }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.MoreVert, "笔记操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
         NotePopupMenu(expanded = showActions, onDismissRequest = { showActions = false }, compact = true) {
             NoteActionMenuItem("复制全文", icon = { Icon(Icons.Filled.ContentCopy, null, tint = NoteMuted, modifier = Modifier.size(18.dp)) }, onClick = {
                 showActions = false
@@ -1307,17 +1380,19 @@ private fun NoteOverflowMenu(note: QuickNote, onToggleFavorite: () -> Unit, onTo
             if (onTogglePinned != null) NoteActionMenuItem(if (note.pinned) "取消置顶" else "置顶", icon = { Icon(Icons.Filled.PushPin, null, tint = NoteMuted, modifier = Modifier.size(18.dp)) }, onClick = { showActions = false; onTogglePinned() })
             NoteActionMenuItem("删除", icon = { Icon(Icons.Filled.DeleteOutline, null, tint = Color(0xFFB3261E), modifier = Modifier.size(18.dp)) }, onClick = { showActions = false; onDeleteDialogChange(true) }, destructive = true)
         }
+        }
     }
     if (showDeleteDialog) AlertDialog(onDismissRequest = { onDeleteDialogChange(false) }, title = { Text("删除笔记") }, text = { Text("确定删除这条笔记吗？") }, confirmButton = { TextButton(onClick = { onDeleteDialogChange(false); onDelete() }) { Text("删除") } }, dismissButton = { TextButton(onClick = { onDeleteDialogChange(false) }) { Text("取消") } })
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
-private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, onEdit: (QuickNote) -> Unit, onToggleComment: (Int) -> Unit, onComment: () -> Unit = {}, onToggleFavorite: () -> Unit = {}, onDelete: () -> Unit = {}, onTogglePinned: (() -> Unit)? = null, modifier: Modifier = Modifier) {
+private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, onEdit: (QuickNote) -> Unit, onToggleComment: (Int) -> Unit, onComment: () -> Unit = {}, onToggleFavorite: () -> Unit = {}, onDelete: () -> Unit = {}, onTogglePinned: (() -> Unit)? = null, allNotes: List<QuickNote> = emptyList(), modifier: Modifier = Modifier, onTagClick: (NoteCategory) -> Unit = {}) {
     var expanded by rememberSaveable(note.id) { mutableStateOf(false) }
+    var flipped by rememberSaveable(note.id) { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     val longText = note.content.length > 180 || note.content.count { it == '\n' } > 6
-    Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }, onLongClick = { showDeleteDialog = true }), colors = CardDefaults.cardColors(containerColor = if (note.pinned) Color(0xFFE5DED5) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 5.dp)) {
+    Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText && !flipped) expanded = !expanded }, onDoubleClick = { if (!flipped) onEdit(note) }, onLongClick = { flipped = !flipped }), colors = CardDefaults.cardColors(containerColor = if (note.pinned) Color(0xFFE5DED5) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 5.dp)) {
         Column(Modifier.padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
@@ -1326,13 +1401,48 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
                 Spacer(Modifier.weight(1f))
                 if (note.pinned) Icon(Icons.Filled.PushPin, "已置顶", tint = NoteInk, modifier = Modifier.size(16.dp))
                 if (note.favorite) Icon(Icons.Filled.Favorite, "已收藏", tint = NoteAccent, modifier = Modifier.size(16.dp))
-                NoteOverflowMenu(note, onToggleFavorite, onTogglePinned, onDelete, showDeleteDialog, { showDeleteDialog = it })
+                NoteOverflowMenu(note, onToggleFavorite, onTogglePinned, onDelete, showDeleteDialog, { showDeleteDialog = it }, onFlip = { flipped = !flipped })
             }
-            CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, showEye = true, modifier = Modifier.fillMaxWidth())
-            if (longText) Text(if (expanded) "收起" else "展开", color = NoteTagColor, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Spacer(Modifier.weight(1f)); if (note.comments.isEmpty()) IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
-            val paths = note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }
-            if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
+            NotePreviewFlip(
+                note, categories, allNotes, flipped,
+                modifier = Modifier.fillMaxWidth(),
+                onOpenNote = onEdit,
+                onFlip = { flipped = !flipped },
+                onPreviewClick = { if (longText && !expanded && !flipped) expanded = true },
+                onPreviewDoubleClick = { if (!flipped) onEdit(note) },
+                onPreviewLongClick = { flipped = !flipped },
+            ) {
+                CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, showEye = true, modifier = Modifier.fillMaxWidth())
+                if (longText) Text(if (expanded) "收起" else "展开", color = NoteTagColor, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Spacer(Modifier.weight(1f)); if (note.comments.isEmpty()) IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
+            }
+            val paths = noteTagPaths(note, categories)
+            if (paths.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    paths.forEach { path ->
+                        val category = categories.firstOrNull { it.path == path }
+                            ?: NoteCategory("inline:$path", path.substringAfterLast('/'), null, path)
+                        Surface(
+                            color = Color(0xFFEAF2FB),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.clickable { onTagClick(category) },
+                        ) {
+                            Text(
+                                "#$path",
+                                color = NotePrimary,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1361,20 +1471,238 @@ private fun CommentPreview(comments: List<NoteComment>, onToggle: (Int) -> Unit,
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CommentedNotePreview(content: String, comments: List<NoteComment>, onToggle: (Int) -> Unit, maxLines: Int = Int.MAX_VALUE, showEye: Boolean = true, onDoubleClickComment: (Int) -> Unit = {}, modifier: Modifier = Modifier) {
-    if (comments.isEmpty()) Text(markdownInline(content), modifier = modifier, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
-    else if (content.isBlank()) CommentPreview(comments, onToggle, showEye, onDoubleClickComment, modifier)
-    else {
-        val sorted = comments.withIndex().sortedBy { it.value.position.coerceIn(0, content.length) }
-        Column(modifier) {
+private fun CommentedNotePreview(content: String, comments: List<NoteComment>, onToggle: (Int) -> Unit, maxLines: Int = Int.MAX_VALUE, showEye: Boolean = true, onDoubleClickComment: (Int) -> Unit = {}, modifier: Modifier = Modifier, onClickContent: (() -> Unit)? = null) {
+    Column(modifier) {
+        if (comments.isEmpty()) {
+            ClickableMarkdownText(content, maxLines, onClickContent = onClickContent)
+        } else if (content.isBlank()) {
+            CommentPreview(comments, onToggle, showEye, onDoubleClickComment)
+        } else {
+            val sorted = comments.withIndex().sortedBy { it.value.position.coerceIn(0, content.length) }
             var cursor = 0
             sorted.forEach { indexed ->
                 val position = indexed.value.position.coerceIn(cursor, content.length)
-                if (position > cursor) Text(markdownInline(content.substring(cursor, position)), modifier = Modifier.fillMaxWidth(), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+                if (position > cursor) ClickableMarkdownText(content.substring(cursor, position), maxLines, Modifier.fillMaxWidth(), onClickContent)
                 CommentPreview(listOf(indexed.value), { onToggle(indexed.index) }, showEye = showEye, onDoubleClick = { onDoubleClickComment(indexed.index) }, modifier = Modifier.fillMaxWidth())
                 cursor = position
             }
-            if (cursor < content.length) Text(markdownInline(content.substring(cursor)), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+            if (cursor < content.length) ClickableMarkdownText(content.substring(cursor), maxLines, onClickContent = onClickContent)
+        }
+        LinkPreviewCards(content)
+    }
+}
+
+@Composable
+private fun ClickableMarkdownText(value: String, maxLines: Int = Int.MAX_VALUE, modifier: Modifier = Modifier, onClickContent: (() -> Unit)? = null) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val annotated = remember(value) { markdownInline(value) }
+    val singleLink = remember(value) { Regex("\\[([^\\]]+)]\\(([^)]+)\\)").find(value.trim())?.takeIf { it.value == value.trim() } }
+    val linkText: @Composable (Modifier) -> Unit = { textModifier ->
+        ClickableText(
+            text = annotated,
+            modifier = textModifier,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodyLarge.copy(color = NoteInk),
+            onClick = { offset ->
+                val url = annotated.getStringAnnotations("WEB_URL", offset, offset).firstOrNull()?.item
+                if (url != null) openWebLink(context, url) else onClickContent?.invoke()
+            },
+        )
+    }
+    if (singleLink != null) {
+        Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            linkText(Modifier.weight(1f))
+            IconButton(onClick = { openWebLink(context, singleLink.groupValues[2]) }, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Filled.OpenInNew, "在浏览器打开链接", tint = NoteMuted, modifier = Modifier.size(20.dp))
+            }
+        }
+    } else linkText(modifier)
+}
+
+@Composable
+private fun LinkPreviewCards(content: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val links = remember(content) {
+        Regex("\\[([^\\]]+)]\\(([^)]+)\\)").findAll(content)
+            .map { Triple(it.groupValues[1], it.groupValues[2], it.value) }
+            .distinctBy { it.second }
+            .toList()
+    }
+    links.forEach { (title, rawUrl) ->
+        val url = normalizeWebUrl(rawUrl)
+        val host = Uri.parse(url).host.orEmpty()
+        Surface(
+            color = Color.White,
+            shape = RoundedCornerShape(10.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, NoteSoft),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).clickable { openWebLink(context, url) },
+        ) {
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Link, "链接", tint = NotePrimary, modifier = Modifier.size(22.dp))
+                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                    Text(title, color = NoteInk, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(host, color = NoteMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+                }
+                IconButton(onClick = { openWebLink(context, url) }, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Filled.OpenInNew, "在浏览器打开", tint = NoteMuted)
+                }
+            }
+        }
+    }
+}
+
+private fun normalizeWebUrl(value: String): String {
+    val trimmed = value.trim()
+    return if (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true)) trimmed else "https://$trimmed"
+}
+
+private fun openWebLink(context: Context, value: String) {
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(normalizeWebUrl(value))))
+    }.onFailure {
+        Toast.makeText(context, "无法打开这个链接", Toast.LENGTH_SHORT).show()
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun NotePreviewFlip(
+    note: QuickNote,
+    categories: List<NoteCategory>,
+    allNotes: List<QuickNote>,
+    flipped: Boolean,
+    modifier: Modifier = Modifier,
+    onOpenNote: (QuickNote) -> Unit,
+    onFlip: () -> Unit,
+    onPreviewClick: () -> Unit = {},
+    onPreviewDoubleClick: () -> Unit = { onOpenNote(note) },
+    onPreviewLongClick: () -> Unit = onFlip,
+    frontContent: @Composable () -> Unit,
+) {
+    val rotation by animateFloatAsState(if (flipped) 180f else 0f, animationSpec = tween(420), label = "preview-card-flip")
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    Box(modifier.heightIn(max = 420.dp).graphicsLayer { rotationY = rotation; cameraDistance = 12f * density }) {
+        if (rotation < 90f) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .combinedClickable(onClick = onPreviewClick, onDoubleClick = onPreviewDoubleClick, onLongClick = onPreviewLongClick)
+                    .verticalScroll(rememberScrollState()),
+            ) { frontContent() }
+        } else {
+            Surface(
+                Modifier.fillMaxWidth().heightIn(min = 220.dp, max = 420.dp).graphicsLayer { rotationY = 180f },
+                color = Color(0xFFFAF9F7),
+                shape = RoundedCornerShape(10.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, NoteSoft),
+                shadowElevation = 2.dp,
+            ) {
+                NotePreviewConnections(note, categories, allNotes, onOpenNote, onFlip)
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun NotePreviewConnections(
+    note: QuickNote,
+    categories: List<NoteCategory>,
+    allNotes: List<QuickNote>,
+    onOpenNote: (QuickNote) -> Unit,
+    onFlip: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val referenceRequester = remember { BringIntoViewRequester() }
+    val backlinkRequester = remember { BringIntoViewRequester() }
+    val tags = noteLeafTags(note, categories)
+    val linkedNotes = noteReferences(note, allNotes)
+    val backlinks = remember(note.id, allNotes) {
+        allNotes.filter { candidate -> candidate.id != note.id && noteReferences(candidate, listOf(note)).isNotEmpty() }
+            .sortedByDescending { it.updatedAt }
+    }
+    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onFlip, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Filled.Flip, "翻回笔记正面", tint = NotePrimary, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { scope.launch { referenceRequester.bringIntoView() } }, modifier = Modifier.size(36.dp)) {
+                RelationDirectionIcon(forward = true, description = "跳到引用的笔记")
+            }
+            IconButton(onClick = { scope.launch { backlinkRequester.bringIntoView() } }, modifier = Modifier.size(36.dp)) {
+                RelationDirectionIcon(forward = false, description = "跳到被引用的笔记")
+            }
+        }
+        Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+            Text("关联主题", color = NoteInk, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            if (tags.isEmpty()) {
+                Text("暂无关联标签", Modifier.padding(top = 6.dp), color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+            } else {
+                tags.chunked(3).forEach { row ->
+                    Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        row.forEach { category ->
+                            Surface(Modifier.weight(1f).aspectRatio(1f), color = tagColor(category), shape = RoundedCornerShape(7.dp)) {
+                                Box(Modifier.fillMaxSize().padding(6.dp), contentAlignment = Alignment.Center) {
+                                    Text(category.name, color = NoteInk, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                        repeat(3 - row.size) { Spacer(Modifier.weight(1f).aspectRatio(1f)) }
+                    }
+                }
+            }
+            RelationSectionTitle("引用的笔记", forward = true, modifier = Modifier.padding(top = 14.dp).bringIntoViewRequester(referenceRequester))
+            if (linkedNotes.isEmpty()) {
+                Text("暂无引用笔记", Modifier.padding(top = 6.dp), color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+            } else {
+                linkedNotes.forEach { ConnectionNoteCard(it, onOpenNote) }
+            }
+            RelationSectionTitle("被引用的笔记", forward = false, modifier = Modifier.padding(top = 14.dp).bringIntoViewRequester(backlinkRequester))
+            if (backlinks.isEmpty()) {
+                Text("暂无笔记引用这篇记录", Modifier.padding(top = 6.dp), color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+            } else {
+                backlinks.forEach { ConnectionNoteCard(it, onOpenNote) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelationDirectionIcon(forward: Boolean, description: String) {
+    Box(Modifier.size(24.dp)) {
+        Icon(Icons.Filled.Link, description, tint = NotePrimary, modifier = Modifier.align(Alignment.Center).size(20.dp))
+        Surface(color = Color(0xFFFAF9F7), shape = CircleShape, modifier = Modifier.align(Alignment.BottomEnd).size(12.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(if (forward) Icons.AutoMirrored.Filled.ArrowForward else Icons.AutoMirrored.Filled.ArrowBack, description, tint = NotePrimary, modifier = Modifier.size(9.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelationSectionTitle(text: String, forward: Boolean, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        RelationDirectionIcon(forward, text)
+        Text(text, Modifier.padding(start = 6.dp), color = NotePrimary, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun ConnectionNoteCard(note: QuickNote, onOpenNote: (QuickNote) -> Unit) {
+    Card(
+        Modifier.fillMaxWidth().padding(top = 6.dp).clickable { onOpenNote(note) },
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(8.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                moodEmoji(note.mood).takeIf { it.isNotEmpty() }?.let { Text(it, Modifier.padding(start = 6.dp), fontSize = 14.sp) }
+                note.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+            CommentedNotePreview(note.content, note.comments, {}, showEye = false, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), onClickContent = { onOpenNote(note) })
         }
     }
 }
@@ -1400,13 +1728,13 @@ private fun CategoryPage(state: NotesState, category: NoteCategory, padding: Pad
     var query by rememberSaveable(category.id) { mutableStateOf("") }
     val children = state.categories.filter { it.parentId == category.id }
     val visibleChildren = children.filter { query.isBlank() || it.name.contains(query, true) || it.path.contains(query, true) }
-    val notes = state.notes.filter { note -> category.id in note.categoryIds && (query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) }) }
+    val notes = state.notes.filter { note -> noteHasCategoryPath(note, category.path, state.categories) && (query.isBlank() || note.content.contains(query, true) || noteTagPaths(note, state.categories).any { path -> path.contains(query, true) }) }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (searchOpen) item { OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索当前标签") }, leadingIcon = { Icon(Icons.Filled.Search, null) }, trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } }) }
         item { OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("在这里写一条") } }
         if (visibleChildren.isNotEmpty()) { item { Text("子分类", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }; items(visibleChildren) { child -> Surface(Modifier.fillMaxWidth().clickable { onCategory(child) }, color = NoteSoft, shape = RoundedCornerShape(10.dp)) { Text(child.name, modifier = Modifier.padding(14.dp), color = NoteInk, fontWeight = FontWeight.Bold) } } }
         item { Text("本分类记录 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        items(notes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onToggleFavorite = { onToggleFavorite(note) }, onDelete = { onDelete(note) }) }
+        items(notes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onToggleFavorite = { onToggleFavorite(note) }, onDelete = { onDelete(note) }, allNotes = state.notes) }
     }
 }
 
@@ -1440,7 +1768,7 @@ private fun TagsPage(
         categories.filter { it.parentId == selected.id }
     }
     val visible = (pinnedAtRoot + orderedCategories(regularCategories, if (selected == null) state.tagPinnedIds else emptyList())).filter { query.isBlank() || it.name.contains(query, true) || it.path.contains(query, true) }
-    val notes = selected?.let { category -> state.notes.filter { note -> category.id in note.categoryIds && (query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) }) }.sortedByDescending { it.createdAt } }.orEmpty()
+    val notes = selected?.let { category -> state.notes.filter { note -> noteHasCategoryPath(note, category.path, categories) && (query.isBlank() || note.content.contains(query, true) || noteTagPaths(note, categories).any { path -> path.contains(query, true) }) }.sortedByDescending { it.createdAt } }.orEmpty()
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             if (selected != null) IconButton(onClick = { onSelect(categories.firstOrNull { it.id == selected.parentId }) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回上一级") }
@@ -1465,7 +1793,7 @@ private fun TagsPage(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         rowCategories.forEach { category ->
                             val childCount = categories.count { it.parentId == category.id }
-                            val noteCount = state.notes.count { category.id in it.categoryIds }
+                            val noteCount = state.notes.count { noteHasCategoryPath(it, category.path, categories) }
                             val isPinned = category.id in state.tagPinnedIds
                             Surface(color = if (isPinned) pinnedTagColor(category) else tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f).aspectRatio(1.15f).combinedClickable(onClick = { onSelect(category) }, onLongClick = { deleteSelection = setOf(category.id); showBulkDelete = true })) {
                                 Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
@@ -1505,9 +1833,9 @@ private fun TagsPage(
                     Text(if (tagsCollapsed) "展开标签" else "收起", color = NoteTagColor)
                 }
             }
-            Text("${selected.name} 下的笔记 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
+            Text("${selected.name} 及子标签笔记 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
             if (notes.isEmpty()) EmptyHint("这个标签下还没有笔记") else Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 18.dp)) {
-                notes.forEach { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onToggleFavorite = { onToggleFavorite(note) }, onDelete = { onDeleteNote(note) }) }
+                notes.forEach { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onToggleFavorite = { onToggleFavorite(note) }, onDelete = { onDeleteNote(note) }, allNotes = state.notes) }
             }
         } else if (visible.isEmpty()) {
             EmptyHint("还没有标签，记录中添加 #标签 后会自动创建")
@@ -1560,6 +1888,247 @@ private fun TagsPage(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
+private fun SearchBrowserDialog(
+    notes: List<QuickNote>,
+    categories: List<NoteCategory>,
+    onDismiss: () -> Unit,
+    onSelectNote: ((QuickNote) -> Unit)? = null,
+    onEditNote: (QuickNote) -> Unit,
+    onCreateNote: (() -> Unit)? = null,
+) {
+    var query by remember { mutableStateOf("") }
+    var selectedPath by remember { mutableStateOf<String?>(null) }
+    var selectedNoteId by remember { mutableStateOf<String?>(null) }
+    var previewNote by remember { mutableStateOf<QuickNote?>(null) }
+    var sortByUpdate by remember { mutableStateOf(true) }
+    var splitRatio by remember { mutableStateOf(0.44f) }
+    var collapsedPanel by remember { mutableStateOf<Int?>(null) }
+    val currentCategory = selectedPath?.let { path -> categories.firstOrNull { it.path == path } }
+    val childCategories = if (currentCategory == null) {
+        categories.filter { it.parentId == null }
+    } else categories.filter { it.parentId == currentCategory.id }
+    val visibleCategories = (if (query.isBlank()) childCategories else categories.filter { category ->
+        category.path.contains(query, ignoreCase = true) || category.name.contains(query, ignoreCase = true)
+    }).distinctBy { it.id }.sortedBy { it.path }
+    val visibleNotes = remember(notes, categories, query, selectedPath, sortByUpdate) {
+        notes.asSequence()
+            .filter { note -> selectedPath?.let { path -> noteHasCategoryPath(note, path, categories) } ?: true }
+            .filter { note -> query.isBlank() || note.content.contains(query, ignoreCase = true) || noteTagPaths(note, categories).any { it.contains(query, ignoreCase = true) } }
+            .let { results -> if (sortByUpdate) results.sortedByDescending { it.updatedAt } else results.sortedByDescending { it.createdAt } }
+            .toList()
+    }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            Modifier.fillMaxSize().pointerInput(selectedPath, currentCategory) {
+                var startX = 0f
+                var dragDistance = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { start -> startX = start.x; dragDistance = 0f },
+                    onHorizontalDrag = { change, amount ->
+                        if (startX <= 36.dp.toPx() && amount > 0f) {
+                            change.consume()
+                            dragDistance += amount
+                        } else if (startX <= 36.dp.toPx()) {
+                            dragDistance = 0f
+                        }
+                    },
+                    onDragEnd = {
+                        if (startX <= 36.dp.toPx() && dragDistance > 90.dp.toPx()) {
+                            val parent = currentCategory?.parentId?.let { parentId -> categories.firstOrNull { it.id == parentId } }
+                            if (parent != null) {
+                                selectedPath = parent.path
+                                selectedNoteId = null
+                            } else if (selectedPath != null) {
+                                selectedPath = null
+                                selectedNoteId = null
+                            } else {
+                                onDismiss()
+                            }
+                        }
+                        dragDistance = 0f
+                    },
+                    onDragCancel = { dragDistance = 0f },
+                )
+            },
+            color = Color(0xFFF4F3F5),
+        ) {
+            Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IconButton(onClick = { if (selectedPath != null) selectedPath = currentCategory?.parentId?.let { id -> categories.firstOrNull { it.id == id }?.path } else onDismiss() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, if (selectedPath == null) "关闭搜索" else "返回上级标签", tint = NoteInk)
+                    }
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        placeholder = { Text("搜索标签和笔记") },
+                        leadingIcon = { Icon(Icons.Filled.Search, null, tint = NoteMuted) },
+                        trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } },
+                    )
+                    if (onCreateNote != null) IconButton(onClick = onCreateNote) { Icon(Icons.Filled.AddCircleOutline, "新建笔记", tint = NotePrimary) }
+                }
+                if (selectedPath != null) {
+                    Text(currentCategory?.path ?: selectedPath.orEmpty(), color = NoteMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 52.dp, top = 4.dp))
+                }
+                BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+                    val density = androidx.compose.ui.platform.LocalDensity.current
+                    val availableHeightPx = with(density) { maxHeight.toPx() }
+                    Column(Modifier.fillMaxSize()) {
+                        if (collapsedPanel != 1) {
+                            val tagWeight = if (collapsedPanel == 2) 1f else splitRatio
+                            Column(Modifier.fillMaxWidth().weight(tagWeight).padding(top = 6.dp)) {
+                                Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("标签", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = NoteInk)
+                                    Spacer(Modifier.weight(1f))
+                                    Text("${visibleCategories.size} 个", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                }
+                                if (visibleCategories.isNotEmpty()) {
+                                    LazyVerticalGrid(
+                                        columns = GridCells.Fixed(3),
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentPadding = PaddingValues(vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        items(visibleCategories, key = { it.id }) { category ->
+                                            Surface(
+                                                color = tagColor(category),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.fillMaxWidth().aspectRatio(1.15f).clickable { selectedPath = category.path },
+                                            ) {
+                                                Column(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                                                    Text(category.name, color = NoteInk, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                                    Text("${notes.count { noteHasCategoryPath(it, category.path, categories) }} 篇", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if (query.isNotBlank()) {
+                                    Text("没有匹配的标签", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+                                }
+                            }
+                        }
+                        Box(Modifier.fillMaxWidth().height(36.dp)) {
+                            Box(
+                                Modifier.align(Alignment.Center).width(68.dp).height(22.dp)
+                                    .shadow(2.dp, RoundedCornerShape(12.dp))
+                                    .background(Color.White, RoundedCornerShape(12.dp))
+                                    .pointerInput(availableHeightPx, collapsedPanel) {
+                                        detectVerticalDragGestures { change, dragAmount ->
+                                            change.consume()
+                                            if (availableHeightPx > 0f && collapsedPanel == null) {
+                                                splitRatio = (splitRatio + dragAmount / availableHeightPx).coerceIn(0.18f, 0.82f)
+                                            }
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Filled.DragHandle, "拖动调整标签和笔记区域", tint = NoteMuted, modifier = Modifier.size(19.dp))
+                            }
+                            Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { collapsedPanel = if (collapsedPanel == 1) null else 1 }, modifier = Modifier.size(34.dp)) {
+                                    Icon(Icons.Filled.KeyboardArrowUp, "收起标签，仅显示笔记", tint = Color(0xFF3478B8))
+                                }
+                                IconButton(onClick = { collapsedPanel = if (collapsedPanel == 2) null else 2 }, modifier = Modifier.size(34.dp)) {
+                                    Icon(Icons.Filled.KeyboardArrowDown, "收起笔记，仅显示标签", tint = Color(0xFF3478B8))
+                                }
+                            }
+                        }
+                        if (collapsedPanel != 2) {
+                            val noteWeight = if (collapsedPanel == 1) 1f else 1f - splitRatio
+                            Column(Modifier.fillMaxWidth().weight(noteWeight).padding(top = 4.dp)) {
+                                Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(if (currentCategory == null) "相关笔记" else "${currentCategory.name}及子标签笔记", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = NoteInk)
+                                    Spacer(Modifier.weight(1f))
+                                    TextButton(onClick = { sortByUpdate = !sortByUpdate }) {
+                                        Text(if (sortByUpdate) "按更新时间" else "按创建时间", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                                LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
+                                    items(visibleNotes, key = { it.id }) { note ->
+                                        val title = note.content.lineSequence().firstOrNull { it.isNotBlank() }?.take(120) ?: "（空白笔记）"
+                                        Card(
+                                            Modifier.fillMaxWidth().combinedClickable(
+                                                onClick = { if (onSelectNote != null) onSelectNote(note) else selectedNoteId = note.id },
+                                                onDoubleClick = { onEditNote(note) },
+                                                onLongClick = { previewNote = note },
+                                            ),
+                                            colors = CardDefaults.cardColors(containerColor = if (selectedNoteId == note.id) NoteSoft else Color.White),
+                                            shape = RoundedCornerShape(10.dp),
+                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                        ) {
+                                            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                                Text(title, color = NoteInk, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                                val excerpt = note.content.lineSequence().drop(1).firstOrNull { it.isNotBlank() }
+                                                if (!excerpt.isNullOrBlank()) Text(excerpt, Modifier.padding(top = 4.dp), color = NoteMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                                val paths = noteTagPaths(note, categories)
+                                                if (paths.isNotEmpty()) Text(paths.joinToString(" · "), Modifier.padding(top = 5.dp), color = NotePrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Text(prettyTime(if (sortByUpdate) note.updatedAt else note.createdAt), Modifier.padding(top = 5.dp), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                    if (visibleNotes.isEmpty()) item { EmptyHint(if (query.isBlank()) "还没有笔记" else "没有找到相关笔记") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    previewNote?.let { note ->
+        var previewExpanded by remember(note.id) { mutableStateOf(false) }
+        BackHandler(enabled = previewExpanded) { previewExpanded = false }
+        Dialog(onDismissRequest = { previewNote = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            val previewModifier = if (previewExpanded) {
+                Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)
+            } else {
+                Modifier.fillMaxWidth().fillMaxHeight(0.82f).padding(horizontal = 18.dp)
+            }
+            Surface(
+                previewModifier.pointerInput(previewExpanded) {
+                    var dragStartX = 0f
+                    var dragDistance = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { point -> dragStartX = point.x; dragDistance = 0f },
+                        onHorizontalDrag = { change, amount ->
+                            if (dragStartX <= 36.dp.toPx()) {
+                                change.consume()
+                                dragDistance += amount
+                            }
+                        },
+                        onDragEnd = {
+                            if (previewExpanded && dragStartX <= 36.dp.toPx() && dragDistance >= 80.dp.toPx()) previewExpanded = false
+                        },
+                        onDragCancel = { dragDistance = 0f },
+                    )
+                },
+                color = Color.White,
+                shape = if (previewExpanded) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp),
+                shadowElevation = if (previewExpanded) 0.dp else 8.dp,
+            ) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                        Spacer(Modifier.weight(1f))
+                        IconButton(onClick = { previewExpanded = !previewExpanded }) {
+                            Icon(if (previewExpanded) Icons.Filled.CloseFullscreen else Icons.Filled.OpenInFull, if (previewExpanded) "缩小预览" else "全屏查看", tint = NoteMuted)
+                        }
+                        IconButton(onClick = { previewNote = null }) { Icon(Icons.Filled.Close, "关闭预览", tint = NoteMuted) }
+                    }
+                    CommentedNotePreview(note.content, note.comments, {}, showEye = false, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+                    val paths = noteTagPaths(note, categories)
+                    if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 10.dp))
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (NotesState) -> Unit, onSaveNote: (QuickNote) -> Unit, onEdit: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit, onDismissDeleteNotice: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var index by remember { mutableStateOf(0) }
@@ -1599,6 +2168,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
     }
     val currentId = batch.getOrNull(index.coerceAtMost((batch.size - 1).coerceAtLeast(0)))?.id
     val current = currentId?.let { id -> state.notes.firstOrNull { it.id == id } }
+    var organizerFlipped by remember(currentId) { mutableStateOf(false) }
     fun deleteForUndo(note: QuickNote) {
         deleteUndoStack.add(state to note.id)
         undoState = null
@@ -1691,9 +2261,8 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 } else {
                     Text("${index + 1} / ${batch.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
                     Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 8.dp,
-                        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) })) {
-                        SelectionContainer {
-                            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
+                        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { if (!organizerFlipped) onEdit(current) }, onLongClick = { organizerFlipped = !organizerFlipped })) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
                                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                     Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                                     moodEmoji(current.mood).takeIf { it.isNotEmpty() }?.let { Text(it, modifier = Modifier.padding(start = 6.dp), fontSize = 15.sp) }
@@ -1721,13 +2290,15 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                                         onDelete = { deleteForUndo(current) },
                                         showDeleteDialog = showNoteDeleteDialog,
                                         onDeleteDialogChange = { showNoteDeleteDialog = it },
+                                        onFlip = { organizerFlipped = !organizerFlipped },
                                     )
                                 }
                                 Spacer(Modifier.height(10.dp))
-                                CommentedNotePreview(current.content, current.comments, {}, showEye = false)
-                                val paths = current.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }
+                                NotePreviewFlip(current, state.categories, state.notes, organizerFlipped, onOpenNote = onEdit, onFlip = { organizerFlipped = !organizerFlipped }) {
+                                    CommentedNotePreview(current.content, current.comments, {}, showEye = false)
+                                }
+                                val paths = noteTagPaths(current, state.categories)
                                 if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
-                            }
                         }
                     }
                 }
@@ -1764,11 +2335,22 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
     selected?.let { note -> CategoryPicker(state.categories, onDismiss = { selected = null }, onPick = { category -> deleteUndoStack.clear(); undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it })); selected = null; index++ }, onCreate = { raw ->
         val clean = raw.trim().trimStart('#')
         if (clean.isNotBlank()) {
-            val category = state.categories.firstOrNull { it.path == clean } ?: NoteCategory(UUID.randomUUID().toString(), clean.substringAfterLast('/'), null, clean)
+            val updatedCategories = state.categories.toMutableList()
+            var parentId: String? = null
+            var path = ""
+            var category: NoteCategory? = null
+            clean.split('/').filter { it.isNotBlank() }.forEach { part ->
+                path = if (path.isBlank()) part else "$path/$part"
+                val existing = updatedCategories.firstOrNull { it.path == path }
+                val currentCategory = existing ?: NoteCategory(UUID.randomUUID().toString(), part, parentId, path).also { updatedCategories += it }
+                parentId = currentCategory.id
+                category = currentCategory
+            }
+            val selectedCategory = category ?: return@CategoryPicker
             deleteUndoStack.clear()
             undoState = state
             lastWasSkip = false
-            onUpdate(state.copy(categories = if (state.categories.any { it.path == category.path }) state.categories else state.categories + category, notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it }))
+            onUpdate(state.copy(categories = updatedCategories, notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(selectedCategory.id), status = "organized", updatedAt = System.currentTimeMillis()) else it }))
             selected = null
             index++
         }
@@ -1780,13 +2362,49 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
 @Composable
 private fun CategoryPicker(categories: List<NoteCategory>, onDismiss: () -> Unit, onPick: (NoteCategory) -> Unit, onCreate: (String) -> Unit = {}) {
     var newCategory by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("选择分类") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            OutlinedTextField(newCategory, { newCategory = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("新建分类") }, placeholder = { Text("例如：生活/阅读") })
-            if (newCategory.isNotBlank()) TextButton(onClick = { onCreate(newCategory) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("新建并归类") }
-            categories.forEach { category -> TextButton(onClick = { onPick(category) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Folder, null); Spacer(Modifier.width(8.dp)); Text(category.path) } }
-        }
-    }, confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+    var query by remember { mutableStateOf("") }
+    val visibleCategories = categories.sortedBy { it.path }.filter { query.isBlank() || it.path.contains(query, ignoreCase = true) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择标签") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索已有标签") }, leadingIcon = { Icon(Icons.Filled.Search, null) })
+                OutlinedTextField(newCategory, { newCategory = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("新建标签路径") }, placeholder = { Text("例如：生活/阅读") })
+                if (newCategory.isNotBlank()) {
+                    TextButton(onClick = { onCreate(newCategory) }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("新建并归类到 #${newCategory.trim().trimStart('#')}")
+                    }
+                }
+                Text("已有标签", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+                if (visibleCategories.isEmpty()) {
+                    EmptyHint(if (categories.isEmpty()) "还没有标签，可在上方新建" else "没有匹配的标签")
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        items(visibleCategories, key = { it.id }) { category ->
+                            val depth = category.path.count { it == '/' }
+                            Row(
+                                Modifier.fillMaxWidth().padding(start = (depth * 16).dp).clickable { onPick(category) }.padding(horizontal = 8.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Surface(color = tagColor(category), shape = RoundedCornerShape(6.dp), modifier = Modifier.size(30.dp)) {
+                                    Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.Label, null, tint = NoteInk, modifier = Modifier.size(16.dp)) }
+                                }
+                                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                    Text(category.name, color = NoteInk, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (depth > 0) Text(category.path, color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                val hasChildren = categories.any { it.parentId == category.id }
+                                if (hasChildren) Icon(Icons.Filled.KeyboardArrowRight, null, tint = NoteMuted, modifier = Modifier.size(18.dp))
+                            }
+                            HorizontalDivider(color = NoteSoft)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -2482,64 +3100,19 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
         confirmButton = { TextButton(onClick = { val value = tagInput.trim().trimStart('#'); if (value.isNotBlank() && value.split('/').all { it.isNotBlank() }) { insertTagAtCursor(value, text) { text = it }; showTagDialog = false } }) { Text("插入标签") } },
         dismissButton = { TextButton(onClick = { showTagDialog = false }) { Text("取消") } },
     )
-    if (showReferencePicker) {
-        val matchingNotes = remember(allNotes, referenceQuery, referenceSortByUpdate, note.id) {
-            allNotes.asSequence()
-                .filter { it.id != note.id }
-                .filter { referenceQuery.isBlank() || it.content.contains(referenceQuery, ignoreCase = true) }
-                .let { notes -> if (referenceSortByUpdate) notes.sortedByDescending { it.updatedAt } else notes.sortedByDescending { it.createdAt } }
-                .toList()
-        }
-        Dialog(onDismissRequest = { showReferencePicker = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(Modifier.fillMaxSize(), color = Color(0xFFF4F3F5), shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)) {
-                Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 18.dp, vertical = 12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedTextField(
-                            referenceQuery,
-                            { referenceQuery = it },
-                            Modifier.weight(1f),
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            placeholder = { Text("搜索要关联的笔记") },
-                            leadingIcon = { Icon(Icons.Filled.Search, null, tint = NoteMuted) },
-                        )
-                        Button(onClick = {
-                            val now = System.currentTimeMillis()
-                            val created = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList())
-                            onCreateLinkedNote(created)
-                            insertNoteReference(created.copy(content = "新笔记"))
-                        }, shape = RoundedCornerShape(24.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)) {
-                            Icon(Icons.Filled.AddCircleOutline, null, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text("新笔记")
-                        }
-                    }
-                    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.FilterList, null, tint = NoteMuted, modifier = Modifier.size(17.dp))
-                        TextButton(onClick = { referenceSortByUpdate = !referenceSortByUpdate }) {
-                            Text(if (referenceSortByUpdate) "按更新时间" else "按创建时间", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
-                        items(matchingNotes, key = { it.id }) { candidate ->
-                            Card(
-                                Modifier.fillMaxWidth().clickable { insertNoteReference(candidate) },
-                                colors = CardDefaults.cardColors(containerColor = Color.White),
-                                shape = RoundedCornerShape(12.dp),
-                            ) {
-                                Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                                    Text(candidate.content.lineSequence().firstOrNull { it.isNotBlank() }?.take(120) ?: "（空白笔记）", color = NoteInk, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    val excerpt = candidate.content.lineSequence().drop(1).firstOrNull { it.isNotBlank() }
-                                    if (!excerpt.isNullOrBlank()) Text(excerpt, Modifier.padding(top = 6.dp), color = NoteMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    Text(prettyTime(candidate.updatedAt), Modifier.padding(top = 8.dp), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    if (showReferencePicker) SearchBrowserDialog(
+        notes = allNotes.filterNot { it.id == note.id },
+        categories = categories,
+        onDismiss = { showReferencePicker = false },
+        onSelectNote = { insertNoteReference(it) },
+        onEditNote = onOpenLinkedNote,
+        onCreateNote = {
+            val now = System.currentTimeMillis()
+            val created = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList())
+            onCreateLinkedNote(created)
+            insertNoteReference(created.copy(content = "新笔记"))
+        },
+    )
     if (showLinkDialog) {
         Dialog(onDismissRequest = { showLinkDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
             Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.BottomCenter) {
@@ -2833,23 +3406,21 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
     val monthFormat = remember { SimpleDateFormat("yyyy-MM", Locale.CHINA) }
     val months = remember(notes) { notes.map { monthFormat.format(Date(it.createdAt)) }.distinct().sortedDescending() }
     val tags = remember(notes, state.categories) {
-        notes.flatMap { note ->
-            note.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path } + NoteTagRegex.findAll(note.content).map { it.groupValues[1] }.toList()
-        }.distinct().sorted()
+        notes.flatMap { note -> noteTagPaths(note, state.categories) }.distinct().sorted()
     }
     val filteredNotes = remember(notes, filterMode, selectedMonth, selectedTag, state.categories) {
         when (filterMode) {
             WalkFilterMode.RANDOM -> notes
             WalkFilterMode.MONTH -> notes.filter { selectedMonth != null && monthFormat.format(Date(it.createdAt)) == selectedMonth }
             WalkFilterMode.TAG -> notes.filter { note ->
-                val noteTags = note.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path } + NoteTagRegex.findAll(note.content).map { it.groupValues[1] }.toList()
-                selectedTag != null && selectedTag in noteTags
+                selectedTag != null && noteTagPaths(note, state.categories).any { it == selectedTag || it.startsWith("$selectedTag/") }
             }
         }
     }
     var index by remember(filteredNotes.map { it.id }) { mutableStateOf(filteredNotes.indices.randomOrNull() ?: 0) }
     val current = filteredNotes.getOrNull(index.coerceIn(0, (filteredNotes.size - 1).coerceAtLeast(0)))
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var walkFlipped by remember(current?.id) { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp).pointerInput(current?.id) {
         if (current != null) {
             var dragDistance = 0f
@@ -2919,7 +3490,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             Surface(
                 color = Color.White,
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) }, onLongClick = { showDeleteDialog = true }),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).combinedClickable(onClick = {}, onDoubleClick = { if (!walkFlipped) onEdit(current) }, onLongClick = { walkFlipped = !walkFlipped }),
             ) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2937,9 +3508,12 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
                             onDelete = { onDelete(current) },
                             showDeleteDialog = showDeleteDialog,
                             onDeleteDialogChange = { showDeleteDialog = it },
+                            onFlip = { walkFlipped = !walkFlipped },
                         )
                     }
-                    CommentedNotePreview(current.content, current.comments, {}, showEye = false, modifier = Modifier.fillMaxWidth().padding(top = 16.dp))
+                    NotePreviewFlip(current, state.categories, state.notes, walkFlipped, modifier = Modifier.fillMaxWidth().padding(top = 16.dp), onOpenNote = onEdit, onFlip = { walkFlipped = !walkFlipped }) {
+                        CommentedNotePreview(current.content, current.comments, {}, showEye = false)
+                    }
                 }
             }
             if (index == 0 || index == filteredNotes.lastIndex) Text(if (filteredNotes.size == 1) "当前只有这一篇" else if (index == 0) "已经到达最早的笔记" else "已经到达最新的笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
@@ -3721,7 +4295,13 @@ private fun markdownInline(value: String) = buildAnnotatedString {
             match.groupValues[4].isNotEmpty() -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(match.groupValues[4]) }
             match.groupValues[5].isNotEmpty() -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = NoteSoft)) { append(match.groupValues[5]) }
             match.groupValues[6].isNotEmpty() -> withStyle(SpanStyle(textDecoration = TextDecoration.Underline)) { append(match.groupValues[6]) }
-            match.groupValues[7].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[7]) }
+            match.groupValues[7].isNotEmpty() -> {
+                val webLink = Regex("\\[([^\\]]+)]\\(([^)]+)\\)").matchEntire(match.value)
+                val url = webLink?.groupValues?.get(2)
+                if (url != null) pushStringAnnotation("WEB_URL", url)
+                withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[7]) }
+                if (url != null) pop()
+            }
             match.groupValues[8].isNotEmpty() -> withStyle(SpanStyle(background = Color(0xFFFFF1A8))) { append(match.groupValues[8]) }
             match.groupValues[10].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[10]) }
             match.value.startsWith("#") -> withStyle(SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium, fontSize = 12.sp)) { append(match.value) }
