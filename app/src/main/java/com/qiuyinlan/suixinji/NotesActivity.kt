@@ -35,6 +35,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -43,6 +45,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -65,6 +69,9 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -84,6 +91,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
@@ -105,12 +113,15 @@ import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Label
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.Menu
@@ -138,6 +149,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.DrawerValue
@@ -187,6 +199,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.Image
 import androidx.compose.ui.layout.ContentScale
@@ -274,6 +287,7 @@ private val NoteTypography = Typography().copy(
     labelSmall = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
 )
 private val NoteTagRegex = Regex("(?<![\\p{L}\\d_])#([\\p{L}\\d][\\p{L}\\d/._-]*)(?=\\s|$)")
+private val NoteReferenceRegex = Regex("\\[\\[note:([^|\\]]+)\\|([^\\]]*)]]")
 private val TagPalette = listOf(
     0xFFE8D5C4.toInt(), 0xFFD8E2DC.toInt(), 0xFFF6E7CB.toInt(), 0xFFD9E4F5.toInt(),
     0xFFE6D5E8.toInt(), 0xFFF2D0A9.toInt(), 0xFFD5E8D4.toInt(), 0xFFF4CCCC.toInt(),
@@ -805,7 +819,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
             when (page) {
                 NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { lettersReturnPage = NotesPage.HOME; page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote)
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote) }
-                NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { openEditor(it, NotesPage.ORGANIZER) }, onDelete = { deleteNote(it, showUndoNotice = false) }, onDismissDeleteNotice = { snackbarHostState.currentSnackbarData?.dismiss() })
+                NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onSaveNote = ::saveNote, onEdit = { openEditor(it, NotesPage.ORGANIZER) }, onDelete = { deleteNote(it, showUndoNotice = false) }, onDismissDeleteNotice = { snackbarHostState.currentSnackbarData?.dismiss() })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onTogglePinned = { category ->
                     val pinned = state.tagPinnedIds
                     update(state.copy(tagPinnedIds = if (category.id in pinned) pinned - category.id else if (pinned.size < 6) pinned + category.id else pinned))
@@ -869,6 +883,8 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
         state.notes,
         onDismiss = { editorNote = null; page = editorReturnPage },
         onSave = { saveNote(it) },
+        onCreateLinkedNote = { saveNote(it) },
+        onOpenLinkedNote = { editorNote = it },
         onNext = { val now = System.currentTimeMillis(); editorNote = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()) },
         onDelete = { draft ->
             if (state.notes.none { it.id == draft.id }) saveNote(draft)
@@ -1544,7 +1560,7 @@ private fun TagsPage(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (NotesState) -> Unit, onEdit: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit, onDismissDeleteNotice: () -> Unit) {
+private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (NotesState) -> Unit, onSaveNote: (QuickNote) -> Unit, onEdit: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit, onDismissDeleteNotice: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var index by remember { mutableStateOf(0) }
     var selected by remember { mutableStateOf<QuickNote?>(null) }
@@ -1634,7 +1650,7 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                 Icon(Icons.Filled.Folder, null); Spacer(Modifier.width(6.dp)); Text(if (photoUris.isEmpty()) "导入手机照片文件夹" else "重新选择文件夹")
             }
             if (photoUris.isEmpty()) EmptyHint("选择一个手机文件夹后，这里会显示其中的照片")
-            else PhotoOrganizerPanel(context, photoUris, photoIndex, photoDraft, deletePhotoAfterSave, Modifier.weight(1f), onDraftChange = { photoDraft = it }, onDeleteChange = { deletePhotoAfterSave = it }, onPreview = { photoPreview = it }, onSave = {
+            else PhotoOrganizerPanel(context, photoUris, photoIndex, photoDraft, deletePhotoAfterSave, state.categories, state.notes, Modifier.weight(1f), onDraftChange = { photoDraft = it }, onDeleteChange = { deletePhotoAfterSave = it }, onPreview = { photoPreview = it }, onSave = {
                 val uri = photoUris.getOrNull(photoIndex) ?: return@PhotoOrganizerPanel
                 if (photoDraft.trim().isNotEmpty()) {
                     val now = System.currentTimeMillis()
@@ -1649,7 +1665,18 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                     deletePhotoAfterSave = false
                     photoIndex = if (shouldDelete) photoIndex.coerceAtMost((photoUris.lastIndex).coerceAtLeast(0)) else (photoIndex + 1).coerceAtMost(photoUris.lastIndex)
                 }
-            }, onNext = { photoDraft = ""; deletePhotoAfterSave = false; photoIndex = (photoIndex + 1).coerceAtMost(photoUris.lastIndex) })
+            }, onSaveEditedNote = { note ->
+                onSaveNote(note)
+            }, onAdvance = {
+                val uri = photoUris.getOrNull(photoIndex)
+                if (deletePhotoAfterSave && uri != null) {
+                    runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+                    photoUris = photoUris.filterNot { it == uri }
+                }
+                photoDraft = ""
+                deletePhotoAfterSave = false
+                photoIndex = photoIndex.coerceAtMost((photoUris.lastIndex).coerceAtLeast(0))
+            })
         } else {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("MONTH" to "按月份", "RANDOM" to "随机", "ALL" to "全部").forEach { (value, label) ->
@@ -1764,7 +1791,7 @@ private fun CategoryPicker(categories: List<NoteCategory>, onDismiss: () -> Unit
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
-private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, allNotes: List<QuickNote>, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onNext: () -> Unit, onDelete: (QuickNote) -> Unit, onToggleFavorite: (Boolean) -> Unit, onTogglePinned: (Boolean) -> Boolean) {
+private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, allNotes: List<QuickNote>, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onCreateLinkedNote: (QuickNote) -> Unit, onOpenLinkedNote: (QuickNote) -> Unit, onNext: () -> Unit, onDelete: (QuickNote) -> Unit, onToggleFavorite: (Boolean) -> Unit, onTogglePinned: (Boolean) -> Boolean) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var text by remember { mutableStateOf(TextFieldValue(note.content, TextRange(note.content.length))) }
@@ -1794,6 +1821,16 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
     var showUnsavedDialog by remember { mutableStateOf(false) }
     var showNoteDeleteDialog by remember { mutableStateOf(false) }
     var showEditorActions by remember { mutableStateOf(false) }
+    var showMoreMarkdownTools by remember { mutableStateOf(false) }
+    var showAddTools by remember { mutableStateOf(false) }
+    var showReferencePicker by remember { mutableStateOf(false) }
+    var showConnectionsBack by remember { mutableStateOf(false) }
+    var referenceQuery by remember { mutableStateOf("") }
+    var referenceSortByUpdate by remember { mutableStateOf(true) }
+    var showLinkDialog by remember { mutableStateOf(false) }
+    var linkUrl by remember { mutableStateOf("") }
+    var linkTitle by remember { mutableStateOf("") }
+    var linkDetails by remember { mutableStateOf("") }
     var savedNote by remember { mutableStateOf(note) }
     val recentTagCategories = remember(categories, allNotes) {
         val categoryById = categories.associateBy { it.id }
@@ -1807,6 +1844,14 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
             .map { it.value }
     }
     val recentTopLevelCategories = recentTagCategories.filter { it.parentId == null }.take(8)
+    val linkedNotes = remember(text.text, allNotes) {
+        NoteReferenceRegex.findAll(text.text).mapNotNull { match -> allNotes.firstOrNull { it.id == match.groupValues[1] } }.distinctBy { it.id }.toList()
+    }
+    val associatedCategories = remember(text.text, note.categoryIds, categories) {
+        val paths = (note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path } + NoteTagRegex.findAll(text.text).map { it.groupValues[1] }).distinct()
+        paths.filterNot { path -> paths.any { other -> other.startsWith("$path/") } }
+            .map { path -> categories.firstOrNull { it.path == path } ?: NoteCategory("inline:$path", path.substringAfterLast('/'), null, path) }
+    }
     val activeTagQuery = remember(text) {
         if (!text.selection.collapsed) null else {
             val cursor = text.selection.start.coerceIn(0, text.text.length)
@@ -1823,8 +1868,16 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
         }
         if (parentPath == null) {
             if (query.isBlank()) recentTopLevelCategories else categories
-                .filter { it.parentId == null && it.name.contains(query, ignoreCase = true) }
-                .sortedWith(compareBy<NoteCategory> { if (it.name.startsWith(query, ignoreCase = true)) 0 else 1 }.thenBy { it.name })
+                .filter { it.path.contains(query, ignoreCase = true) }
+                .sortedWith(
+                    compareBy<NoteCategory> {
+                        when {
+                            it.name.startsWith(query, ignoreCase = true) -> 0
+                            it.path.split('/').any { segment -> segment.startsWith(query, ignoreCase = true) } -> 1
+                            else -> 2
+                        }
+                    }.thenBy { it.path },
+                )
                 .take(8)
         } else {
             val parent = categories.firstOrNull { it.path == parentPath }
@@ -1866,6 +1919,9 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
             redoStack.clear()
             text = value
         }
+    }
+    fun shiftCommentAnchors(transform: (Int) -> Int) {
+        comments = comments.map { comment -> comment.copy(position = transform(comment.position).coerceIn(0, text.text.length)) }
     }
     fun finishComment() {
         val index = activeComment ?: return
@@ -1954,11 +2010,57 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
         val next = text.text.substring(0, start) + replacement + text.text.substring(end)
         val cursor = if (selected.isEmpty()) start + prefix.length else start + replacement.length
         replaceEditorText(TextFieldValue(next, TextRange(cursor)))
+        val delta = replacement.length - (end - start)
+        shiftCommentAnchors { position ->
+            when {
+                position <= start -> position
+                position >= end -> position + delta
+                else -> position + prefix.length
+            }
+        }
     }
     fun prefixCurrentLine(prefix: String) {
         val start = text.selection.start.coerceIn(0, text.text.length)
         val lineStart = text.text.lastIndexOf('\n', (start - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
         replaceEditorText(TextFieldValue(text.text.substring(0, lineStart) + prefix + text.text.substring(lineStart), TextRange(start + prefix.length)))
+        shiftCommentAnchors { if (it >= lineStart) it + prefix.length else it }
+    }
+    fun toggleTaskAt(position: Int) {
+        val cursor = position.coerceIn(0, text.text.length)
+        val lineStart = text.text.lastIndexOf('\n', (cursor - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+        val lineEnd = text.text.indexOf('\n', cursor).let { if (it < 0) text.text.length else it }
+        val line = text.text.substring(lineStart, lineEnd)
+        val task = Regex("^(\\s*- \\[)([ xX])(\\])").find(line)
+        if (task == null) {
+            prefixCurrentLine("- [ ] ")
+        } else {
+            val mark = lineStart + task.range.first + task.groupValues[1].length
+            val replacement = if (task.groupValues[2].equals(" ")) "x" else " "
+            replaceEditorText(TextFieldValue(text.text.replaceRange(mark, mark + 1, replacement), text.selection))
+        }
+    }
+    fun toggleTaskAtCursor() = toggleTaskAt(text.selection.start)
+    fun insertMarkdownAtSelection(markdown: String) {
+        val start = text.selection.min.coerceIn(0, text.text.length)
+        val end = text.selection.max.coerceIn(start, text.text.length)
+        val next = text.text.substring(0, start) + markdown + text.text.substring(end)
+        replaceEditorText(TextFieldValue(next, TextRange(start + markdown.length)))
+        val delta = markdown.length - (end - start)
+        shiftCommentAnchors { position ->
+            when {
+                position <= start -> position
+                position >= end -> position + delta
+                else -> start + markdown.length
+            }
+        }
+        focusRequester.requestFocus()
+        keyboardController?.show()
+    }
+    fun insertNoteReference(target: QuickNote) {
+        val title = target.content.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(48) ?: "无标题笔记"
+        insertMarkdownAtSelection("[[note:${target.id}|${title.replace("]", "") }]]")
+        showReferencePicker = false
+        referenceQuery = ""
     }
     fun prefixOrderedList() {
         val cursor = text.selection.start.coerceIn(0, text.text.length)
@@ -1968,6 +2070,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
         val prefix = "${previousNumber + 1}. "
         val next = text.text.substring(0, lineStart) + prefix + text.text.substring(lineStart)
         replaceEditorText(TextFieldValue(next, TextRange(cursor + prefix.length)))
+        shiftCommentAnchors { if (it >= lineStart) it + prefix.length else it }
         emptyNumberedMarker = lineStart until (lineStart + prefix.length)
     }
     LaunchedEffect(Unit) {
@@ -2022,6 +2125,9 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                     IconButton(onClick = { if (activeComment != null) finishComment() else { if (text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) saveChanges(); onDismiss() } }) { Icon(Icons.Filled.Check, "保存并返回首页") }
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { showConnectionsBack = !showConnectionsBack }) {
+                        Icon(Icons.Filled.Flip, if (showConnectionsBack) "返回编辑笔记" else "查看标签和关联笔记", tint = NotePrimary)
+                    }
                     Box {
                         IconButton(onClick = { showEditorActions = true }) { Icon(Icons.Filled.MoreVert, "笔记操作", tint = NoteMuted) }
                         NotePopupMenu(expanded = showEditorActions, onDismissRequest = { showEditorActions = false }, compact = true) {
@@ -2055,7 +2161,6 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } } else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
                     ToolButton(Icons.Filled.Label, "标签", false) { showTagDialog = true; tagInput = "" }
-                    IconButton(onClick = { val cursor = text.selection.start; text = text.copy(text = text.text.substring(0, cursor) + "#" + text.text.substring(cursor), selection = TextRange(cursor + 1)) }, modifier = Modifier.size(34.dp)) { Text("#", color = NotePrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
                     ToolButton(Icons.Filled.CalendarMonth, "日期", false) { showTimeDialog = true }
                     ToolButton(moodIcon(mood), moodLabel(mood), mood.isNotEmpty()) { mood = when (mood) { "" -> "HAPPY"; "HAPPY" -> "NORMAL_SELECTED"; "NORMAL_SELECTED" -> "SAD"; else -> "" } }
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
@@ -2073,7 +2178,10 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                     }
                 }
                 }
-                Box(Modifier.fillMaxWidth().weight(1f).background(Color.White)) {
+                val flipRotation by animateFloatAsState(if (showConnectionsBack) 180f else 0f, animationSpec = tween(420), label = "note-card-flip")
+                val densityScale = androidx.compose.ui.platform.LocalDensity.current.density
+                Box(Modifier.fillMaxWidth().weight(1f).graphicsLayer { rotationY = flipRotation; cameraDistance = 12f * densityScale }) {
+                    if (flipRotation < 90f) {
                     val editorTextStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, color = Color.Black)
                     BoxWithConstraints(Modifier.fillMaxSize().onGloballyPositioned {
                         if (editorViewportHeight != it.size.height) editorViewportHeight = it.size.height
@@ -2184,6 +2292,30 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                                 val position = it.positionInParent()
                                 val next = IntOffset(position.x.roundToInt(), position.y.roundToInt())
                                 if (editorPosition != next) editorPosition = next
+                            }.pointerInput(text.text, editorTextLayout) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                    val layout = editorTextLayout
+                                    val transformedOffset = layout?.getOffsetForPosition(down.position)
+                                    val sourceOffset = transformedOffset?.let { offset ->
+                                        editorVisualTransformation.filter(androidx.compose.ui.text.AnnotatedString(text.text))
+                                            .offsetMapping.transformedToOriginal(offset)
+                                    }
+                                    val task = sourceOffset?.let { offset ->
+                                        Regex("(?m)^[ \\t]*- \\[([ xX])\\]").findAll(text.text).firstOrNull { match ->
+                                            match.range.first + match.value.lastIndexOf('[') == offset
+                                        }
+                                    }
+                                    if (task != null) {
+                                        down.consume()
+                                        waitForUpOrCancellation(pass = PointerEventPass.Initial)?.let { up ->
+                                            up.consume()
+                                            toggleTaskAt(sourceOffset!!)
+                                        }
+                                    } else {
+                                        waitForUpOrCancellation(pass = PointerEventPass.Initial)
+                                    }
+                                }
                             },
                             textStyle = editorTextStyle,
                             visualTransformation = editorVisualTransformation,
@@ -2205,32 +2337,81 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                             }
                         }
                     }
+                    } else {
+                        ConnectionBackFace(
+                            categories = associatedCategories,
+                            linkedNotes = linkedNotes,
+                            modifier = Modifier.fillMaxSize().graphicsLayer { rotationY = 180f },
+                            onOpenNote = { target -> saveChanges(); onOpenLinkedNote(target) },
+                        )
+                    }
                 }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = Color.White,
                     shadowElevation = 4.dp,
                 ) {
-                    Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { prefixCurrentLine("- ") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatListBulleted, "无序列表", modifier = Modifier.size(22.dp)) }
-                            IconButton(onClick = { prefixOrderedList() }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatListNumbered, "有序列表", modifier = Modifier.size(22.dp)) }
-                            IconButton(onClick = { prefixCurrentLine("- [ ] ") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.CheckBoxOutlineBlank, "任务复选框", modifier = Modifier.size(22.dp)) }
-                            IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(21.dp)) }
-                            IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(21.dp)) }
-                            IconButton(onClick = { wrapSelection("~~") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.StrikethroughS, "删除线", modifier = Modifier.size(21.dp)) }
-                            IconButton(onClick = { wrapSelection("<u>", "</u>") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatUnderlined, "下划线", modifier = Modifier.size(21.dp)) }
-                            IconButton(onClick = { prefixCurrentLine("> ") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatQuote, "引用", modifier = Modifier.size(21.dp)) }
-                        IconButton(enabled = undoStack.isNotEmpty(), onClick = {
-                            if (undoStack.isNotEmpty()) { val current = text; val previous = undoStack.removeAt(undoStack.lastIndex); redoStack.add(current); text = previous }
-                            }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.Undo, "撤回", modifier = Modifier.size(21.dp)) }
-                        IconButton(enabled = redoStack.isNotEmpty(), onClick = {
-                            if (redoStack.isNotEmpty()) { val current = text; val next = redoStack.removeAt(redoStack.lastIndex); undoStack.add(current); text = next }
-                            }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.Redo, "重做", modifier = Modifier.size(21.dp)) }
+                    Column(Modifier.fillMaxWidth()) {
+                        if (showMoreMarkdownTools) {
+                            Row(
+                                Modifier.fillMaxWidth().height(48.dp).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                IconButton(onClick = { toggleTaskAtCursor() }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.CheckBoxOutlineBlank, "插入或勾选任务", modifier = Modifier.size(21.dp)) }
+                                IconButton(onClick = { prefixCurrentLine("- ") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatListBulleted, "无序列表", modifier = Modifier.size(21.dp)) }
+                                IconButton(onClick = { prefixOrderedList() }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatListNumbered, "有序列表", modifier = Modifier.size(21.dp)) }
+                                IconButton(onClick = { wrapSelection("~~") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.StrikethroughS, "删除线", modifier = Modifier.size(21.dp)) }
+                                IconButton(onClick = { prefixCurrentLine("> ") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatQuote, "引用", modifier = Modifier.size(21.dp)) }
+                                IconButton(onClick = { wrapSelection("*") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatItalic, "斜体", modifier = Modifier.size(21.dp)) }
+                                IconButton(enabled = undoStack.isNotEmpty(), onClick = {
+                                    if (undoStack.isNotEmpty()) { val current = text; val previous = undoStack.removeAt(undoStack.lastIndex); redoStack.add(current); text = previous }
+                                }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.Undo, "撤回", modifier = Modifier.size(21.dp)) }
+                                IconButton(enabled = redoStack.isNotEmpty(), onClick = {
+                                    if (redoStack.isNotEmpty()) { val current = text; val next = redoStack.removeAt(redoStack.lastIndex); undoStack.add(current); text = next }
+                                }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.Redo, "重做", modifier = Modifier.size(21.dp)) }
+                            }
                         }
-                        Surface(color = NotePrimary, shape = RoundedCornerShape(10.dp), modifier = Modifier.padding(end = 4.dp)) {
-                            IconButton(onClick = { saveAndNext() }, modifier = Modifier.size(44.dp)) {
-                                Icon(Icons.Filled.Add, "保存并新建下一篇", tint = Color.White, modifier = Modifier.size(24.dp))
+                        if (showAddTools) {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                                color = Color.White,
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, NoteSoft),
+                                shadowElevation = 6.dp,
+                            ) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(onClick = { showAddTools = false; showLinkDialog = true }) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Icon(Icons.Filled.Link, "链接", tint = NotePrimary, modifier = Modifier.size(22.dp))
+                                            Text("链接", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = {
+                                    val cursor = text.selection.start.coerceIn(0, text.text.length)
+                                    text = text.copy(text = text.text.substring(0, cursor) + "#" + text.text.substring(cursor), selection = TextRange(cursor + 1))
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                }, modifier = Modifier.size(42.dp)) { Text("#", color = NotePrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+                                IconButton(onClick = { showReferencePicker = true }, modifier = Modifier.size(42.dp)) { Text("@", color = NotePrimary, fontSize = 19.sp, fontWeight = FontWeight.Medium) }
+                                IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(21.dp)) }
+                                IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(21.dp)) }
+                                IconButton(onClick = { wrapSelection("<u>", "</u>") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatUnderlined, "下划线", modifier = Modifier.size(21.dp)) }
+                                IconButton(onClick = { showMoreMarkdownTools = !showMoreMarkdownTools }, modifier = Modifier.size(42.dp)) {
+                                    Icon(Icons.Filled.MoreVert, "更多格式工具", tint = if (showMoreMarkdownTools) NoteAccent else NotePrimary, modifier = Modifier.size(22.dp))
+                                }
+                            }
+                            IconButton(onClick = { showAddTools = !showAddTools }, modifier = Modifier.size(42.dp)) {
+                                    Icon(Icons.Filled.AddCircleOutline, "添加内容", tint = NotePrimary, modifier = Modifier.size(25.dp))
+                            }
+                            Surface(color = NotePrimary, shape = RoundedCornerShape(10.dp), modifier = Modifier.padding(end = 4.dp)) {
+                                IconButton(onClick = { saveAndNext() }, modifier = Modifier.size(44.dp)) {
+                                    Icon(Icons.Filled.Add, "保存并新建下一篇", tint = Color.White, modifier = Modifier.size(24.dp))
+                                }
                             }
                         }
                     }
@@ -2301,7 +2482,173 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
         confirmButton = { TextButton(onClick = { val value = tagInput.trim().trimStart('#'); if (value.isNotBlank() && value.split('/').all { it.isNotBlank() }) { insertTagAtCursor(value, text) { text = it }; showTagDialog = false } }) { Text("插入标签") } },
         dismissButton = { TextButton(onClick = { showTagDialog = false }) { Text("取消") } },
     )
+    if (showReferencePicker) {
+        val matchingNotes = remember(allNotes, referenceQuery, referenceSortByUpdate, note.id) {
+            allNotes.asSequence()
+                .filter { it.id != note.id }
+                .filter { referenceQuery.isBlank() || it.content.contains(referenceQuery, ignoreCase = true) }
+                .let { notes -> if (referenceSortByUpdate) notes.sortedByDescending { it.updatedAt } else notes.sortedByDescending { it.createdAt } }
+                .toList()
+        }
+        Dialog(onDismissRequest = { showReferencePicker = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.fillMaxSize(), color = Color(0xFFF4F3F5), shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)) {
+                Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 18.dp, vertical = 12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            referenceQuery,
+                            { referenceQuery = it },
+                            Modifier.weight(1f),
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp),
+                            placeholder = { Text("搜索要关联的笔记") },
+                            leadingIcon = { Icon(Icons.Filled.Search, null, tint = NoteMuted) },
+                        )
+                        Button(onClick = {
+                            val now = System.currentTimeMillis()
+                            val created = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList())
+                            onCreateLinkedNote(created)
+                            insertNoteReference(created.copy(content = "新笔记"))
+                        }, shape = RoundedCornerShape(24.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)) {
+                            Icon(Icons.Filled.AddCircleOutline, null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("新笔记")
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.FilterList, null, tint = NoteMuted, modifier = Modifier.size(17.dp))
+                        TextButton(onClick = { referenceSortByUpdate = !referenceSortByUpdate }) {
+                            Text(if (referenceSortByUpdate) "按更新时间" else "按创建时间", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
+                        items(matchingNotes, key = { it.id }) { candidate ->
+                            Card(
+                                Modifier.fillMaxWidth().clickable { insertNoteReference(candidate) },
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                                    Text(candidate.content.lineSequence().firstOrNull { it.isNotBlank() }?.take(120) ?: "（空白笔记）", color = NoteInk, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    val excerpt = candidate.content.lineSequence().drop(1).firstOrNull { it.isNotBlank() }
+                                    if (!excerpt.isNullOrBlank()) Text(excerpt, Modifier.padding(top = 6.dp), color = NoteMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text(prettyTime(candidate.updatedAt), Modifier.padding(top = 8.dp), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (showLinkDialog) {
+        Dialog(onDismissRequest = { showLinkDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+            Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.BottomCenter) {
+                Surface(
+                    Modifier.fillMaxWidth().fillMaxHeight(0.76f),
+                    color = Color.White,
+                    shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+                    shadowElevation = 12.dp,
+                ) {
+                    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                        Row(Modifier.fillMaxWidth().height(58.dp), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { showLinkDialog = false }) { Icon(Icons.Filled.Close, "关闭") }
+                            Text("插入链接", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                            Button(onClick = {
+                                val rawUrl = linkUrl.trim()
+                                if (rawUrl.isNotBlank()) {
+                                    val url = if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) rawUrl else "https://$rawUrl"
+                                    val label = linkTitle.trim().ifBlank { rawUrl }
+                                    val markdown = "[${label.replace("]", "")}]($url)" + linkDetails.trim().takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
+                                    insertMarkdownAtSelection(markdown)
+                                    linkUrl = ""
+                                    linkTitle = ""
+                                    linkDetails = ""
+                                    showLinkDialog = false
+                                }
+                            }, enabled = linkUrl.isNotBlank(), shape = RoundedCornerShape(8.dp)) { Text("完成") }
+                        }
+                        HorizontalDivider(color = NoteSoft)
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            OutlinedTextField(
+                                linkUrl,
+                                { linkUrl = it },
+                                Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                label = { Text("网址") },
+                                placeholder = { Text("粘贴要插入的链接地址") },
+                                trailingIcon = { if (linkUrl.isNotBlank()) IconButton(onClick = { linkUrl = "" }) { Icon(Icons.Filled.Close, "清除网址") } },
+                            )
+                            OutlinedTextField(linkTitle, { linkTitle = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("标题") }, placeholder = { Text("网页标题") })
+                            OutlinedTextField(linkDetails, { linkDetails = it }, Modifier.fillMaxWidth().heightIn(min = 110.dp), label = { Text("附加信息") }, minLines = 3)
+                        }
+                    }
+                }
+            }
+        }
+    }
     previewUri?.let { uri -> ImagePreviewDialog(context, uri, onDismiss = { previewUri = null }) }
+}
+
+@Composable
+private fun ConnectionBackFace(
+    categories: List<NoteCategory>,
+    linkedNotes: List<QuickNote>,
+    modifier: Modifier = Modifier,
+    onOpenNote: (QuickNote) -> Unit,
+) {
+    Surface(
+        modifier = modifier,
+        color = Color(0xFFFAF9F7),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, NoteSoft),
+        shadowElevation = 3.dp,
+    ) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+            Text("关联主题", color = NoteInk, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (categories.isEmpty()) {
+                Text("暂无关联标签", Modifier.padding(top = 8.dp), color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+            } else {
+                categories.chunked(3).forEach { row ->
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { category ->
+                            Surface(
+                                Modifier.weight(1f).aspectRatio(1f),
+                                color = tagColor(category),
+                                shape = RoundedCornerShape(8.dp),
+                            ) {
+                                Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+                                    Text(category.name, color = NoteInk, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                        repeat(3 - row.size) { Spacer(Modifier.weight(1f).aspectRatio(1f)) }
+                    }
+                }
+            }
+            Text("关联笔记", Modifier.padding(top = 18.dp), color = NoteInk, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (linkedNotes.isEmpty()) {
+                Text("暂无引用笔记", Modifier.padding(top = 8.dp), color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+            } else {
+                linkedNotes.forEach { linked ->
+                    Card(
+                        Modifier.fillMaxWidth().padding(top = 8.dp).clickable { onOpenNote(linked) },
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(8.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(prettyTime(linked.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                moodEmoji(linked.mood).takeIf { it.isNotEmpty() }?.let { Text(it, Modifier.padding(start = 6.dp), fontSize = 14.sp) }
+                                linked.location?.let { Text(" · $it", Modifier.weight(1f), color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                            }
+                            CommentedNotePreview(linked.content, linked.comments, {}, showEye = false, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -3226,6 +3573,18 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
     override fun filter(text: androidx.compose.ui.text.AnnotatedString): TransformedText {
         val source = text.text
         val hidden = BooleanArray(source.length)
+        val taskMatches = Regex("(?m)^[ \\t]*- \\[([ xX])\\]").findAll(source).toList()
+        val taskCheckboxes = taskMatches.associate { match ->
+            val boxIndex = match.range.first + match.value.lastIndexOf('[')
+            boxIndex to if (match.groupValues[1].equals(" ")) "☐" else "☑"
+        }
+        taskMatches.forEach { match ->
+            val boxIndex = match.range.first + match.value.lastIndexOf('[')
+            val markerStart = match.range.first + match.value.indexOf("- [")
+            for (markerIndex in markerStart until boxIndex) hidden[markerIndex] = true
+            hidden[boxIndex + 1] = true
+            hidden[boxIndex + 2] = true
+        }
         fun hide(start: Int, end: Int) {
             for (index in start.coerceAtLeast(0) until end.coerceAtMost(source.length)) hidden[index] = true
         }
@@ -3240,9 +3599,21 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
                 match.groupValues[7].isNotEmpty() -> { hide(match.range.first, match.range.first + 2); hide(match.range.last + 1 - 2, match.range.last + 1) }
             }
         }
+        val noteLinkPattern = Regex("\\[\\[note:([^|\\]]+)\\|([^\\]]*)]]")
+        noteLinkPattern.findAll(source).forEach { match ->
+            val title = match.groups[2]!!.range
+            for (index in match.range.first until title.first) hidden[index] = true
+            for (index in title.last + 1..match.range.last) hidden[index] = true
+        }
+        val webLinkPattern = Regex("\\[([^\\]]+)]\\(([^)]+)\\)")
+        webLinkPattern.findAll(source).forEach { match ->
+            hidden[match.range.first] = true
+            for (index in match.groups[1]!!.range.last + 1..match.range.last) hidden[index] = true
+        }
         val sourceToDisplay = IntArray(source.length + 1)
         val displayToSourceList = mutableListOf<Int>()
         val markerDisplayRanges = mutableListOf<IntRange>()
+        val taskCheckboxDisplayRanges = mutableListOf<IntRange>()
         val commentsByPosition = comments.groupBy { it.position.coerceIn(0, source.length) }
         val numberedLineStarts = Regex("(?m)^[ \\t]*\\d+[.)][ \\t]+")
             .findAll(source)
@@ -3266,13 +3637,21 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
             val character = source[index]
             if (!hidden[index]) {
                 val atLineStart = index == 0 || source[index - 1] == '\n'
-                display.append(if (character == '-' && atLineStart && source.getOrNull(index + 1) == ' ') '•' else character)
+                val taskCheckbox = taskCheckboxes[index]
+                if (taskCheckbox != null) {
+                    val boxStart = display.length
+                    display.append(taskCheckbox)
+                    taskCheckboxDisplayRanges += boxStart until display.length
+                } else {
+                    display.append(if (character == '-' && atLineStart && source.getOrNull(index + 1) == ' ') '•' else character)
+                }
                 displayToSourceList += index
             }
         }
         val styled = buildAnnotatedString {
             append(display.toString())
             markerDisplayRanges.forEach { range -> addStyle(SpanStyle(color = NoteAccent, fontWeight = FontWeight.Bold), range.first, range.last + 1) }
+            taskCheckboxDisplayRanges.forEach { range -> addStyle(SpanStyle(color = NotePrimary, fontWeight = FontWeight.Bold), range.first, range.last + 1) }
             fun styleRange(range: IntRange, style: SpanStyle) {
                 val start = sourceToDisplay[range.first.coerceIn(0, source.length)]
                 val end = sourceToDisplay[(range.last + 1).coerceIn(0, source.length)]
@@ -3306,6 +3685,19 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
                     styleRange(contentRange, style)
                 }
             }
+            noteLinkPattern.findAll(source).forEach { match ->
+                styleRange(match.groups[2]!!.range, SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline))
+            }
+            webLinkPattern.findAll(source).forEach { match ->
+                styleRange(match.groups[1]!!.range, SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline))
+            }
+            taskMatches.filter { it.groupValues[1].equals("x", ignoreCase = true) }.forEach { match ->
+                val contentStart = match.range.last + 1
+                val contentEnd = source.indexOf('\n', contentStart).let { if (it < 0) source.length else it }
+                if (contentStart < contentEnd) {
+                    styleRange(contentStart until contentEnd, SpanStyle(textDecoration = TextDecoration.LineThrough))
+                }
+            }
             NoteTagRegex.findAll(source).forEach { match -> styleRange(match.range, SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium, fontSize = 12.sp)) }
         }
         val displayToSource = IntArray(displayToSourceList.size + 1)
@@ -3319,7 +3711,7 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
 }
 
 private fun markdownInline(value: String) = buildAnnotatedString {
-    val pattern = Regex("""(\*\*|__)(.*?)\1|(?<!\*)\*([^*]*?)\*|~~(.*?)~~|`([^`]*?)`|<u>(.*?)</u>|\[([^]]+)]\([^)]+\)|==([^=]*?)==|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/._-]*(?=\s|$)""")
+    val pattern = Regex("""(\*\*|__)(.*?)\1|(?<!\*)\*([^*]*?)\*|~~(.*?)~~|`([^`]*?)`|<u>(.*?)</u>|\[([^]]+)]\([^)]+\)|==([^=]*?)==|(?<![\p{L}\d_])#[\p{L}\d][\p{L}\d/._-]*(?=\s|$)|\[\[note:([^|\]]+)\|([^\]]*)]]""")
     var cursor = 0
     pattern.findAll(value).forEach { match ->
         append(value.substring(cursor, match.range.first))
@@ -3331,6 +3723,7 @@ private fun markdownInline(value: String) = buildAnnotatedString {
             match.groupValues[6].isNotEmpty() -> withStyle(SpanStyle(textDecoration = TextDecoration.Underline)) { append(match.groupValues[6]) }
             match.groupValues[7].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[7]) }
             match.groupValues[8].isNotEmpty() -> withStyle(SpanStyle(background = Color(0xFFFFF1A8))) { append(match.groupValues[8]) }
+            match.groupValues[10].isNotEmpty() -> withStyle(SpanStyle(color = NotePrimary, textDecoration = TextDecoration.Underline)) { append(match.groupValues[10]) }
             match.value.startsWith("#") -> withStyle(SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium, fontSize = 12.sp)) { append(match.value) }
         }
         cursor = match.range.last + 1
@@ -3386,13 +3779,19 @@ private fun PhotoOrganizerPanel(
     index: Int,
     draft: String,
     deleteAfterSave: Boolean,
+    categories: List<NoteCategory>,
+    allNotes: List<QuickNote>,
     modifier: Modifier,
     onDraftChange: (String) -> Unit,
     onDeleteChange: (Boolean) -> Unit,
     onPreview: (Uri) -> Unit,
     onSave: () -> Unit,
-    onNext: () -> Unit,
+    onSaveEditedNote: (QuickNote) -> Unit,
+    onAdvance: () -> Unit,
 ) {
+    var expandedEditor by remember { mutableStateOf(false) }
+    var editorSaved by remember { mutableStateOf(false) }
+    var expandedDraft by remember(photos.getOrNull(index)) { mutableStateOf<QuickNote?>(null) }
     val uri = photos.getOrNull(index)
     if (uri == null) {
         EmptyHint("文件夹中没有可整理的照片")
@@ -3401,14 +3800,56 @@ private fun PhotoOrganizerPanel(
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("照片 ${index + 1} / ${photos.size}", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
         FolderPhotoThumb(context, uri, Modifier.fillMaxWidth().weight(0.9f).combinedClickable(onClick = {}, onLongClick = { onPreview(uri) }))
-        OutlinedTextField(draft, onDraftChange, Modifier.fillMaxWidth().weight(1.1f), placeholder = { Text("记录这张图片的关键信息…") }, maxLines = 12)
+        OutlinedTextField(
+            draft,
+            onDraftChange,
+            Modifier.fillMaxWidth().weight(1.1f),
+            placeholder = { Text("记录这张图片的关键信息…") },
+            maxLines = 12,
+            trailingIcon = {
+                IconButton(onClick = {
+                    val now = System.currentTimeMillis()
+                    editorSaved = false
+                    expandedDraft = QuickNote(UUID.randomUUID().toString(), draft, now, now, emptyList(), imageUris = listOf(uri.toString()))
+                    expandedEditor = true
+                }) { Icon(Icons.Filled.OpenInFull, "放大编辑", tint = NotePrimary) }
+            },
+        )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(deleteAfterSave, onDeleteChange)
             Text("保存笔记后删除原图", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = onNext, enabled = index < photos.lastIndex) { Text("下一张") }
-            Button(onClick = onSave, enabled = draft.trim().isNotEmpty()) { Icon(Icons.Filled.Save, null); Spacer(Modifier.width(4.dp)); Text("保存并下一张") }
+            Button(
+                onClick = onSave,
+                enabled = draft.trim().isNotEmpty(),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 11.dp),
+            ) {
+                Icon(Icons.Filled.Save, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("保存笔记并下一张")
+            }
         }
+    }
+    if (expandedEditor) {
+        val note = expandedDraft ?: QuickNote(UUID.randomUUID().toString(), draft, System.currentTimeMillis(), System.currentTimeMillis(), emptyList(), imageUris = listOf(uri.toString()))
+        QuickNoteEditor(
+            note = note,
+            categories = categories,
+            allNotes = allNotes,
+            onDismiss = {
+                expandedEditor = false
+                expandedDraft = null
+                if (editorSaved) onAdvance()
+            },
+            onSave = { saved -> onSaveEditedNote(saved); editorSaved = true },
+            onCreateLinkedNote = onSaveEditedNote,
+            onOpenLinkedNote = {},
+            onNext = {},
+            onDelete = {},
+            onToggleFavorite = {},
+            onTogglePinned = { true },
+        )
     }
 }
 
