@@ -1,8 +1,11 @@
 package com.qiuyinlan.suixinji
 
 import android.Manifest
+import android.app.Activity
 import android.app.DatePickerDialog
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.pm.PackageManager
@@ -15,6 +18,7 @@ import android.view.WindowManager
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.os.Environment
+import android.widget.Toast
 import android.graphics.BitmapFactory
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
@@ -36,6 +40,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -45,18 +55,22 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -73,16 +87,21 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FormatBold
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.FormatItalic
+import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.Home
@@ -96,6 +115,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
@@ -139,6 +159,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -146,6 +171,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.Typography
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -159,10 +185,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.Image
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -179,8 +210,12 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.text.TextLayoutResult
+import kotlin.math.roundToInt
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.Dialog
@@ -213,28 +248,30 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 
 private val NoteInk = Color(0xFF4B3B30)
+private const val MAX_PINNED_NOTES = 6
 private val NotePrimary = Color(0xFF8B6A52)
 private val NoteAccent = Color(0xFFC68E6B)
 private val NotePaper = Color(0xFFF4E8DA)
 private val NoteSoft = Color(0xFFEAD9C7)
 private val NoteMuted = Color(0xFF8A786B)
-private val NoteTagColor = Color(0xFF2878B5)
+private val NoteCommentColor = Color(0xFF808080)
+private val NoteTagColor = Color(0xFF3A7FD5)
 private val NoteTypography = Typography().copy(
-    displayLarge = androidx.compose.ui.text.TextStyle(fontSize = 22.sp, lineHeight = 26.sp),
-    displayMedium = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, lineHeight = 24.sp),
-    displaySmall = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 22.sp),
-    headlineLarge = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, lineHeight = 24.sp),
-    headlineMedium = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 22.sp),
-    headlineSmall = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 20.sp),
-    titleLarge = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 24.sp),
-    titleMedium = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 22.sp),
-    titleSmall = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+    displayLarge = androidx.compose.ui.text.TextStyle(fontSize = 24.sp, lineHeight = 29.sp),
+    displayMedium = androidx.compose.ui.text.TextStyle(fontSize = 22.sp, lineHeight = 27.sp),
+    displaySmall = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, lineHeight = 25.sp),
+    headlineLarge = androidx.compose.ui.text.TextStyle(fontSize = 22.sp, lineHeight = 27.sp),
+    headlineMedium = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, lineHeight = 25.sp),
+    headlineSmall = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 23.sp),
+    titleLarge = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, lineHeight = 26.sp),
+    titleMedium = androidx.compose.ui.text.TextStyle(fontSize = 18.sp, lineHeight = 24.sp),
+    titleSmall = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 22.sp),
     bodyLarge = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
-    bodyMedium = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-    bodySmall = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
-    labelLarge = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-    labelMedium = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
-    labelSmall = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
+    bodyMedium = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, lineHeight = 22.sp),
+    bodySmall = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+    labelLarge = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, lineHeight = 21.sp),
+    labelMedium = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+    labelSmall = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
 )
 private val NoteTagRegex = Regex("(?<![\\p{L}\\d_])#([\\p{L}\\d][\\p{L}\\d/._-]*)(?=\\s|$)")
 private val TagPalette = listOf(
@@ -244,6 +281,10 @@ private val TagPalette = listOf(
 private fun tagColor(category: NoteCategory): Color {
     val stored = category.color.takeIf { it != 0L }?.toInt()
     return Color(stored ?: TagPalette[Math.floorMod(category.id.hashCode(), TagPalette.size)])
+}
+private fun pinnedTagColor(category: NoteCategory): Color {
+    val color = tagColor(category)
+    return Color(color.red * 0.82f, color.green * 0.82f, color.blue * 0.82f, color.alpha)
 }
 
 private data class NoteComment(val position: Int, val text: String, val expanded: Boolean = true, val createdAt: Long = System.currentTimeMillis())
@@ -255,10 +296,15 @@ private data class QuickNote(
     val categoryIds: List<String>,
     val status: String = "inbox",
     val location: String? = null,
-    val mood: String = "NORMAL",
+    val mood: String = "",
     val comments: List<NoteComment> = emptyList(),
     val imageUris: List<String> = emptyList(),
+    val favorite: Boolean = false,
+    val pinned: Boolean = false,
 )
+private data class DeletedNote(val note: QuickNote, val deletedAt: Long, val originalIndex: Int)
+
+internal data class WidgetLaunchRequest(val sequence: Int, val noteId: String?, val favoriteWidgetId: Int? = null)
 private data class NoteCategory(val id: String, val name: String, val parentId: String?, val path: String, val color: Long = 0L)
 
 private fun orderedCategories(categories: List<NoteCategory>, pinnedIds: List<String>): List<NoteCategory> {
@@ -275,6 +321,7 @@ private data class Diary(val id: String, val title: String, val markdown: String
 private data class FutureLetter(val id: String, val title: String, val content: String, val deliverDate: String, val shown: Boolean = false)
 private data class NotesState(
     val notes: List<QuickNote> = emptyList(),
+    val trash: List<DeletedNote> = emptyList(),
     val categories: List<NoteCategory> = emptyList(),
     val tagPinnedIds: List<String> = emptyList(),
     val drawerPinnedIds: List<String> = emptyList(),
@@ -282,10 +329,35 @@ private data class NotesState(
     val letters: List<FutureLetter> = emptyList(),
 )
 
+private fun JSONObject.toQuickNote(): QuickNote = QuickNote(
+    id = optString("id"),
+    content = optString("content"),
+    createdAt = optLong("createdAt"),
+    updatedAt = optLong("updatedAt", optLong("createdAt")),
+    categoryIds = optJSONArray("categoryIds").toStringList(),
+    status = optString("status", "inbox"),
+    location = optNullableString("location"),
+    mood = optString("mood", "").let { if (it == "NORMAL") "" else it },
+    comments = optJSONArray("comments").toList { comment ->
+        NoteComment(comment.optInt("position"), comment.optString("text"), comment.optBoolean("expanded", true), comment.optLong("createdAt", System.currentTimeMillis()))
+    },
+    imageUris = optJSONArray("imageUris").toStringList(),
+    favorite = optBoolean("favorite", false),
+    pinned = optBoolean("pinned", false),
+)
+
+private fun QuickNote.toJson(): JSONObject = JSONObject().apply {
+    put("id", id); put("content", content); put("createdAt", createdAt); put("updatedAt", updatedAt)
+    put("categoryIds", JSONArray(categoryIds)); put("status", status); put("location", location); put("mood", mood)
+    put("comments", JSONArray().apply { comments.forEach { comment -> put(JSONObject().apply { put("position", comment.position); put("text", comment.text); put("expanded", comment.expanded); put("createdAt", comment.createdAt) }) } })
+    put("imageUris", JSONArray(imageUris)); put("favorite", favorite); put("pinned", pinned)
+}
+
 private object NotesStore {
     private const val PREF = "suixin_notes"
     private const val KEY = "state"
     private const val BACKUP_NAME = "suixinji-notes-backup.json"
+    private const val TRASH_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
 
     fun load(context: Context): NotesState {
         val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
@@ -293,35 +365,30 @@ private object NotesStore {
         if (!local.isNullOrBlank()) {
             // Migrate data created by older builds before a possible uninstall.
             if (backupUri(context) == null) writeBackup(context, local)
-            return parse(local)
+            return parseStored(context, local)
         }
         val backup = readBackup(context)
         if (!backup.isNullOrBlank()) {
             prefs.edit().putString(KEY, backup).apply()
-            return parse(backup)
+            return parseStored(context, backup)
         }
         return NotesState()
+    }
+
+    private fun parseStored(context: Context, raw: String): NotesState {
+        val state = parse(raw)
+        val storedTrashCount = runCatching { JSONObject(raw).optJSONArray("trash")?.length() ?: 0 }.getOrDefault(0)
+        if (state.trash.size < storedTrashCount) save(context, state)
+        return state
     }
 
     private fun parse(raw: String): NotesState = runCatching {
         val root = JSONObject(raw)
         NotesState(
-            notes = root.optJSONArray("notes").toList { item ->
-                QuickNote(
-                    id = item.optString("id"),
-                    content = item.optString("content"),
-                    createdAt = item.optLong("createdAt"),
-                    updatedAt = item.optLong("updatedAt", item.optLong("createdAt")),
-                    categoryIds = item.optJSONArray("categoryIds").toStringList(),
-                    status = item.optString("status", "inbox"),
-                    location = item.optNullableString("location"),
-                    mood = item.optString("mood", "NORMAL"),
-                    comments = item.optJSONArray("comments").toList { comment ->
-                        NoteComment(comment.optInt("position"), comment.optString("text"), comment.optBoolean("expanded", true), comment.optLong("createdAt", System.currentTimeMillis()))
-                    },
-                    imageUris = item.optJSONArray("imageUris").toStringList(),
-                )
-            },
+            notes = root.optJSONArray("notes").toList { item -> item.toQuickNote() },
+            trash = root.optJSONArray("trash").toList { item ->
+                DeletedNote(item.getJSONObject("note").toQuickNote(), item.optLong("deletedAt"), item.optInt("originalIndex"))
+            }.filter { it.deletedAt >= System.currentTimeMillis() - TRASH_RETENTION_MS },
             categories = root.optJSONArray("categories").toList { item -> NoteCategory(item.optString("id"), item.optString("name"), item.optNullableString("parentId"), item.optString("path"), item.optLong("color", 0L)) },
             tagPinnedIds = root.optJSONArray("tagPinnedIds").toStringList(),
             drawerPinnedIds = root.optJSONArray("drawerPinnedIds").toStringList(),
@@ -338,13 +405,9 @@ private object NotesStore {
 
     fun serialize(state: NotesState): String = JSONObject().apply {
             put("notes", JSONArray().apply {
-                state.notes.forEach { note -> put(JSONObject().apply {
-                    put("id", note.id); put("content", note.content); put("createdAt", note.createdAt); put("updatedAt", note.updatedAt)
-                    put("categoryIds", JSONArray(note.categoryIds)); put("status", note.status); put("location", note.location); put("mood", note.mood)
-                    put("comments", JSONArray().apply { note.comments.forEach { comment -> put(JSONObject().apply { put("position", comment.position); put("text", comment.text); put("expanded", comment.expanded); put("createdAt", comment.createdAt) }) } })
-                    put("imageUris", JSONArray(note.imageUris))
-                }) }
+                state.notes.forEach { note -> put(note.toJson()) }
             })
+            put("trash", JSONArray().apply { state.trash.forEach { item -> put(JSONObject().apply { put("note", item.note.toJson()); put("deletedAt", item.deletedAt); put("originalIndex", item.originalIndex) }) } })
             put("categories", JSONArray().apply { state.categories.forEach { put(JSONObject().apply { put("id", it.id); put("name", it.name); put("parentId", it.parentId); put("path", it.path); put("color", it.color) }) } })
             put("tagPinnedIds", JSONArray(state.tagPinnedIds))
             put("drawerPinnedIds", JSONArray(state.drawerPinnedIds))
@@ -412,27 +475,52 @@ private fun queryFolderImages(context: Context, treeUri: Uri): List<Uri> = runCa
 }.getOrDefault(emptyList())
 
 class NotesActivity : ComponentActivity() {
+    private var widgetLaunchSequence = 0
+    private var widgetLaunchRequest by mutableStateOf<WidgetLaunchRequest?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        acceptWidgetIntent(intent)
         setContent {
             MaterialTheme(typography = NoteTypography, colorScheme = lightColorScheme(primary = NotePrimary, secondary = NoteAccent, background = NotePaper, surface = Color.White, onSurface = NoteInk)) {
-                NotesApp()
+                NotesApp(widgetLaunchRequest)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        acceptWidgetIntent(intent)
+    }
+
+    private fun acceptWidgetIntent(intent: android.content.Intent?) {
+        when (intent?.action) {
+            NoteWidgetContract.ACTION_NEW_NOTE -> widgetLaunchRequest = WidgetLaunchRequest(++widgetLaunchSequence, null)
+            NoteWidgetContract.ACTION_OPEN_NOTE -> widgetLaunchRequest = WidgetLaunchRequest(++widgetLaunchSequence, intent.getStringExtra(NoteWidgetContract.EXTRA_NOTE_ID))
+            NoteWidgetContract.ACTION_SELECT_FAVORITE -> widgetLaunchRequest = WidgetLaunchRequest(
+                ++widgetLaunchSequence,
+                null,
+                intent.getIntExtra(NoteWidgetContract.EXTRA_WIDGET_ID, -1).takeIf { it >= 0 },
+            )
         }
     }
 }
 
-private enum class NotesPage { HOME, ORGANIZER, TAGS, WALK, MY, LETTERS, CATEGORY }
+private enum class NotesPage { HOME, ORGANIZER, TAGS, WALK, FAVORITES, MY, LETTERS, CATEGORY, TRASH }
 private enum class WalkFilterMode { RANDOM, MONTH, TAG }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NotesApp() {
+private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val drawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)
     var state by remember { mutableStateOf(NotesStore.load(context)) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    var snackbarBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var page by remember { mutableStateOf(NotesPage.HOME) }
+    var favoriteWidgetId by remember { mutableStateOf<Int?>(null) }
     var selectedCategory by remember { mutableStateOf<NoteCategory?>(null) }
     var tagCategory by remember { mutableStateOf<NoteCategory?>(null) }
     var editorNote by remember { mutableStateOf<QuickNote?>(null) }
@@ -466,6 +554,7 @@ private fun NotesApp() {
                 if (tagCategory != null) tagCategory = parent else page = NotesPage.HOME
             }
             else -> {
+                if (page == NotesPage.FAVORITES) favoriteWidgetId = null
                 page = NotesPage.HOME
                 selectedCategory = null
                 homeDateFilter = null
@@ -476,10 +565,66 @@ private fun NotesApp() {
         }
     }
 
-    fun update(next: NotesState) { state = next; NotesStore.save(context, next) }
+    fun update(next: NotesState) { state = next; NotesStore.save(context, next); NoteWidgets.refreshAll(context) }
+    fun restoreFromTrash(noteId: String): Boolean {
+        val deleted = state.trash.firstOrNull { it.note.id == noteId } ?: return false
+        val restored = if (deleted.note.pinned && state.notes.count { it.pinned } >= MAX_PINNED_NOTES) deleted.note.copy(pinned = false) else deleted.note
+        val notes = if (state.notes.any { it.id == noteId }) state.notes else state.notes.toMutableList().apply { add(deleted.originalIndex.coerceIn(0, size), restored) }
+        update(state.copy(notes = notes, trash = state.trash.filterNot { it.note.id == noteId }))
+        return true
+    }
+    fun deleteNote(note: QuickNote, showUndoNotice: Boolean = true) {
+        val index = state.notes.indexOfFirst { it.id == note.id }
+        if (index < 0) return
+        val now = System.currentTimeMillis()
+        update(state.copy(
+            notes = state.notes.filterNot { it.id == note.id },
+            trash = (state.trash.filterNot { it.note.id == note.id } + DeletedNote(note, now, index))
+                .filter { it.deletedAt >= now - 30L * 24 * 60 * 60 * 1000 },
+        ))
+        snackbarHostState.currentSnackbarData?.dismiss()
+        if (showUndoNotice) {
+            scope.launch {
+                val result = snackbarHostState.showSnackbar(
+                    message = "已删除放入回收站",
+                    actionLabel = "撤销",
+                    withDismissAction = true,
+                    duration = SnackbarDuration.Indefinite,
+                )
+                if (result == SnackbarResult.ActionPerformed) restoreFromTrash(note.id)
+            }
+        }
+    }
+    LaunchedEffect(state.trash) {
+        state.trash.minOfOrNull { it.deletedAt + 30L * 24 * 60 * 60 * 1000 }?.let { expiresAt ->
+            val wait = expiresAt - System.currentTimeMillis()
+            if (wait > 0) delay(wait)
+            val currentCutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+            if (state.trash.any { it.deletedAt <= currentCutoff }) {
+                update(state.copy(trash = state.trash.filter { it.deletedAt > currentCutoff }))
+            }
+        }
+    }
     fun openEditor(note: QuickNote, returnPage: NotesPage = page) {
         editorReturnPage = returnPage
         editorNote = note
+    }
+    LaunchedEffect(widgetLaunchRequest?.sequence) {
+        widgetLaunchRequest?.let { request ->
+            if (request.favoriteWidgetId != null) {
+                favoriteWidgetId = request.favoriteWidgetId
+                page = NotesPage.FAVORITES
+                editorNote = null
+                return@let
+            }
+            val note = request.noteId?.let { id -> state.notes.firstOrNull { it.id == id } }
+            val target = note ?: run {
+                val now = System.currentTimeMillis()
+                QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList())
+            }
+            page = NotesPage.HOME
+            openEditor(target, NotesPage.HOME)
+        }
     }
     fun noteWithTags(note: QuickNote): QuickNote {
         val categories = state.categories.toMutableList()
@@ -516,7 +661,7 @@ private fun NotesApp() {
                 if (tagCategory != null) tagCategory = parent else page = NotesPage.HOME
             }
             NotesPage.LETTERS -> { page = lettersReturnPage; selectedCategory = null }
-            NotesPage.MY, NotesPage.ORGANIZER, NotesPage.WALK -> page = NotesPage.HOME
+            NotesPage.MY, NotesPage.ORGANIZER, NotesPage.WALK, NotesPage.FAVORITES, NotesPage.TRASH -> page = NotesPage.HOME
             else -> Unit
         }
     }
@@ -534,12 +679,29 @@ private fun NotesApp() {
                         val pinned = state.drawerPinnedIds
                         update(state.copy(drawerPinnedIds = if (category.id in pinned) pinned - category.id else if (pinned.size < 6) pinned + category.id else pinned))
                     },
-                ) { target, category -> page = target; selectedCategory = category; scope.launch { drawerState.close() } }
+                ) { target, category ->
+                    if (target != NotesPage.FAVORITES) favoriteWidgetId = null
+                    page = target
+                    selectedCategory = category
+                    scope.launch { drawerState.close() }
+                }
             }
         },
     ) {
         Scaffold(
-            modifier = Modifier.pointerInput(page, tagCategory?.id, selectedCategory?.id) {
+            modifier = Modifier
+                .pointerInput(snackbarHostState.currentSnackbarData) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val down = event.changes.firstOrNull { it.pressed && !it.previousPressed }
+                            if (down != null && snackbarBounds?.contains(down.position) != true) {
+                                snackbarHostState.currentSnackbarData?.dismiss()
+                            }
+                        }
+                    }
+                }
+                .pointerInput(page, tagCategory?.id, selectedCategory?.id) {
                 var startX = 0f
                 var distance = 0f
                 detectHorizontalDragGestures(
@@ -552,6 +714,11 @@ private fun NotesApp() {
                     onDragEnd = { if (startX <= 36.dp.toPx() && distance > 90.dp.toPx()) navigateBackFromPage(); distance = 0f },
                     onDragCancel = { distance = 0f },
                 )
+            },
+            snackbarHost = {
+                SnackbarHost(snackbarHostState, modifier = Modifier.onGloballyPositioned { snackbarBounds = it.boundsInRoot() }) { data ->
+                    Snackbar(data, containerColor = Color(0xFFFFE9E6), contentColor = Color(0xFF8F1D18), actionColor = NotePrimary)
+                }
             },
             containerColor = NotePaper,
             topBar = {
@@ -566,7 +733,7 @@ private fun NotesApp() {
                                 }
                                 val parent = category.parentId?.let { parentId -> state.categories.firstOrNull { it.id == parentId } }
                                 val children = state.categories.filter { it.parentId == category.id }
-                                DropdownMenu(expanded = showCategoryMenu, onDismissRequest = { showCategoryMenu = false }, modifier = Modifier.background(Color.White, RoundedCornerShape(18.dp))) {
+                                NotePopupMenu(expanded = showCategoryMenu, onDismissRequest = { showCategoryMenu = false }) {
                                     Surface(color = Color.White, shape = RoundedCornerShape(18.dp)) {
                                         Column(Modifier.padding(vertical = 6.dp)) {
                                             Text("标签操作", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 18.dp, vertical = 7.dp))
@@ -576,12 +743,12 @@ private fun NotesApp() {
                                         }
                                     }
                                 }
-                                DropdownMenu(expanded = showChildCategoryMenu, onDismissRequest = { showChildCategoryMenu = false }, modifier = Modifier.background(Color.White, RoundedCornerShape(18.dp))) {
+                                NotePopupMenu(expanded = showChildCategoryMenu, onDismissRequest = { showChildCategoryMenu = false }) {
                                     Surface(color = Color.White, shape = RoundedCornerShape(18.dp)) { Column(Modifier.padding(vertical = 6.dp)) { children.forEach { child -> DropdownMenuItem(text = { Text("#${child.name}") }, onClick = { selectedCategory = child; showChildCategoryMenu = false }) } } }
                                 }
                             }
                         } else {
-                            Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.TAGS -> "标签"; NotesPage.WALK -> "漫步"; NotesPage.MY -> "我的"; NotesPage.LETTERS -> "信件"; NotesPage.CATEGORY -> "分类" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(when (page) { NotesPage.HOME -> "随心记"; NotesPage.ORGANIZER -> "整理"; NotesPage.TAGS -> "标签"; NotesPage.WALK -> "漫步"; NotesPage.FAVORITES -> "收藏列表"; NotesPage.MY -> "我的"; NotesPage.LETTERS -> "信件"; NotesPage.CATEGORY -> "分类"; NotesPage.TRASH -> "回收站" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     },
                     navigationIcon = {
@@ -598,7 +765,7 @@ private fun NotesApp() {
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = NotePaper),
                 )
             },
-            bottomBar = { MainNavigation(page) { target -> page = target; selectedCategory = null; homeDateFilter = null; showHomeSearch = false; showTagsSearch = false; showCategorySearch = false; if (target != NotesPage.TAGS) tagCategory = null } },
+            bottomBar = { MainNavigation(page) { target -> favoriteWidgetId = null; page = target; selectedCategory = null; homeDateFilter = null; showHomeSearch = false; showTagsSearch = false; showCategorySearch = false; if (target != NotesPage.TAGS) tagCategory = null } },
             floatingActionButton = {
                 if (page == NotesPage.TAGS) {
                     Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -636,13 +803,13 @@ private fun NotesApp() {
             },
         ) { padding ->
             when (page) {
-                NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { lettersReturnPage = NotesPage.HOME; page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
-                NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }) }
-                NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { openEditor(it, NotesPage.ORGANIZER) })
-                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onTogglePinned = { category ->
+                NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { lettersReturnPage = NotesPage.HOME; page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote)
+                NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote) }
+                NotesPage.ORGANIZER -> OrganizerPage(state, padding, onUpdate = ::update, onEdit = { openEditor(it, NotesPage.ORGANIZER) }, onDelete = { deleteNote(it, showUndoNotice = false) }, onDismissDeleteNotice = { snackbarHostState.currentSnackbarData?.dismiss() })
+                NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onTogglePinned = { category ->
                     val pinned = state.tagPinnedIds
                     update(state.copy(tagPinnedIds = if (category.id in pinned) pinned - category.id else if (pinned.size < 6) pinned + category.id else pinned))
-                }, onRename = { renameTarget = it }, onDeleteNote = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) }, onDeleteMany = { selectedCategories ->
+                }, onRename = { renameTarget = it }, onDeleteNote = ::deleteNote, onDeleteMany = { selectedCategories ->
                     val removedIds = state.categories.filter { item -> selectedCategories.any { category -> item.id == category.id || item.path.startsWith("${category.path}/") } }.map { it.id }.toSet()
                     update(state.copy(
                         categories = state.categories.filterNot { it.id in removedIds },
@@ -652,7 +819,19 @@ private fun NotesApp() {
                     ))
                     tagCategory = null
                 })
-                NotesPage.WALK -> WalkPage(state, padding, onEdit = { openEditor(it, NotesPage.WALK) }, onDelete = { note -> update(state.copy(notes = state.notes.filterNot { it.id == note.id })) })
+                NotesPage.WALK -> WalkPage(state, padding, onEdit = { openEditor(it, NotesPage.WALK) }, onDelete = ::deleteNote, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onUpdate = ::update)
+                NotesPage.FAVORITES -> FavoriteNotesPage(state.notes.filter { it.favorite }.sortedByDescending { it.createdAt }, padding) { note ->
+                    val widgetId = favoriteWidgetId
+                    if (widgetId != null) {
+                        NoteWidgets.setFavorite(context, widgetId, note.id)
+                        favoriteWidgetId = null
+                        page = NotesPage.HOME
+                        (context as? Activity)?.finish()
+                    } else {
+                        openEditor(note, NotesPage.FAVORITES)
+                    }
+                }
+                NotesPage.TRASH -> TrashPage(state.trash, padding, onRestore = { restoreFromTrash(it) }, onDeleteForever = { noteId -> update(state.copy(trash = state.trash.filterNot { it.note.id == noteId })) })
             NotesPage.MY -> MyPage(state, padding, onLetters = { lettersReturnPage = NotesPage.MY; page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; page = NotesPage.HOME }, onImport = { bundle ->
                     var importState = state
                     val mergedCategories = importState.categories.toMutableList()
@@ -684,7 +863,30 @@ private fun NotesApp() {
             }
         }
     }
-    editorNote?.let { note -> key(note.id) { QuickNoteEditor(note, state.categories, onDismiss = { editorNote = null; page = editorReturnPage }, onSave = { saveNote(it) }, onNext = { val now = System.currentTimeMillis(); editorNote = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()) }, onDelete = { update(state.copy(notes = state.notes.filterNot { current -> current.id == note.id })); editorNote = null }) } }
+    editorNote?.let { note -> key(note.id) { QuickNoteEditor(
+        note,
+        state.categories,
+        state.notes,
+        onDismiss = { editorNote = null; page = editorReturnPage },
+        onSave = { saveNote(it) },
+        onNext = { val now = System.currentTimeMillis(); editorNote = QuickNote(UUID.randomUUID().toString(), "", now, now, emptyList()) },
+        onDelete = { draft ->
+            if (state.notes.none { it.id == draft.id }) saveNote(draft)
+            deleteNote(draft)
+            editorNote = null
+            page = editorReturnPage
+        },
+        onToggleFavorite = { favorite -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(favorite = favorite) else current })) },
+        onTogglePinned = { pinned ->
+            if (pinned && !note.pinned && state.notes.count { it.pinned && it.id != note.id } >= MAX_PINNED_NOTES) {
+                Toast.makeText(context, "最多置顶6篇哦", Toast.LENGTH_SHORT).show()
+                false
+            } else {
+                update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(pinned = pinned) else current }))
+                true
+            }
+        },
+    ) } }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
     letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null; page = lettersReturnPage }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null; page = lettersReturnPage }) }
     renameTarget?.let { category ->
@@ -743,18 +945,37 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
 @Composable
 private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCategory?, onRename: (NoteCategory) -> Unit, onTogglePinned: (NoteCategory) -> Unit, onNavigate: (NotesPage, NoteCategory?) -> Unit) {
     var expandedTags by remember { mutableStateOf(emptySet<String>()) }
-    val rootTags = orderedCategories(state.categories.filter { it.parentId == null }, state.drawerPinnedIds)
+    val rootTags = state.categories.filter { it.parentId == null }
+    val pinnedTags = orderedCategories(state.categories.filter { it.id in state.drawerPinnedIds }, state.drawerPinnedIds)
 
-    Column(Modifier.fillMaxSize().background(NotePaper).padding(vertical = 18.dp)) {
+    Column(Modifier.fillMaxSize().background(NotePaper).verticalScroll(rememberScrollState()).padding(vertical = 18.dp)) {
         Text("随心记", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp))
         DrawerItem("首页", Icons.Filled.Home, page == NotesPage.HOME) { onNavigate(NotesPage.HOME, null) }
         DrawerItem("随记箱 · ${state.notes.count { it.status == "inbox" }}", Icons.Filled.Inbox, page == NotesPage.ORGANIZER) { onNavigate(NotesPage.ORGANIZER, null) }
         DrawerItem("整理", Icons.Filled.Tune, page == NotesPage.ORGANIZER) { onNavigate(NotesPage.ORGANIZER, null) }
         DrawerItem("漫步", Icons.Filled.Book, page == NotesPage.WALK) { onNavigate(NotesPage.WALK, null) }
+        DrawerItem("收藏列表", Icons.Filled.Favorite, page == NotesPage.FAVORITES) { onNavigate(NotesPage.FAVORITES, null) }
         DrawerItem("我的", Icons.Filled.Person, page == NotesPage.MY || page == NotesPage.LETTERS) { onNavigate(NotesPage.MY, null) }
         Divider(Modifier.padding(vertical = 12.dp))
         Text("分类", style = MaterialTheme.typography.labelLarge, color = NoteMuted, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Text("已置顶的标签", style = MaterialTheme.typography.labelLarge, color = NoteMuted, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
+            pinnedTags.forEach { category ->
+                DrawerTagRow(
+                    category = category,
+                    allCategories = state.categories,
+                    notes = state.notes,
+                    selected = selected,
+                    expandedTags = expandedTags,
+                    onToggle = { id -> expandedTags = if (id in expandedTags) expandedTags - id else expandedTags + id },
+                    onRename = onRename,
+                    pinnedIds = state.drawerPinnedIds,
+                    onTogglePinned = onTogglePinned,
+                    onNavigate = onNavigate,
+                    flat = true,
+                )
+            }
+            Divider(Modifier.padding(vertical = 8.dp))
+            Text("标签", style = MaterialTheme.typography.labelLarge, color = NoteMuted, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
             rootTags.forEach { category ->
                 DrawerTagRow(
                     category = category,
@@ -772,8 +993,61 @@ private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCate
             if (rootTags.isEmpty()) {
                 Text("还没有标签", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 22.dp, vertical = 12.dp))
             }
-        }
+        DrawerItem("回收站 · ${state.trash.size}", Icons.Filled.DeleteOutline, page == NotesPage.TRASH) { onNavigate(NotesPage.TRASH, null) }
         Text("本地保存 · ${state.notes.size} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 22.dp, vertical = 18.dp))
+    }
+}
+
+@Composable
+private fun TrashPage(
+    trash: List<DeletedNote>,
+    padding: PaddingValues,
+    onRestore: (String) -> Boolean,
+    onDeleteForever: (String) -> Unit,
+) {
+    var deleteTarget by remember { mutableStateOf<String?>(null) }
+    deleteTarget?.let { noteId ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("永久删除笔记") },
+            text = { Text("永久删除后无法恢复，确定继续吗？") },
+            confirmButton = { TextButton(onClick = { onDeleteForever(noteId); deleteTarget = null }) { Text("永久删除", color = Color(0xFFB3261E)) } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+        )
+    }
+    Column(Modifier.fillMaxSize().padding(padding)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)
+                .background(Color(0xFFFFE9E6), RoundedCornerShape(8.dp)).padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.DeleteOutline, null, tint = Color(0xFFB3261E), modifier = Modifier.size(19.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("回收站中的笔记将在 30 天后自动清除", color = Color(0xFFB3261E), style = MaterialTheme.typography.bodySmall)
+        }
+        if (trash.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyHint("回收站为空") }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(trash.sortedByDescending { it.deletedAt }, key = { it.note.id }) { deleted ->
+                    val remainingDays = ((30L * 24 * 60 * 60 * 1000 - (System.currentTimeMillis() - deleted.deletedAt)) / (24L * 60 * 60 * 1000)).toInt().coerceAtLeast(0)
+                    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text(deleted.note.content.ifBlank { "（空白笔记）" }, color = NoteInk, style = MaterialTheme.typography.bodyLarge, maxLines = 8, overflow = TextOverflow.Ellipsis)
+                            Text("删除于 ${prettyTime(deleted.deletedAt)} · ${remainingDays} 天后清除", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                TextButton(onClick = { onRestore(deleted.note.id) }) { Text("恢复", color = NotePrimary) }
+                                TextButton(onClick = { deleteTarget = deleted.note.id }) { Text("永久删除", color = Color(0xFFB3261E)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -789,18 +1063,20 @@ private fun DrawerTagRow(
     pinnedIds: List<String>,
     onTogglePinned: (NoteCategory) -> Unit,
     onNavigate: (NotesPage, NoteCategory?) -> Unit,
+    flat: Boolean = false,
 ) {
-    val children = orderedCategories(allCategories.filter { it.parentId == category.id }, pinnedIds)
+    val children = if (flat) emptyList() else allCategories.filter { it.parentId == category.id }
     val isExpanded = category.id in expandedTags
     val noteCount = notes.count { category.id in it.categoryIds }
     val selectedRow = selected?.id == category.id
+    val isPinned = category.id in pinnedIds
     var menuOpen by remember(category.id) { mutableStateOf(false) }
 
     Row(
         Modifier.fillMaxWidth()
-            .background(if (selectedRow) NoteSoft else Color.Transparent)
+            .background(if (selectedRow) NoteSoft else if (isPinned) NoteSoft.copy(alpha = 0.45f) else Color.Transparent)
             .clickable { onNavigate(NotesPage.CATEGORY, category) }
-            .padding(start = (12 + category.path.count { it == '/' } * 16).dp, end = 18.dp, top = 9.dp, bottom = 9.dp),
+            .padding(start = (if (flat) 12 else 12 + category.path.count { it == '/' } * 16).dp, end = 18.dp, top = 9.dp, bottom = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (children.isNotEmpty()) {
@@ -810,13 +1086,14 @@ private fun DrawerTagRow(
         } else {
             Spacer(Modifier.width(28.dp))
         }
-        Icon(Icons.Filled.Label, null, tint = if (selectedRow) NotePrimary else NoteMuted, modifier = Modifier.size(18.dp))
+        Icon(Icons.Filled.Label, null, tint = if (selectedRow) NotePrimary else if (isPinned) Color(0xFF34251B) else NoteMuted, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text("#${category.name}", color = if (selectedRow) NotePrimary else NoteInk, fontSize = 14.sp, fontWeight = if (selectedRow) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
+        Text("#${category.name}", color = if (selectedRow) NotePrimary else if (isPinned) Color(0xFF34251B) else NoteInk, fontSize = 14.sp, fontWeight = if (selectedRow || isPinned) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f), maxLines = 1)
+        if (isPinned) Icon(Icons.Filled.PushPin, "已置顶", tint = Color(0xFF34251B), modifier = Modifier.size(16.dp).padding(end = 2.dp))
         Text(noteCount.toString(), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
         Box {
             IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "标签操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            NotePopupMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(text = { Text("修改名字") }, onClick = { menuOpen = false; onRename(category) })
                 DropdownMenuItem(
                     text = { Text(if (category.id in pinnedIds) "取消置顶" else "置顶") },
@@ -829,7 +1106,7 @@ private fun DrawerTagRow(
 
     if (isExpanded) {
         children.forEach { child ->
-            DrawerTagRow(child, allCategories, notes, selected, expandedTags, onToggle, onRename, pinnedIds, onTogglePinned, onNavigate)
+            DrawerTagRow(child, allCategories, notes, selected, expandedTags, onToggle, onRename, pinnedIds, onTogglePinned, onNavigate, flat = false)
         }
     }
 }
@@ -860,16 +1137,17 @@ private fun NewCategoryDialog(parent: NoteCategory?, onDismiss: () -> Unit, onCr
 
 @Composable
 private fun DrawerItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).background(if (selected) NoteSoft else Color.Transparent).padding(horizontal = 22.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = if (selected) NotePrimary else NoteMuted, modifier = Modifier.size(21.dp)); Spacer(Modifier.width(14.dp)); Text(label, color = NoteInk, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).background(if (selected) NoteSoft else Color.Transparent).padding(horizontal = 22.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = if (selected) NotePrimary else NoteMuted, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(12.dp)); Text(label, color = NoteInk, fontSize = 14.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
     }
 }
 
 @Composable
-private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, dateFilter: String?, searchOpen: Boolean, onClearDateFilter: () -> Unit, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit, onDelete: (QuickNote) -> Unit) {
+private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: PaddingValues, dateFilter: String?, searchOpen: Boolean, onClearDateFilter: () -> Unit, onCapture: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onOrganize: () -> Unit, onDiary: () -> Unit, onLetters: () -> Unit, onEdit: (QuickNote) -> Unit, onComment: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit, onToggleFavorite: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var query by rememberSaveable { mutableStateOf("") }
     val dayFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.CHINA) }
-    val visibleNotes = state.notes.sortedByDescending { it.createdAt }.filter { note ->
+    val visibleNotes = state.notes.sortedWith(compareByDescending<QuickNote> { it.pinned }.thenByDescending { it.createdAt }).filter { note ->
         (dateFilter == null || dayFormat.format(Date(note.createdAt)) == dateFilter) &&
             (query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) })
     }
@@ -890,7 +1168,13 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
             item { Row(verticalAlignment = Alignment.CenterVertically) { Text("全部记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); if (dateFilter == null) { Spacer(Modifier.weight(1f)); TextButton(onClick = onDiary) { Text("漫步") } } } }
             if (state.notes.isEmpty()) item { EmptyHint(if (dateFilter == null) "还没有记录，点击底部输入框开始" else "这一天还没有笔记") }
             if (visibleNotes.isEmpty() && query.isNotBlank()) item { EmptyHint("没有找到匹配的笔记") }
-            items(visibleNotes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }, onDelete = { onDelete(note) }) }
+            items(visibleNotes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, onComment = { onComment(note) }, onToggleComment = { commentIndex -> onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments.mapIndexed { index, comment -> if (index == commentIndex) comment.copy(expanded = !comment.expanded) else comment }) else current })) }, onToggleFavorite = { onToggleFavorite(note) }, onDelete = { onDelete(note) }, onTogglePinned = {
+                if (!note.pinned && state.notes.count { it.pinned } >= MAX_PINNED_NOTES) {
+                    Toast.makeText(context, "最多置顶6篇哦", Toast.LENGTH_SHORT).show()
+                } else {
+                    onUpdate(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(pinned = !current.pinned) else current }))
+                }
+            }) }
             if (state.categories.isNotEmpty()) item { Text("分类空间", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             if (state.categories.isNotEmpty()) item { LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height(((state.categories.count { it.parentId == null } + 1) / 2 * 88).coerceAtLeast(88).dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(state.categories.filter { it.parentId == null }) { category -> Card(Modifier.fillMaxWidth().height(78.dp).clickable { onCategory(category) }, colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) { Text(category.name, fontWeight = FontWeight.Bold); Text("${state.notes.count { category.id in it.categoryIds }} 条记录", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 7.dp)) } } } } }
         }
@@ -907,15 +1191,24 @@ private fun HomePage(state: NotesState, due: List<FutureLetter>, padding: Paddin
 
 @Composable
 private fun SummaryCard(label: String, count: Int, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth(0.48f).height(82.dp).clickable(onClick = onClick), colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = NotePrimary, modifier = Modifier.size(24.dp)); Spacer(Modifier.width(10.dp)); Column { Text(label, color = NoteMuted, style = MaterialTheme.typography.labelMedium); Text(count.toString(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) } } }
+    Card(Modifier.fillMaxWidth(0.38f).height(62.dp).clickable(onClick = onClick), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = NotePrimary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Column {
+                Text(label, color = NoteMuted, fontSize = 13.sp)
+                Text(count.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
 }
 
 @Composable
 private fun LetterSummaryIconCard(count: Int, onClick: () -> Unit) {
-    Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 3.dp, modifier = Modifier.fillMaxWidth(0.48f).height(82.dp).clickable(onClick = onClick)) {
+    Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 3.dp, modifier = Modifier.fillMaxWidth(0.34f).height(62.dp).clickable(onClick = onClick)) {
       Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Icon(Icons.Filled.MailOutline, "信", tint = NotePrimary, modifier = Modifier.size(36.dp))
-        Surface(color = NoteAccent, shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(22.dp)) {
+        Icon(Icons.Filled.MailOutline, "信", tint = NotePrimary, modifier = Modifier.size(26.dp))
+        Surface(color = NoteAccent, shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(18.dp)) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) { Text(count.toString(), color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
         }
       }
@@ -932,22 +1225,100 @@ private fun LetterSummaryCard(count: Int, onClick: () -> Unit) {
     }
 }
 
+@Composable
+private fun NotePopupMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    compact: Boolean = false,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    val menuColorScheme = MaterialTheme.colorScheme.copy(
+        primary = Color.White,
+        surface = Color.White,
+        surfaceTint = Color.White,
+        surfaceContainerLowest = Color.White,
+        surfaceContainerLow = Color.White,
+        surfaceContainer = Color.White,
+        surfaceContainerHigh = Color.White,
+        surfaceContainerHighest = Color.White,
+    )
+    MaterialTheme(colorScheme = menuColorScheme) {
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = onDismissRequest,
+            shape = RoundedCornerShape(14.dp),
+            containerColor = Color.White,
+            tonalElevation = 0.dp,
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                .widthIn(min = if (compact) 168.dp else 200.dp, max = if (compact) 232.dp else 280.dp),
+        ) {
+            Column(Modifier.padding(vertical = 5.dp), content = content)
+        }
+    }
+}
+
+@Composable
+private fun NoteActionMenuItem(
+    label: String,
+    icon: @Composable () -> Unit,
+    onClick: () -> Unit,
+    destructive: Boolean = false,
+) {
+    DropdownMenuItem(
+        text = { Text(label, fontSize = 14.sp, color = if (destructive) Color(0xFFB3261E) else NoteInk, maxLines = 1) },
+        leadingIcon = icon,
+        modifier = Modifier.height(40.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp),
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun NoteOverflowMenu(note: QuickNote, onToggleFavorite: () -> Unit, onTogglePinned: (() -> Unit)?, onDelete: () -> Unit, showDeleteDialog: Boolean, onDeleteDialogChange: (Boolean) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showActions by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { showActions = true }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.MoreVert, "笔记操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
+        NotePopupMenu(expanded = showActions, onDismissRequest = { showActions = false }, compact = true) {
+            NoteActionMenuItem("复制全文", icon = { Icon(Icons.Filled.ContentCopy, null, tint = NoteMuted, modifier = Modifier.size(18.dp)) }, onClick = {
+                showActions = false
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("随心记", note.content))
+                Toast.makeText(context, "已复制全文", Toast.LENGTH_SHORT).show()
+            })
+            NoteActionMenuItem(if (note.favorite) "取消收藏" else "收藏", icon = { Icon(if (note.favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, null, tint = NoteAccent, modifier = Modifier.size(18.dp)) }, onClick = { showActions = false; onToggleFavorite() })
+            if (onTogglePinned != null) NoteActionMenuItem(if (note.pinned) "取消置顶" else "置顶", icon = { Icon(Icons.Filled.PushPin, null, tint = NoteMuted, modifier = Modifier.size(18.dp)) }, onClick = { showActions = false; onTogglePinned() })
+            NoteActionMenuItem("删除", icon = { Icon(Icons.Filled.DeleteOutline, null, tint = Color(0xFFB3261E), modifier = Modifier.size(18.dp)) }, onClick = { showActions = false; onDeleteDialogChange(true) }, destructive = true)
+        }
+    }
+    if (showDeleteDialog) AlertDialog(onDismissRequest = { onDeleteDialogChange(false) }, title = { Text("删除笔记") }, text = { Text("确定删除这条笔记吗？") }, confirmButton = { TextButton(onClick = { onDeleteDialogChange(false); onDelete() }) { Text("删除") } }, dismissButton = { TextButton(onClick = { onDeleteDialogChange(false) }) { Text("取消") } })
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, onEdit: (QuickNote) -> Unit, onToggleComment: (Int) -> Unit, onComment: () -> Unit = {}, onDelete: () -> Unit = {}, modifier: Modifier = Modifier) {
+private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, onEdit: (QuickNote) -> Unit, onToggleComment: (Int) -> Unit, onComment: () -> Unit = {}, onToggleFavorite: () -> Unit = {}, onDelete: () -> Unit = {}, onTogglePinned: (() -> Unit)? = null, modifier: Modifier = Modifier) {
     var expanded by rememberSaveable(note.id) { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     val longText = note.content.length > 180 || note.content.count { it == '\n' } > 6
-    Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }, onLongClick = { showDeleteDialog = true }), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 5.dp)) {
+    Card(modifier.fillMaxWidth().combinedClickable(onClick = { if (longText) expanded = !expanded }, onDoubleClick = { onEdit(note) }, onLongClick = { showDeleteDialog = true }), colors = CardDefaults.cardColors(containerColor = if (note.pinned) Color(0xFFE5DED5) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 5.dp)) {
         Column(Modifier.padding(16.dp)) {
-            CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, showEye = false)
-            if (longText) Text(if (expanded) "点击收起 · 双击编辑" else "点击展开 · 双击编辑", color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall); note.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }; Text(" · ${moodLabel(note.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall); Spacer(Modifier.weight(1f)); if (note.comments.isEmpty()) IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(prettyTime(note.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                moodEmoji(note.mood).takeIf { it.isNotEmpty() }?.let { Text(it, modifier = Modifier.padding(start = 6.dp), fontSize = 15.sp) }
+                note.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
+                Spacer(Modifier.weight(1f))
+                if (note.pinned) Icon(Icons.Filled.PushPin, "已置顶", tint = NoteInk, modifier = Modifier.size(16.dp))
+                if (note.favorite) Icon(Icons.Filled.Favorite, "已收藏", tint = NoteAccent, modifier = Modifier.size(16.dp))
+                NoteOverflowMenu(note, onToggleFavorite, onTogglePinned, onDelete, showDeleteDialog, { showDeleteDialog = it })
+            }
+            CommentedNotePreview(note.content, note.comments, onToggleComment, maxLines = if (longText && !expanded) 7 else Int.MAX_VALUE, showEye = true, modifier = Modifier.fillMaxWidth())
+            if (longText) Text(if (expanded) "收起" else "展开", color = NoteTagColor, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) { Spacer(Modifier.weight(1f)); if (note.comments.isEmpty()) IconButton(onClick = onComment, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.ChatBubbleOutline, "添加评论", tint = NoteAccent, modifier = Modifier.size(19.dp)) } }
             val paths = note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }
             if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp))
         }
     }
-    if (showDeleteDialog) AlertDialog(onDismissRequest = { showDeleteDialog = false }, title = { Text("删除笔记") }, text = { Text("确定删除这条笔记吗？") }, confirmButton = { TextButton(onClick = { showDeleteDialog = false; onDelete() }) { Text("删除") } }, dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("取消") } })
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -955,16 +1326,15 @@ private fun NoteTimelineCard(note: QuickNote, categories: List<NoteCategory>, on
 private fun CommentPreview(comments: List<NoteComment>, onToggle: (Int) -> Unit, showEye: Boolean = true, onDoubleClick: (Int) -> Unit = {}, modifier: Modifier = Modifier) {
     Column(modifier) {
         comments.forEachIndexed { index, comment ->
-            Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+            Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
                 if (showEye) {
-                    IconButton(onClick = { onToggle(index) }, modifier = Modifier.size(22.dp)) { Icon(if (comment.expanded) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "展开或隐藏评论", tint = NoteAccent, modifier = Modifier.size(17.dp)) }
+                    IconButton(onClick = { onToggle(index) }, modifier = Modifier.size(28.dp)) { Icon(if (comment.expanded) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "展开或隐藏评论", tint = NoteAccent, modifier = Modifier.size(18.dp)) }
                 }
-                Icon(Icons.Filled.ChatBubbleOutline, "评论", tint = NoteAccent, modifier = Modifier.size(16.dp).padding(start = 2.dp, top = 3.dp))
                 if ((!showEye || comment.expanded) && comment.text.isNotBlank()) {
-                    Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 7.dp).combinedClickable(onClick = {}, onDoubleClick = { onDoubleClick(index) })) {
-                        Column(Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) {
-                            Text(comment.text, color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 11.sp)
-                            Text(prettyTime(comment.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall, fontSize = 9.sp, modifier = Modifier.padding(top = 2.dp))
+                    Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f).combinedClickable(onClick = {}, onDoubleClick = { onDoubleClick(index) })) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp)) {
+                            Text(comment.text, color = NoteCommentColor, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp)
+                            Text(prettyTime(comment.createdAt), color = NoteMuted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
                         }
                     }
                 }
@@ -984,12 +1354,8 @@ private fun CommentedNotePreview(content: String, comments: List<NoteComment>, o
             var cursor = 0
             sorted.forEach { indexed ->
                 val position = indexed.value.position.coerceIn(cursor, content.length)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                    if (position > cursor) Text(markdownInline(content.substring(cursor, position)), modifier = Modifier.weight(1f), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
-                    else Spacer(Modifier.weight(1f))
-                    Icon(Icons.Filled.ChatBubbleOutline, "评论位置", tint = NoteAccent, modifier = Modifier.size(17.dp).combinedClickable(onClick = {}, onDoubleClick = { onDoubleClickComment(indexed.index) }))
-                }
-                CommentPreview(listOf(indexed.value), { onToggle(indexed.index) }, showEye = showEye, onDoubleClick = { onDoubleClickComment(indexed.index) }, modifier = Modifier.padding(vertical = 2.dp))
+                if (position > cursor) Text(markdownInline(content.substring(cursor, position)), modifier = Modifier.fillMaxWidth(), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+                CommentPreview(listOf(indexed.value), { onToggle(indexed.index) }, showEye = showEye, onDoubleClick = { onDoubleClickComment(indexed.index) }, modifier = Modifier.fillMaxWidth())
                 cursor = position
             }
             if (cursor < content.length) Text(markdownInline(content.substring(cursor)), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
@@ -1011,10 +1377,10 @@ private fun CommentSheet(note: QuickNote, onDismiss: () -> Unit, onSave: (NoteCo
     }
 }
 
-private fun moodLabel(mood: String): String = when (mood) { "HAPPY" -> "开心"; "SAD" -> "不开心"; else -> "正常" }
+private fun moodLabel(mood: String): String = when (mood) { "HAPPY" -> "开心"; "SAD" -> "不开心"; "NORMAL_SELECTED" -> "正常"; else -> "选择心情" }
 
 @Composable
-private fun CategoryPage(state: NotesState, category: NoteCategory, padding: PaddingValues, searchOpen: Boolean, onAdd: () -> Unit, onEdit: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onDelete: (QuickNote) -> Unit) {
+private fun CategoryPage(state: NotesState, category: NoteCategory, padding: PaddingValues, searchOpen: Boolean, onAdd: () -> Unit, onEdit: (QuickNote) -> Unit, onCategory: (NoteCategory) -> Unit, onToggleFavorite: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit) {
     var query by rememberSaveable(category.id) { mutableStateOf("") }
     val children = state.categories.filter { it.parentId == category.id }
     val visibleChildren = children.filter { query.isBlank() || it.name.contains(query, true) || it.path.contains(query, true) }
@@ -1024,7 +1390,7 @@ private fun CategoryPage(state: NotesState, category: NoteCategory, padding: Pad
         item { OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("在这里写一条") } }
         if (visibleChildren.isNotEmpty()) { item { Text("子分类", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }; items(visibleChildren) { child -> Surface(Modifier.fillMaxWidth().clickable { onCategory(child) }, color = NoteSoft, shape = RoundedCornerShape(10.dp)) { Text(child.name, modifier = Modifier.padding(14.dp), color = NoteInk, fontWeight = FontWeight.Bold) } } }
         item { Text("本分类记录 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        items(notes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onDelete = { onDelete(note) }) }
+        items(notes, key = { it.id }) { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onToggleFavorite = { onToggleFavorite(note) }, onDelete = { onDelete(note) }) }
     }
 }
 
@@ -1037,6 +1403,7 @@ private fun TagsPage(
     searchOpen: Boolean,
     onSelect: (NoteCategory?) -> Unit,
     onEdit: (QuickNote) -> Unit,
+    onToggleFavorite: (QuickNote) -> Unit,
     onDeleteNote: (QuickNote) -> Unit,
     onColorChange: (NoteCategory, Int) -> Unit,
     onTogglePinned: (NoteCategory) -> Unit,
@@ -1047,9 +1414,16 @@ private fun TagsPage(
     var menuTarget by remember { mutableStateOf<NoteCategory?>(null) }
     var showBulkDelete by remember { mutableStateOf(false) }
     var deleteSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var tagsCollapsed by rememberSaveable(selected?.id) { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     val categories = state.categories
-    val visible = orderedCategories(if (selected == null) categories.filter { it.parentId == null } else categories.filter { it.parentId == selected.id }, state.tagPinnedIds).filter { query.isBlank() || it.name.contains(query, true) || it.path.contains(query, true) }
+    val pinnedAtRoot = if (selected == null) orderedCategories(categories.filter { it.id in state.tagPinnedIds }, state.tagPinnedIds) else emptyList()
+    val regularCategories = if (selected == null) {
+        categories.filter { it.parentId == null && it.id !in state.tagPinnedIds }
+    } else {
+        categories.filter { it.parentId == selected.id }
+    }
+    val visible = (pinnedAtRoot + orderedCategories(regularCategories, if (selected == null) state.tagPinnedIds else emptyList())).filter { query.isBlank() || it.name.contains(query, true) || it.path.contains(query, true) }
     val notes = selected?.let { category -> state.notes.filter { note -> category.id in note.categoryIds && (query.isBlank() || note.content.contains(query, true) || note.categoryIds.mapNotNull { id -> categories.firstOrNull { it.id == id }?.path }.any { path -> path.contains(query, true) }) }.sortedByDescending { it.createdAt } }.orEmpty()
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1069,41 +1443,55 @@ private fun TagsPage(
             leadingIcon = { Icon(Icons.Filled.Search, null) },
             trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") } },
         )
-        if (visible.isNotEmpty()) {
-            LazyVerticalGrid(GridCells.Fixed(2), Modifier.fillMaxWidth().height((((visible.size + 1) / 2) * 126).coerceAtLeast(126).dp).padding(top = 12.dp), contentPadding = PaddingValues(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(visible, key = { it.id }) { category ->
-                    val childCount = categories.count { it.parentId == category.id }
-                    val noteCount = state.notes.count { category.id in it.categoryIds }
-                    Surface(color = tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = { onSelect(category) }, onLongClick = { deleteSelection = setOf(category.id); showBulkDelete = true })) {
-                        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                            Column {
-                                Text(category.name, style = MaterialTheme.typography.titleMedium, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = NoteInk)
-                                if (category.parentId != null) Text(category.path, style = MaterialTheme.typography.labelSmall, color = NoteMuted, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
-                            }
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text("$noteCount 条记录${if (childCount > 0) "  ·  $childCount 个子标签" else ""}", style = MaterialTheme.typography.labelSmall, color = NoteMuted, modifier = Modifier.weight(1f))
-                                Box {
-                                    IconButton(onClick = { menuTarget = category }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "标签操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
-                                    DropdownMenu(expanded = menuTarget?.id == category.id, onDismissRequest = { menuTarget = null }) {
-                                        DropdownMenuItem(text = { Text("修改名字") }, onClick = { menuTarget = null; onRename(category) })
-                                        DropdownMenuItem(text = { Text("调整颜色") }, onClick = { menuTarget = null; colorTarget = category })
-                                        DropdownMenuItem(
-                                            text = { Text(if (category.id in state.tagPinnedIds) "取消置顶" else "置顶") },
-                                            enabled = category.id in state.tagPinnedIds || state.tagPinnedIds.size < 6,
-                                            onClick = { menuTarget = null; onTogglePinned(category) },
-                                        )
+        if (visible.isNotEmpty() && !tagsCollapsed) {
+            Column(Modifier.fillMaxWidth().padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                visible.chunked(2).forEach { rowCategories ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        rowCategories.forEach { category ->
+                            val childCount = categories.count { it.parentId == category.id }
+                            val noteCount = state.notes.count { category.id in it.categoryIds }
+                            val isPinned = category.id in state.tagPinnedIds
+                            Surface(color = if (isPinned) pinnedTagColor(category) else tagColor(category), shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f).aspectRatio(1.15f).combinedClickable(onClick = { onSelect(category) }, onLongClick = { deleteSelection = setOf(category.id); showBulkDelete = true })) {
+                                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(category.name, style = MaterialTheme.typography.titleMedium, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = NoteInk)
+                                            if (category.parentId != null) Text(category.path, style = MaterialTheme.typography.labelSmall, color = NoteMuted, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                                        }
+                                        if (isPinned) Icon(Icons.Filled.PushPin, "已置顶", tint = NoteInk, modifier = Modifier.size(17.dp))
+                                    }
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                        Text("$noteCount 条记录${if (childCount > 0) "  ·  $childCount 个子标签" else ""}", style = MaterialTheme.typography.labelSmall, color = NoteMuted, modifier = Modifier.weight(1f))
+                                        Box {
+                                            IconButton(onClick = { menuTarget = category }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "标签操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
+                                            NotePopupMenu(expanded = menuTarget?.id == category.id, onDismissRequest = { menuTarget = null }) {
+                                                DropdownMenuItem(text = { Text("修改名字") }, onClick = { menuTarget = null; onRename(category) })
+                                                DropdownMenuItem(text = { Text("调整颜色") }, onClick = { menuTarget = null; colorTarget = category })
+                                                DropdownMenuItem(
+                                                    text = { Text(if (category.id in state.tagPinnedIds) "取消置顶" else "置顶") },
+                                                    enabled = category.id in state.tagPinnedIds || state.tagPinnedIds.size < 6,
+                                                    onClick = { menuTarget = null; onTogglePinned(category) },
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
+                        if (rowCategories.size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
             }
         }
         if (selected != null) {
+            if (visible.isNotEmpty()) {
+                TextButton(onClick = { tagsCollapsed = !tagsCollapsed }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text(if (tagsCollapsed) "展开标签" else "收起", color = NoteTagColor)
+                }
+            }
             Text("${selected.name} 下的笔记 · ${notes.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
             if (notes.isEmpty()) EmptyHint("这个标签下还没有笔记") else Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 18.dp)) {
-                notes.forEach { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onDelete = { onDeleteNote(note) }) }
+                notes.forEach { note -> NoteTimelineCard(note, state.categories, onEdit, {}, onToggleFavorite = { onToggleFavorite(note) }, onDelete = { onDeleteNote(note) }) }
             }
         } else if (visible.isEmpty()) {
             EmptyHint("还没有标签，记录中添加 #标签 后会自动创建")
@@ -1156,7 +1544,7 @@ private fun TagsPage(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (NotesState) -> Unit, onEdit: (QuickNote) -> Unit) {
+private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (NotesState) -> Unit, onEdit: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit, onDismissDeleteNotice: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var index by remember { mutableStateOf(0) }
     var selected by remember { mutableStateOf<QuickNote?>(null) }
@@ -1170,7 +1558,10 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
     var monthFilter by rememberSaveable { mutableStateOf("全部月份") }
     var batchInput by rememberSaveable { mutableStateOf("20") }
     var showMonthPicker by remember { mutableStateOf(false) }
+    var showNoteDeleteDialog by remember { mutableStateOf(false) }
     var undoState by remember { mutableStateOf<NotesState?>(null) }
+    val deleteUndoStack = remember { mutableStateListOf<Pair<NotesState, String>>() }
+    var pendingFocusId by remember { mutableStateOf<String?>(null) }
     var lastWasSkip by remember { mutableStateOf(false) }
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -1184,16 +1575,34 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
     val inboxIds = inbox.map { it.id }
     val batchCount = batchInput.toIntOrNull()?.coerceIn(1, 500) ?: 20
     val monthOptions = inbox.map { prettyMonth(it.createdAt) }.distinct().sortedDescending()
-    val batch = remember(mode, monthFilter, inboxIds, batchCount) {
+    val batch = remember(mode, monthFilter, inboxIds, batchCount, pendingFocusId) {
         val source = if (mode == "MONTH" && monthFilter != "全部月份") inbox.filter { prettyMonth(it.createdAt) == monthFilter } else inbox
-        if (mode == "RANDOM") source.shuffled().take(batchCount) else if (mode == "MONTH") source.take(batchCount) else source
+        val selectedBatch = if (mode == "RANDOM") source.shuffled().take(batchCount) else if (mode == "MONTH") source.take(batchCount) else source
+        val focusNote = source.firstOrNull { it.id == pendingFocusId }
+        if (focusNote != null && selectedBatch.none { it.id == focusNote.id }) selectedBatch.dropLast(1) + focusNote else selectedBatch
     }
-    val current = batch.getOrNull(index.coerceAtMost((batch.size - 1).coerceAtLeast(0)))
-    val pageScroll = rememberScrollState()
-    LaunchedEffect(mode, monthFilter, batchCount, inboxIds.joinToString("|")) {
-        index = 0
+    val currentId = batch.getOrNull(index.coerceAtMost((batch.size - 1).coerceAtLeast(0)))?.id
+    val current = currentId?.let { id -> state.notes.firstOrNull { it.id == id } }
+    fun deleteForUndo(note: QuickNote) {
+        deleteUndoStack.add(state to note.id)
         undoState = null
         lastWasSkip = false
+        onDelete(note)
+        index = index.coerceAtMost((batch.size - 2).coerceAtLeast(0))
+    }
+    val pageScroll = rememberScrollState()
+    LaunchedEffect(mode, monthFilter, batchCount) {
+        index = 0
+        undoState = null
+        deleteUndoStack.clear()
+        lastWasSkip = false
+    }
+    LaunchedEffect(batch, pendingFocusId) {
+        val noteId = pendingFocusId ?: return@LaunchedEffect
+        val restoredIndex = batch.indexOfFirst { it.id == noteId }
+        if (restoredIndex >= 0) {
+            index = restoredIndex
+        }
     }
     Box(Modifier.fillMaxSize().padding(padding).padding(16.dp).pointerInput(current?.id, photoMode) {
         if (!photoMode && current != null) {
@@ -1254,17 +1663,41 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
                     EmptyHint("随记箱为空，所有记录都整理好了")
                 } else {
                     Text("${index + 1} / ${batch.size}", color = NoteMuted, style = MaterialTheme.typography.labelLarge)
-                    Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelMedium)
                     Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 8.dp,
                         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) })) {
                         SelectionContainer {
                             Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
-                                CommentedNotePreview(current.content, current.comments, {}, showEye = false)
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 18.dp)) {
-                                    Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
-                                    current.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                                    Text(" · ${moodLabel(current.mood)}", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                    moodEmoji(current.mood).takeIf { it.isNotEmpty() }?.let { Text(it, modifier = Modifier.padding(start = 6.dp), fontSize = 15.sp) }
+                                    current.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
+                                    Spacer(Modifier.weight(1f))
+                                    if (current.pinned) Icon(Icons.Filled.PushPin, "已置顶", tint = NoteInk, modifier = Modifier.size(16.dp))
+                                    if (current.favorite) Icon(Icons.Filled.Favorite, "已收藏", tint = NoteAccent, modifier = Modifier.size(16.dp))
+                                    NoteOverflowMenu(
+                                        note = current,
+                                        onToggleFavorite = {
+                                            deleteUndoStack.clear()
+                                            undoState = state
+                                            lastWasSkip = false
+                                            onUpdate(state.copy(notes = state.notes.map { if (it.id == current.id) it.copy(favorite = !it.favorite) else it }))
+                                        },
+                                        onTogglePinned = {
+                                            if (!current.pinned && state.notes.count { it.pinned } >= MAX_PINNED_NOTES) Toast.makeText(context, "最多置顶6篇哦", Toast.LENGTH_SHORT).show()
+                                            else {
+                                                deleteUndoStack.clear()
+                                                undoState = state
+                                                lastWasSkip = false
+                                                onUpdate(state.copy(notes = state.notes.map { if (it.id == current.id) it.copy(pinned = !it.pinned) else it }))
+                                            }
+                                        },
+                                        onDelete = { deleteForUndo(current) },
+                                        showDeleteDialog = showNoteDeleteDialog,
+                                        onDeleteDialogChange = { showNoteDeleteDialog = it },
+                                    )
                                 }
+                                Spacer(Modifier.height(10.dp))
+                                CommentedNotePreview(current.content, current.comments, {}, showEye = false)
                                 val paths = current.categoryIds.mapNotNull { id -> state.categories.firstOrNull { it.id == id }?.path }
                                 if (paths.isNotEmpty()) Text(paths.joinToString(" · "), color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
                             }
@@ -1277,17 +1710,35 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, onUpdate: (
         }
         if (!photoMode) Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFB8B0A8)), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(enabled = current != null, onClick = { if (current != null) { lastWasSkip = true; undoState = null; index++ } }) { Icon(Icons.Filled.SkipNext, "跳过") }
+                    IconButton(enabled = current != null, onClick = { current?.let { note -> deleteUndoStack.clear(); undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) } }) {
+                        Icon(if (current?.favorite == true) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, "收藏", tint = if (current?.favorite == true) NoteAccent else NotePrimary)
+                    }
                     IconButton(enabled = current != null, onClick = { if (current != null) selected = current }) { Icon(Icons.Filled.Label, "归类") }
-                    IconButton(enabled = current != null, onClick = { if (current != null) { undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.filterNot { it.id == current.id })); index = index.coerceAtMost((batch.size - 2).coerceAtLeast(0)) } }) { Icon(Icons.Filled.DeleteOutline, "删除") }
-                    IconButton(onClick = { when { undoState != null -> { onUpdate(undoState!!); index = (index - 1).coerceAtLeast(0); undoState = null }; lastWasSkip -> { index = (index - 1).coerceAtLeast(0); lastWasSkip = false } } }, enabled = undoState != null || lastWasSkip) { Icon(Icons.Filled.Undo, "撤销") }
+                    IconButton(enabled = current != null, onClick = { current?.let(::deleteForUndo) }) { Icon(Icons.Filled.DeleteOutline, "删除") }
+                    IconButton(onClick = {
+                        when {
+                            lastWasSkip -> { index = (index - 1).coerceAtLeast(0); lastWasSkip = false }
+                            deleteUndoStack.isNotEmpty() -> {
+                                val (snapshot, restoreId) = deleteUndoStack.removeAt(deleteUndoStack.lastIndex)
+                                onDismissDeleteNotice()
+                                onUpdate(snapshot)
+                                pendingFocusId = restoreId
+                            }
+                            undoState != null -> {
+                                onDismissDeleteNotice()
+                                onUpdate(undoState!!)
+                                undoState = null
+                            }
+                        }
+                    }, enabled = undoState != null || deleteUndoStack.isNotEmpty() || lastWasSkip) { Icon(Icons.Filled.Undo, "撤销") }
                 }
             }
         }
-    selected?.let { note -> CategoryPicker(state.categories, onDismiss = { selected = null }, onPick = { category -> undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it })); selected = null; index++ }, onCreate = { raw ->
+    selected?.let { note -> CategoryPicker(state.categories, onDismiss = { selected = null }, onPick = { category -> deleteUndoStack.clear(); undoState = state; lastWasSkip = false; onUpdate(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it })); selected = null; index++ }, onCreate = { raw ->
         val clean = raw.trim().trimStart('#')
         if (clean.isNotBlank()) {
             val category = state.categories.firstOrNull { it.path == clean } ?: NoteCategory(UUID.randomUUID().toString(), clean.substringAfterLast('/'), null, clean)
+            deleteUndoStack.clear()
             undoState = state
             lastWasSkip = false
             onUpdate(state.copy(categories = if (state.categories.any { it.path == category.path }) state.categories else state.categories + category, notes = state.notes.map { if (it.id == note.id) it.copy(categoryIds = listOf(category.id), status = "organized", updatedAt = System.currentTimeMillis()) else it }))
@@ -1313,18 +1764,27 @@ private fun CategoryPicker(categories: List<NoteCategory>, onDismiss: () -> Unit
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
-private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onNext: () -> Unit, onDelete: () -> Unit) {
+private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, allNotes: List<QuickNote>, onDismiss: () -> Unit, onSave: (QuickNote) -> Unit, onNext: () -> Unit, onDelete: (QuickNote) -> Unit, onToggleFavorite: (Boolean) -> Unit, onTogglePinned: (Boolean) -> Boolean) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-    var text by remember { mutableStateOf(TextFieldValue(note.content)) }
+    var text by remember { mutableStateOf(TextFieldValue(note.content, TextRange(note.content.length))) }
+    var emptyNumberedMarker by remember { mutableStateOf<IntRange?>(null) }
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
-    var showMoreFormatting by remember { mutableStateOf(false) }
     var location by remember { mutableStateOf(note.location) }
     var mood by remember { mutableStateOf(note.mood) }
     var comments by remember { mutableStateOf(note.comments) }
+    var editorTextLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var editorTextLayoutSource by remember { mutableStateOf<String?>(null) }
+    var editorPosition by remember { mutableStateOf<IntOffset?>(null) }
+    val editorScroll = rememberScrollState()
+    var editorViewportHeight by remember { mutableStateOf(0) }
+    var nativeImeBottom by remember { mutableStateOf(0) }
+    val editorVisualTransformation = remember(comments) { MarkdownVisualTransformation(comments) }
     var commentDraft by remember { mutableStateOf("") }
     var activeComment by remember { mutableStateOf<Int?>(null) }
+    var bodyFocusRequest by remember { mutableStateOf(0) }
+    var bodyFocusSegment by remember { mutableStateOf(0) }
     var createdAt by remember { mutableStateOf(note.createdAt) }
     var showTimeDialog by remember { mutableStateOf(false) }
     var showTagDialog by remember { mutableStateOf(false) }
@@ -1333,7 +1793,48 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     var previewUri by remember { mutableStateOf<Uri?>(null) }
     var showUnsavedDialog by remember { mutableStateOf(false) }
     var showNoteDeleteDialog by remember { mutableStateOf(false) }
+    var showEditorActions by remember { mutableStateOf(false) }
     var savedNote by remember { mutableStateOf(note) }
+    val recentTagCategories = remember(categories, allNotes) {
+        val categoryById = categories.associateBy { it.id }
+        val lastUsed = mutableMapOf<String, Long>()
+        allNotes.sortedByDescending { it.createdAt }.forEach { existingNote ->
+            existingNote.categoryIds.mapNotNull { categoryById[it]?.path }.forEach { path -> lastUsed.putIfAbsent(path, existingNote.createdAt) }
+            NoteTagRegex.findAll(existingNote.content).map { it.groupValues[1] }.forEach { path -> lastUsed.putIfAbsent(path, existingNote.createdAt) }
+        }
+        categories.withIndex()
+            .sortedWith(compareByDescending<IndexedValue<NoteCategory>> { lastUsed[it.value.path] ?: Long.MIN_VALUE }.thenBy { it.index })
+            .map { it.value }
+    }
+    val recentTopLevelCategories = recentTagCategories.filter { it.parentId == null }.take(8)
+    val activeTagQuery = remember(text) {
+        if (!text.selection.collapsed) null else {
+            val cursor = text.selection.start.coerceIn(0, text.text.length)
+            Regex("(?<![\\p{L}\\d_])#([\\p{L}\\d/._-]*)$")
+                .find(text.text.substring(0, cursor))
+                ?.let { match -> Triple(match.range.first, cursor, match.groupValues[1]) }
+        }
+    }
+    val inlineTagSuggestions = activeTagQuery?.let { (_, _, query) ->
+        val parentPath = when {
+            query.endsWith('/') -> query.dropLast(1)
+            '/' in query -> query.substringBeforeLast('/')
+            else -> null
+        }
+        if (parentPath == null) {
+            if (query.isBlank()) recentTopLevelCategories else categories
+                .filter { it.parentId == null && it.name.contains(query, ignoreCase = true) }
+                .sortedWith(compareBy<NoteCategory> { if (it.name.startsWith(query, ignoreCase = true)) 0 else 1 }.thenBy { it.name })
+                .take(8)
+        } else {
+            val parent = categories.firstOrNull { it.path == parentPath }
+            val childQuery = if (query.endsWith('/')) "" else query.substringAfterLast('/')
+            categories
+                .filter { parent != null && it.parentId == parent.id && it.name.contains(childQuery, ignoreCase = true) }
+                .sortedWith(compareBy<NoteCategory> { if (it.name.startsWith(childQuery, ignoreCase = true)) 0 else 1 }.thenBy { it.name })
+                .take(8)
+        }
+    }.orEmpty()
     fun currentNote(): QuickNote = savedNote.copy(
         content = text.text.trim(),
         createdAt = createdAt,
@@ -1358,6 +1859,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     fun replaceEditorText(value: TextFieldValue) {
+        emptyNumberedMarker = null
         if (value != text) {
             undoStack.add(text)
             if (undoStack.size > 50) undoStack.removeAt(0)
@@ -1365,9 +1867,38 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
             text = value
         }
     }
+    fun finishComment() {
+        val index = activeComment ?: return
+        val position = comments[index].position.coerceIn(0, text.text.length)
+        bodyFocusSegment = comments.withIndex().sortedBy { it.value.position }.indexOfFirst { it.index == index } + 1
+        comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = commentDraft.trim(), expanded = true) else comment }
+        text = text.copy(selection = TextRange(position), composition = null)
+        activeComment = null
+        bodyFocusRequest++
+    }
     fun handleEditorInput(value: TextFieldValue) {
         val oldText = text.text
         val newText = value.text
+        val spaceIndex = value.selection.start - 1
+        val insertedSpace = value.selection.collapsed && newText.length == oldText.length + 1 &&
+            spaceIndex >= 0 && newText.getOrNull(spaceIndex) == ' ' &&
+            newText.removeRange(spaceIndex, value.selection.start) == oldText
+        if (insertedSpace) {
+            val marker = emptyNumberedMarker
+            if (marker != null && marker.last + 1 == spaceIndex) {
+                val lineEnd = newText.indexOf('\n', value.selection.start).let { if (it < 0) newText.length else it }
+                if (newText.substring(value.selection.start, lineEnd).isBlank()) {
+                    val cleaned = newText.removeRange(marker.first, lineEnd)
+                    replaceEditorText(TextFieldValue(cleaned, TextRange(marker.first)))
+                    return
+                }
+            }
+            val lineStart = newText.lastIndexOf('\n', (spaceIndex - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+            val typedMarker = Regex("^(\\s*\\d+[.)]\\s)$").matchEntire(newText.substring(lineStart, value.selection.start))
+            replaceEditorText(value)
+            if (typedMarker != null) emptyNumberedMarker = lineStart until value.selection.start
+            return
+        }
         val insertedNewline = newText.length == oldText.length + 1 && value.selection.start > 0 && newText.getOrNull(value.selection.start - 1) == '\n'
         if (!insertedNewline) {
             replaceEditorText(value)
@@ -1376,13 +1907,29 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         val newline = value.selection.start - 1
         val lineStart = newText.lastIndexOf('\n', (newline - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
         val previousLine = newText.substring(lineStart, newline)
+        val emptyTask = Regex("^(\\s*)- \\[ \\]\\s*$").find(previousLine)
+        val task = Regex("^(\\s*)- \\[[ xX]\\]\\s+.+$").find(previousLine)
         val emptyBullet = Regex("^(\\s*)([-*+])\\s*$").find(previousLine)
         val bullet = Regex("^(\\s*)([-*+])\\s+.+$").find(previousLine)
+        val emptyNumbered = Regex("^(\\s*)\\d+[.)]\\s+$").find(previousLine)
         val numbered = Regex("^(\\s*)(\\d+)[.)]\\s+(.+)$").find(previousLine)
         when {
+            emptyTask != null -> {
+                val cleaned = newText.removeRange(lineStart, newline)
+                replaceEditorText(TextFieldValue(cleaned, TextRange(value.selection.start - (newline - lineStart))))
+            }
             emptyBullet != null -> {
                 val cleaned = newText.removeRange(lineStart, newline)
                 replaceEditorText(TextFieldValue(cleaned, TextRange(value.selection.start - (newline - lineStart))))
+            }
+            emptyNumbered != null -> {
+                val cleaned = newText.removeRange(lineStart, newline)
+                replaceEditorText(TextFieldValue(cleaned, TextRange(value.selection.start - (newline - lineStart))))
+            }
+            task != null -> {
+                val prefix = task.groupValues[1] + "- [ ] "
+                val next = newText.substring(0, value.selection.start) + prefix + newText.substring(value.selection.start)
+                replaceEditorText(TextFieldValue(next, TextRange(value.selection.start + prefix.length)))
             }
             bullet != null -> {
                 val prefix = bullet.groupValues[1] + bullet.groupValues[2] + " "
@@ -1394,6 +1941,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                 val prefix = numbered.groupValues[1] + nextNumber + ". "
                 val next = newText.substring(0, value.selection.start) + prefix + newText.substring(value.selection.start)
                 replaceEditorText(TextFieldValue(next, TextRange(value.selection.start + prefix.length)))
+                emptyNumberedMarker = value.selection.start until (value.selection.start + prefix.length)
             }
             else -> replaceEditorText(value)
         }
@@ -1412,6 +1960,16 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         val lineStart = text.text.lastIndexOf('\n', (start - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
         replaceEditorText(TextFieldValue(text.text.substring(0, lineStart) + prefix + text.text.substring(lineStart), TextRange(start + prefix.length)))
     }
+    fun prefixOrderedList() {
+        val cursor = text.selection.start.coerceIn(0, text.text.length)
+        val lineStart = text.text.lastIndexOf('\n', (cursor - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+        val previousLine = text.text.substring(0, lineStart).trimEnd('\n').lines().lastOrNull { it.isNotBlank() }
+        val previousNumber = previousLine?.let { Regex("^\\s*(\\d+)[.)]\\s+.*$").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() } ?: 0
+        val prefix = "${previousNumber + 1}. "
+        val next = text.text.substring(0, lineStart) + prefix + text.text.substring(lineStart)
+        replaceEditorText(TextFieldValue(next, TextRange(cursor + prefix.length)))
+        emptyNumberedMarker = lineStart until (lineStart + prefix.length)
+    }
     LaunchedEffect(Unit) {
         while (true) {
             delay(30_000)
@@ -1428,26 +1986,78 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
             imageUris = (imageUris + uri.toString()).distinct()
         }
     }
-    val editorView = LocalView.current
-    LaunchedEffect(editorView) {
-        (editorView.parent as? DialogWindowProvider)?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-    }
     Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Surface(Modifier.fillMaxSize(), color = Color.White) {
+        val editorView = LocalView.current
+        val editorKeyboardController = LocalSoftwareKeyboardController.current
+        DisposableEffect(editorView) {
+            val window = (editorView.parent as? DialogWindowProvider)?.window
+            window?.let { androidx.core.view.WindowCompat.setDecorFitsSystemWindows(it, false) }
+            val observer = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                val insets = androidx.core.view.ViewCompat.getRootWindowInsets(editorView)
+                val ime = insets?.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())?.bottom ?: 0
+                val visible = android.graphics.Rect()
+                editorView.getWindowVisibleDisplayFrame(visible)
+                val rootLocation = IntArray(2)
+                editorView.rootView.getLocationOnScreen(rootLocation)
+                val obscured = (editorView.rootView.height + rootLocation[1] - visible.bottom).coerceAtLeast(0)
+                val fallback = if (obscured > editorView.resources.displayMetrics.density * 120) obscured else 0
+                val bottom = maxOf(ime, fallback)
+                nativeImeBottom = bottom
+            }
+            editorView.viewTreeObserver.addOnGlobalLayoutListener(observer)
+            androidx.core.view.ViewCompat.requestApplyInsets(editorView)
+            onDispose { editorView.viewTreeObserver.removeOnGlobalLayoutListener(observer) }
+        }
+        LaunchedEffect(editorView, note.id) {
+            (editorView.parent as? DialogWindowProvider)?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+            delay(150)
+            focusRequester.requestFocus()
+            delay(100)
+            editorKeyboardController?.show()
+        }
+        Surface(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime).union(WindowInsets(bottom = nativeImeBottom))), color = Color.White) {
             Box(Modifier.fillMaxSize().padding(horizontal = 2.dp, vertical = 8.dp)) {
-                Column(Modifier.fillMaxSize().padding(bottom = 52.dp)) {
+                Column(Modifier.fillMaxSize()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { if (text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) saveChanges(); onDismiss() }) { Icon(Icons.Filled.Check, "保存并返回首页") }
+                    IconButton(onClick = { if (activeComment != null) finishComment() else { if (text.text.trim().isNotEmpty() || imageUris.isNotEmpty()) saveChanges(); onDismiss() } }) { Icon(Icons.Filled.Check, "保存并返回首页") }
                     Text(if (note.content.isBlank()) "记录此刻" else "编辑随记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
+                    Box {
+                        IconButton(onClick = { showEditorActions = true }) { Icon(Icons.Filled.MoreVert, "笔记操作", tint = NoteMuted) }
+                        NotePopupMenu(expanded = showEditorActions, onDismissRequest = { showEditorActions = false }, compact = true) {
+                            NoteActionMenuItem(if (savedNote.favorite) "取消收藏" else "收藏", icon = { Icon(if (savedNote.favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, null, tint = NoteAccent, modifier = Modifier.size(18.dp)) }, onClick = {
+                                showEditorActions = false
+                                saveChanges()
+                                val favorite = !savedNote.favorite
+                                onToggleFavorite(favorite)
+                                savedNote = savedNote.copy(favorite = favorite)
+                            })
+                            NoteActionMenuItem(if (savedNote.pinned) "取消置顶" else "置顶", icon = { Icon(Icons.Filled.PushPin, null, tint = NoteMuted, modifier = Modifier.size(18.dp)) }, onClick = {
+                                showEditorActions = false
+                                saveChanges()
+                                val pinned = !savedNote.pinned
+                                if (onTogglePinned(pinned)) savedNote = savedNote.copy(pinned = pinned)
+                            })
+                            NoteActionMenuItem("复制笔记全文", icon = { Icon(Icons.Filled.ContentCopy, null, tint = NoteMuted, modifier = Modifier.size(18.dp)) }, onClick = {
+                                showEditorActions = false
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("随心记", text.text))
+                                Toast.makeText(context, "全文已复制", Toast.LENGTH_SHORT).show()
+                            })
+                            NoteActionMenuItem("删除笔记", icon = { Icon(Icons.Filled.DeleteOutline, null, tint = Color(0xFFB3261E), modifier = Modifier.size(18.dp)) }, onClick = {
+                                showEditorActions = false
+                                showNoteDeleteDialog = true
+                            }, destructive = true)
+                        }
+                    }
                 }
-                Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                Column(Modifier.fillMaxWidth().heightIn(max = 156.dp).verticalScroll(rememberScrollState())) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     ToolButton(Icons.Filled.LocationOn, "位置", location != null) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) scope.launch(Dispatchers.IO) { val label = getLastLocationLabel(context) ?: "位置已授权"; withContext(Dispatchers.Main) { location = label } } else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
                     ToolButton(Icons.Filled.Label, "标签", false) { showTagDialog = true; tagInput = "" }
                     IconButton(onClick = { val cursor = text.selection.start; text = text.copy(text = text.text.substring(0, cursor) + "#" + text.text.substring(cursor), selection = TextRange(cursor + 1)) }, modifier = Modifier.size(34.dp)) { Text("#", color = NotePrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
                     ToolButton(Icons.Filled.CalendarMonth, "日期", false) { showTimeDialog = true }
-                    ToolButton(moodIcon(mood), moodLabel(mood), mood == "HAPPY") { mood = when (mood) { "HAPPY" -> "NORMAL"; "NORMAL" -> "SAD"; else -> "HAPPY" } }
+                    ToolButton(moodIcon(mood), moodLabel(mood), mood.isNotEmpty()) { mood = when (mood) { "" -> "HAPPY"; "HAPPY" -> "NORMAL_SELECTED"; "NORMAL_SELECTED" -> "SAD"; else -> "" } }
                     ToolButton(Icons.Filled.ChatBubbleOutline, "评论", activeComment != null) { comments = comments + NoteComment(text.selection.start, "", true); activeComment = comments.lastIndex; commentDraft = "" }
                     ToolButton(Icons.Filled.PhotoLibrary, "图片", false) { imageLauncher.launch(arrayOf("image/*")) }
                 }
@@ -1462,71 +2072,172 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
                         }
                     }
                 }
+                }
                 Box(Modifier.fillMaxWidth().weight(1f).background(Color.White)) {
-                    Column(Modifier.fillMaxSize().padding(horizontal = 0.dp, vertical = 0.dp)) {
-                        OutlinedTextField(
-                            text,
-                            { handleEditorInput(it) },
-                            placeholder = { Text("写下此刻的想法…") },
-                            maxLines = 30,
-                            visualTransformation = MarkdownVisualTransformation(comments),
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, color = Color.Black),
-                            modifier = Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester),
-                            shape = RoundedCornerShape(0.dp),
-                            colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Color.Transparent, focusedBorderColor = Color.Transparent, unfocusedContainerColor = Color.White, focusedContainerColor = Color.White),
-                        )
-                        if (comments.isNotEmpty()) {
-                            CommentedNotePreview(
-                                "",
-                                comments,
-                                { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } },
-                                showEye = true,
-                                onDoubleClickComment = { index ->
-                                    val position = comments.getOrNull(index)?.position?.coerceIn(0, text.text.length) ?: text.text.length
-                                    text = text.copy(selection = TextRange(position))
-                                    focusRequester.requestFocus()
-                                    keyboardController?.show()
+                    val editorTextStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, color = Color.Black)
+                    BoxWithConstraints(Modifier.fillMaxSize().onGloballyPositioned {
+                        if (editorViewportHeight != it.size.height) editorViewportHeight = it.size.height
+                    }) {
+                        val density = androidx.compose.ui.platform.LocalDensity.current
+                        val cursorMargin = with(density) { 32.dp.toPx() }
+                        LaunchedEffect(editorTextLayout, text.selection, editorViewportHeight) {
+                            val currentLayout = editorTextLayout
+                            if (comments.isEmpty() && currentLayout != null && editorTextLayoutSource == text.text && editorViewportHeight > 0) {
+                                val offset = editorVisualTransformation.filter(androidx.compose.ui.text.AnnotatedString(text.text))
+                                    .offsetMapping.originalToTransformed(text.selection.end)
+                                val cursor = currentLayout.getCursorRect(offset)
+                                val top = cursor.top + with(density) { 16.dp.toPx() }
+                                val bottom = cursor.bottom + with(density) { 16.dp.toPx() }
+                                val visibleBottom = editorScroll.value + editorViewportHeight - cursorMargin
+                                val target = when {
+                                    bottom > visibleBottom -> bottom - editorViewportHeight + cursorMargin
+                                    top < editorScroll.value -> top
+                                    else -> editorScroll.value.toFloat()
+                                }
+                                editorScroll.scrollTo(target.roundToInt().coerceAtLeast(0))
+                            }
+                        }
+                        val suggestions = inlineTagSuggestions.take(4)
+                        val popupWidth = maxWidth * 0.70f
+                        val popupHeight = (suggestions.size * 40 + 4).dp
+                        val tagQuery = activeTagQuery
+                        val layout = editorTextLayout?.takeIf { comments.isEmpty() && editorTextLayoutSource == text.text }
+                        val cursorRect = if (tagQuery != null && layout != null) {
+                            val transformedOffset = editorVisualTransformation
+                                .filter(androidx.compose.ui.text.AnnotatedString(text.text))
+                                .offsetMapping.originalToTransformed(tagQuery.first)
+                            layout.getCursorRect(transformedOffset)
+                        } else null
+                        val fieldPosition = editorPosition
+                        if (tagQuery != null && suggestions.isNotEmpty() && cursorRect != null && fieldPosition != null) {
+                            val popupWidthPx = with(density) { popupWidth.toPx() }
+                            val popupHeightPx = with(density) { popupHeight.toPx() }
+                            val x = (fieldPosition.x + cursorRect.left)
+                                .coerceIn(0f, (constraints.maxWidth - popupWidthPx).coerceAtLeast(0f))
+                                .toInt()
+                            val desiredBottom = fieldPosition.y + cursorRect.bottom - editorScroll.value - with(density) { 4.dp.toPx() }
+                            val desiredY = desiredBottom - popupHeightPx
+                            val maxY = (constraints.maxHeight - popupHeightPx).coerceAtLeast(0f)
+                            val y = desiredY.coerceIn(0f, maxY).toInt()
+                            Surface(
+                                modifier = Modifier.offset { IntOffset(x, y) }.width(popupWidth).zIndex(1f),
+                                color = Color(0xFFFFF8F2),
+                                shape = RoundedCornerShape(8.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, NoteSoft),
+                                shadowElevation = 8.dp,
+                            ) {
+                                Column(Modifier.padding(vertical = 2.dp)) {
+                                    suggestions.forEach { category ->
+                                        TextButton(
+                                            onClick = {
+                                                val (start, cursor, _) = tagQuery
+                                                val hasChildren = categories.any { it.parentId == category.id }
+                                                val insertion = if (hasChildren) "#${category.path}/" else "#${category.path} "
+                                                val suffix = text.text.substring(cursor).removePrefix(" ")
+                                                val next = text.text.substring(0, start) + insertion + suffix
+                                                replaceEditorText(TextFieldValue(next, TextRange(start + insertion.length)))
+                                                focusRequester.requestFocus()
+                                                keyboardController?.show()
+                                            },
+                                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                                        ) {
+                                            Text("#${category.path}", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, color = NoteInk)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Box(Modifier.fillMaxSize().verticalScroll(editorScroll)) {
+                            Column(Modifier.fillMaxWidth()) {
+                            if (comments.isNotEmpty()) EmbeddedCommentEditor(
+                                value = text,
+                                comments = comments,
+                                activeComment = activeComment,
+                                focusRequest = bodyFocusRequest,
+                                focusSegment = bodyFocusSegment,
+                                initialFocus = focusRequester,
+                                onBodyChange = { segment, start, end, value ->
+                                    val next = text.text.substring(0, start) + value.text + text.text.substring(end)
+                                    val ordered = comments.withIndex().sortedBy { it.value.position }
+                                    val following = ordered.drop(segment).map { it.index }.toSet()
+                                    val oldLength = text.text.length
+                                    handleEditorInput(TextFieldValue(next, TextRange(start + value.selection.start, start + value.selection.end), value.composition?.let { TextRange(start + it.start, start + it.end) }))
+                                    val delta = text.text.length - oldLength
+                                    comments = comments.mapIndexed { index, comment -> if (index in following) comment.copy(position = (comment.position + delta).coerceIn(0, text.text.length)) else comment }
                                 },
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
+                                onCommentChange = { index, value ->
+                                    commentDraft = value
+                                    comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = value, expanded = true) else comment }
+                                },
+                                onDeleteComment = { index ->
+                                    comments = comments.filterIndexed { i, _ -> i != index }
+                                    if (activeComment == index) activeComment = null
+                                },
+                                onEditComment = { index -> activeComment = index; commentDraft = comments[index].text },
+                                onToggleComment = { index -> comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(expanded = !comment.expanded) else comment } },
+                                onDone = ::finishComment,
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            ) else BasicTextField(
+                            value = text,
+                            onValueChange = ::handleEditorInput,
+                            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 48.dp).focusRequester(focusRequester).onGloballyPositioned {
+                                val position = it.positionInParent()
+                                val next = IntOffset(position.x.roundToInt(), position.y.roundToInt())
+                                if (editorPosition != next) editorPosition = next
+                            },
+                            textStyle = editorTextStyle,
+                            visualTransformation = editorVisualTransformation,
+                            maxLines = Int.MAX_VALUE,
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(NotePrimary),
+                            onTextLayout = { layout ->
+                                if (editorTextLayoutSource != text.text || editorTextLayout?.size != layout.size || editorTextLayout?.lineCount != layout.lineCount) {
+                                    editorTextLayout = layout
+                                    editorTextLayoutSource = text.text
+                                }
+                            },
+                            decorationBox = { innerTextField ->
+                                Box(Modifier.fillMaxWidth()) {
+                                    if (text.text.isEmpty()) Text("写下此刻的想法…", style = editorTextStyle.copy(color = NoteMuted))
+                                    innerTextField()
+                                }
+                            },
                             )
+                            }
                         }
                     }
-                    IconButton(onClick = { saveAndNext() }, modifier = Modifier.align(if (text.text.isBlank()) Alignment.BottomEnd else Alignment.TopEnd).padding(4.dp)) { Icon(Icons.Filled.Add, "保存并新建下一篇", tint = NotePrimary) }
-                }
-                }
                 }
                 Surface(
-                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().imePadding().navigationBarsPadding(),
+                    modifier = Modifier.fillMaxWidth(),
                     color = Color.White,
                     shadowElevation = 4.dp,
                 ) {
-                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(16.dp)) }
-                        IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(16.dp)) }
-                        IconButton(onClick = { wrapSelection("~~") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.StrikethroughS, "删除线", modifier = Modifier.size(16.dp)) }
-                        IconButton(onClick = { wrapSelection("<u>", "</u>") }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.FormatUnderlined, "下划线", modifier = Modifier.size(16.dp)) }
-                        IconButton(onClick = { keyboardController?.hide(); focusRequester.freeFocus() }, modifier = Modifier.size(28.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", modifier = Modifier.size(16.dp)) }
-                        Spacer(Modifier.weight(1f))
-                        Box {
-                            IconButton(onClick = { showMoreFormatting = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.MoreVert, "更多格式", modifier = Modifier.size(16.dp)) }
-                            DropdownMenu(expanded = showMoreFormatting, onDismissRequest = { showMoreFormatting = false }) {
-                                Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    IconButton(onClick = { prefixCurrentLine("> "); showMoreFormatting = false }) { Icon(Icons.Filled.FormatQuote, "引用") }
-                                    IconButton(enabled = undoStack.isNotEmpty(), onClick = {
-                                        if (undoStack.isNotEmpty()) { val current = text; val previous = undoStack.removeAt(undoStack.lastIndex); redoStack.add(current); text = previous }
-                                        showMoreFormatting = false
-                                    }) { Icon(Icons.Filled.Undo, "撤销") }
-                                    IconButton(enabled = redoStack.isNotEmpty(), onClick = {
-                                        if (redoStack.isNotEmpty()) { val current = text; val next = redoStack.removeAt(redoStack.lastIndex); undoStack.add(current); text = next }
-                                        showMoreFormatting = false
-                                    }) { Icon(Icons.Filled.Redo, "重做") }
-                                }
+                    Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { prefixCurrentLine("- ") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatListBulleted, "无序列表", modifier = Modifier.size(22.dp)) }
+                            IconButton(onClick = { prefixOrderedList() }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatListNumbered, "有序列表", modifier = Modifier.size(22.dp)) }
+                            IconButton(onClick = { prefixCurrentLine("- [ ] ") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.CheckBoxOutlineBlank, "任务复选框", modifier = Modifier.size(22.dp)) }
+                            IconButton(onClick = { wrapSelection("**") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatBold, "加粗", modifier = Modifier.size(21.dp)) }
+                            IconButton(onClick = { wrapSelection("==") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatColorFill, "荧光笔", modifier = Modifier.size(21.dp)) }
+                            IconButton(onClick = { wrapSelection("~~") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.StrikethroughS, "删除线", modifier = Modifier.size(21.dp)) }
+                            IconButton(onClick = { wrapSelection("<u>", "</u>") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatUnderlined, "下划线", modifier = Modifier.size(21.dp)) }
+                            IconButton(onClick = { prefixCurrentLine("> ") }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.FormatQuote, "引用", modifier = Modifier.size(21.dp)) }
+                        IconButton(enabled = undoStack.isNotEmpty(), onClick = {
+                            if (undoStack.isNotEmpty()) { val current = text; val previous = undoStack.removeAt(undoStack.lastIndex); redoStack.add(current); text = previous }
+                            }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.Undo, "撤回", modifier = Modifier.size(21.dp)) }
+                        IconButton(enabled = redoStack.isNotEmpty(), onClick = {
+                            if (redoStack.isNotEmpty()) { val current = text; val next = redoStack.removeAt(redoStack.lastIndex); undoStack.add(current); text = next }
+                            }, modifier = Modifier.size(42.dp)) { Icon(Icons.Filled.Redo, "重做", modifier = Modifier.size(21.dp)) }
+                        }
+                        Surface(color = NotePrimary, shape = RoundedCornerShape(10.dp), modifier = Modifier.padding(end = 4.dp)) {
+                            IconButton(onClick = { saveAndNext() }, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Filled.Add, "保存并新建下一篇", tint = Color.White, modifier = Modifier.size(24.dp))
                             }
                         }
                     }
                 }
             }
         }
+    }
     }
     if (showUnsavedDialog) AlertDialog(
         onDismissRequest = { showUnsavedDialog = false },
@@ -1538,19 +2249,10 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
     if (showNoteDeleteDialog) AlertDialog(
         onDismissRequest = { showNoteDeleteDialog = false },
         title = { Text("删除笔记") },
-        text = { Text("确定删除这条笔记吗？删除后无法恢复。") },
-        confirmButton = { TextButton(onClick = { showNoteDeleteDialog = false; onDelete() }) { Text("删除") } },
+        text = { Text("确定将这条笔记移入回收站吗？30 天内可恢复。") },
+        confirmButton = { TextButton(onClick = { showNoteDeleteDialog = false; onDelete(currentNote()) }) { Text("删除") } },
         dismissButton = { TextButton(onClick = { showNoteDeleteDialog = false }) { Text("取消") } },
     )
-    activeComment?.let { index ->
-        CommentComposer(
-            draft = commentDraft,
-            position = comments.getOrNull(index)?.position ?: text.text.length,
-            onDraftChange = { value -> commentDraft = value; comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = value, expanded = true) else comment } },
-            onDismiss = { activeComment = null },
-            onSave = { comments = comments.mapIndexed { i, comment -> if (i == index) comment.copy(text = commentDraft.trim(), expanded = true) else comment }; activeComment = null },
-        )
-    }
     if (showTimeDialog) {
         LaunchedEffect(Unit) {
             val calendar = Calendar.getInstance().apply { timeInMillis = createdAt }
@@ -1572,35 +2274,130 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, onD
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(tagInput, { tagInput = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("新建标签或路径") }, placeholder = { Text("例如：生活/阅读") })
-                if (categories.isNotEmpty()) {
-                    Text("已有标签", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
-                    categories.take(8).forEach { category -> TextButton(onClick = { insertTagAtCursor(category.path, text) { text = it }; showTagDialog = false }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Label, null); Spacer(Modifier.width(6.dp)); Text(category.path) } }
+                val query = tagInput.trim().trimStart('#')
+                val suggestions = if (query.isBlank()) recentTagCategories else categories
+                    .filter { it.path.contains(query, ignoreCase = true) }
+                    .sortedWith(compareBy<NoteCategory> { if (it.path.startsWith(query, ignoreCase = true)) 0 else 1 }.thenBy { it.path })
+                    .take(8)
+                if (suggestions.isNotEmpty()) {
+                    Text(if (query.isBlank()) "最近使用" else "匹配的标签", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+                    Column(Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState())) {
+                        suggestions.forEach { category ->
+                            TextButton(
+                                onClick = { insertTagAtCursor(category.path, text) { text = it }; showTagDialog = false },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Icon(Icons.Filled.Label, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text(category.path, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                } else if (query.isNotBlank()) {
+                    Text("没有匹配的标签，可插入新标签", color = NoteMuted, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { val value = tagInput.trim().trimStart('#'); if (value.isNotBlank() && value.split('/').all { it.isNotBlank() }) { insertTagAtCursor(value, text) { text = it }; showTagDialog = false } }) { Text("新建并插入") } },
+        confirmButton = { TextButton(onClick = { val value = tagInput.trim().trimStart('#'); if (value.isNotBlank() && value.split('/').all { it.isNotBlank() }) { insertTagAtCursor(value, text) { text = it }; showTagDialog = false } }) { Text("插入标签") } },
         dismissButton = { TextButton(onClick = { showTagDialog = false }) { Text("取消") } },
     )
     previewUri?.let { uri -> ImagePreviewDialog(context, uri, onDismiss = { previewUri = null }) }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CommentComposer(draft: String, position: Int, onDraftChange: (String) -> Unit, onDismiss: () -> Unit, onSave: () -> Unit) {
-    val focusRequester = remember { FocusRequester() }
-    val keyboardController = LocalSoftwareKeyboardController.current
-    LaunchedEffect(Unit) { focusRequester.requestFocus(); keyboardController?.show() }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)).clickable(onClick = onDismiss), contentAlignment = Alignment.BottomCenter) {
-            Surface(color = NotePaper, shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp), modifier = Modifier.fillMaxWidth().fillMaxHeight(0.52f).clickable(onClick = {})) {
-                Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("添加评论", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.weight(1f))
-                        IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, "关闭评论") }
+private fun EmbeddedCommentEditor(
+    value: TextFieldValue,
+    comments: List<NoteComment>,
+    activeComment: Int?,
+    focusRequest: Int,
+    focusSegment: Int,
+    initialFocus: FocusRequester,
+    onBodyChange: (Int, Int, Int, TextFieldValue) -> Unit,
+    onCommentChange: (Int, String) -> Unit,
+    onDeleteComment: (Int) -> Unit,
+    onEditComment: (Int) -> Unit,
+    onToggleComment: (Int) -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val ordered = comments.withIndex().sortedBy { it.value.position }
+    Column(modifier) {
+        for (segment in 0..ordered.size) {
+            val start = if (segment == 0) 0 else ordered[segment - 1].value.position.coerceIn(0, value.text.length)
+            val end = if (segment == ordered.size) value.text.length else ordered[segment].value.position.coerceIn(start, value.text.length)
+            key("body", segment) {
+                val focus = remember { FocusRequester() }
+                val bring = remember { BringIntoViewRequester() }
+                val keyboard = LocalSoftwareKeyboardController.current
+                val localValue = TextFieldValue(value.text.substring(start, end), TextRange((value.selection.start - start).coerceIn(0, end - start), (value.selection.end - start).coerceIn(0, end - start)), value.composition?.takeIf { it.start >= start && it.end <= end }?.let { TextRange(it.start - start, it.end - start) })
+                LaunchedEffect(focusRequest) {
+                    if (focusRequest > 0 && focusSegment == segment) {
+                        focus.requestFocus()
+                        keyboard?.show()
+                        bring.bringIntoView()
                     }
-                    Text("插入位置：正文第 $position 个字符之后", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 10.dp))
-                    OutlinedTextField(draft, onDraftChange, Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester), placeholder = { Text("写下你的想法…") }, maxLines = 8, colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White, focusedContainerColor = Color.White))
-                    Button(onClick = onSave, enabled = draft.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) { Icon(Icons.AutoMirrored.Filled.Send, null); Spacer(Modifier.width(6.dp)); Text("保存评论") }
+                }
+                BasicTextField(
+                    value = localValue,
+                    onValueChange = { onBodyChange(segment, start, end, it) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 28.dp).then(if (segment == 0) Modifier.focusRequester(initialFocus) else Modifier).focusRequester(focus).bringIntoViewRequester(bring),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, color = Color.Black),
+                    visualTransformation = remember { MarkdownVisualTransformation() },
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(NotePrimary),
+                )
+            }
+            ordered.getOrNull(segment)?.let { indexed ->
+                val index = indexed.index
+                val comment = indexed.value
+                Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.Top) {
+                    IconButton(onClick = { onToggleComment(index) }, modifier = Modifier.size(28.dp)) {
+                        Icon(if (comment.expanded) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "展开或隐藏评论", tint = NoteAccent, modifier = Modifier.size(18.dp))
+                    }
+                    if (comment.expanded || activeComment == index) {
+                        Surface(color = NotePaper, shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f)) {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp)) {
+                                if (activeComment == index) {
+                                    val focus = remember { FocusRequester() }
+                                    var hadFocus by remember(index) { mutableStateOf(false) }
+                                    LaunchedEffect(index) { focus.requestFocus() }
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                                        BasicTextField(
+                                            value = comment.text,
+                                            onValueChange = { onCommentChange(index, it) },
+                                            modifier = Modifier.weight(1f).heightIn(min = 28.dp).focusRequester(focus).onFocusChanged { state ->
+                                                if (state.isFocused) hadFocus = true
+                                                else if (hadFocus) { hadFocus = false; onDone() }
+                                            },
+                                            textStyle = MaterialTheme.typography.bodySmall.copy(color = NoteCommentColor, fontSize = 13.sp),
+                                            cursorBrush = androidx.compose.ui.graphics.SolidColor(NotePrimary),
+                                            decorationBox = { inner -> Box { if (comment.text.isEmpty()) Text("写下评论…", color = NoteCommentColor, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp); inner() } },
+                                        )
+                                        Icon(Icons.Filled.Check, "完成评论并继续正文", modifier = Modifier.size(28.dp).clickable(onClick = onDone).padding(4.dp))
+                                    }
+                                } else {
+                                    var showCommentMenu by remember(index) { mutableStateOf(false) }
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                                        Text(comment.text, color = NoteCommentColor, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, modifier = Modifier.weight(1f).combinedClickable(onClick = { onEditComment(index) }, onDoubleClick = { onEditComment(index) }))
+                                        Box {
+                                            IconButton(onClick = { showCommentMenu = true }, modifier = Modifier.size(26.dp)) { Icon(Icons.Filled.MoreVert, "评论操作", tint = NoteMuted, modifier = Modifier.size(17.dp)) }
+                                            NotePopupMenu(expanded = showCommentMenu, onDismissRequest = { showCommentMenu = false }, compact = true) {
+                                                NoteActionMenuItem("复制评论", icon = { Icon(Icons.Filled.ContentCopy, null, tint = NoteMuted, modifier = Modifier.size(18.dp)) }, onClick = {
+                                                    showCommentMenu = false
+                                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                    clipboard.setPrimaryClip(ClipData.newPlainText("评论", comment.text))
+                                                    Toast.makeText(context, "评论已复制", Toast.LENGTH_SHORT).show()
+                                                })
+                                                NoteActionMenuItem("删除评论", icon = { Icon(Icons.Filled.DeleteOutline, null, tint = Color(0xFFB3261E), modifier = Modifier.size(18.dp)) }, onClick = { showCommentMenu = false; onDeleteComment(index) }, destructive = true)
+                                            }
+                                        }
+                                    }
+                                }
+                                Text(prettyTime(comment.createdAt), color = NoteMuted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1608,9 +2405,12 @@ private fun CommentComposer(draft: String, position: Int, onDraftChange: (String
 }
 
 private fun insertTagAtCursor(tag: String, value: TextFieldValue, onChange: (TextFieldValue) -> Unit) {
-    val insertion = "#${tag.trimStart('#')}"
-    val start = value.selection.start.coerceIn(0, value.text.length)
-    val next = value.text.substring(0, start) + insertion + value.text.substring(start)
+    val insertion = "#${tag.trim().trimStart('#')} "
+    val start = value.selection.min.coerceIn(0, value.text.length)
+    val end = value.selection.max.coerceIn(start, value.text.length)
+    val suffix = value.text.substring(end)
+    val suffixStart = if (suffix.startsWith(" ")) 1 else 0
+    val next = value.text.substring(0, start) + insertion + suffix.drop(suffixStart)
     onChange(TextFieldValue(next, TextRange(start + insertion.length)))
 }
 
@@ -1623,6 +2423,46 @@ private fun MarkdownToolButton(icon: androidx.compose.ui.graphics.vector.ImageVe
     }
 }
 private fun moodIcon(mood: String) = when (mood) { "HAPPY" -> Icons.Filled.SentimentVerySatisfied; "SAD" -> Icons.Filled.SentimentDissatisfied; else -> Icons.Filled.SentimentNeutral }
+private fun moodEmoji(mood: String): String = when (mood) { "HAPPY" -> "😊"; "SAD" -> "😞"; "NORMAL_SELECTED" -> "😐"; else -> "" }
+
+@Composable
+private fun FavoriteNotesPage(notes: List<QuickNote>, padding: PaddingValues, onSelect: (QuickNote) -> Unit) {
+    if (notes.isEmpty()) {
+        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+            Text("暂无收藏", color = NoteMuted, style = MaterialTheme.typography.bodyLarge)
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(notes, key = { it.id }) { note ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().clickable { onSelect(note) },
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(
+                            note.content.ifBlank { "（空白笔记）" },
+                            color = NoteInk,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 6,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            prettyTime(note.createdAt),
+                            color = NoteMuted,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Suppress("DEPRECATION")
 private fun getLastLocationLabel(context: Context): String? {
     val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
@@ -1634,7 +2474,8 @@ private fun getLastLocationLabel(context: Context): String? {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit) {
+private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNote) -> Unit, onDelete: (QuickNote) -> Unit, onToggleFavorite: (QuickNote) -> Unit, onUpdate: (NotesState) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val notes = remember(state.notes) { state.notes.sortedByDescending { it.createdAt } }
     var filterMode by rememberSaveable { mutableStateOf(WalkFilterMode.RANDOM) }
     var selectedMonth by rememberSaveable { mutableStateOf<String?>(null) }
@@ -1659,7 +2500,7 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
             }
         }
     }
-    var index by remember(filteredNotes) { mutableStateOf(filteredNotes.indices.randomOrNull() ?: 0) }
+    var index by remember(filteredNotes.map { it.id }) { mutableStateOf(filteredNotes.indices.randomOrNull() ?: 0) }
     val current = filteredNotes.getOrNull(index.coerceIn(0, (filteredNotes.size - 1).coerceAtLeast(0)))
     var showDeleteDialog by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp).pointerInput(current?.id) {
@@ -1681,29 +2522,48 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
                 Text("漫步", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Text("从已有笔记中随机开始，左右滑动按创建时间浏览", color = NoteMuted, style = MaterialTheme.typography.bodySmall)
             }
-            Box {
-                OutlinedButton(onClick = { showFilterMenu = true }) {
-                    Icon(Icons.Filled.FilterList, "筛选")
-                    Spacer(Modifier.width(4.dp))
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                OutlinedButton(
+                    onClick = { showFilterMenu = true },
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NotePrimary.copy(alpha = 0.25f)),
+                    contentPadding = PaddingValues(horizontal = 14.dp),
+                ) {
+                    Icon(Icons.Filled.FilterList, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(when (filterMode) {
-                        WalkFilterMode.RANDOM -> "随机"
+                        WalkFilterMode.RANDOM -> "随机 · 全部笔记"
                         WalkFilterMode.MONTH -> "${selectedMonth ?: "按月份"}"
                         WalkFilterMode.TAG -> "#${selectedTag ?: "按标签"}"
-                    })
+                    }, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
+                    Icon(Icons.Filled.KeyboardArrowDown, "选择漫步范围", modifier = Modifier.size(18.dp))
                 }
-                DropdownMenu(expanded = showFilterMenu, onDismissRequest = { showFilterMenu = false }) {
-                    DropdownMenuItem(text = { Text("随机") }, onClick = {
+                NotePopupMenu(expanded = showFilterMenu, onDismissRequest = { showFilterMenu = false }) {
+                    DropdownMenuItem(text = { Text("随机") }, leadingIcon = { Icon(Icons.Filled.Shuffle, null, tint = NotePrimary) }, trailingIcon = { if (filterMode == WalkFilterMode.RANDOM) Icon(Icons.Filled.Check, null, tint = NotePrimary) }, onClick = {
                         filterMode = WalkFilterMode.RANDOM
                         selectedMonth = null
                         selectedTag = null
                         showFilterMenu = false
                         index = filteredNotes.indices.randomOrNull() ?: 0
                     })
-                    DropdownMenuItem(text = { Text("按月份") }, onClick = { showFilterMenu = false; showMonthPicker = true })
-                    DropdownMenuItem(text = { Text("按标签") }, onClick = { showFilterMenu = false; showTagPicker = true })
+                    DropdownMenuItem(text = { Text("按月份") }, leadingIcon = { Icon(Icons.Filled.CalendarMonth, null, tint = NotePrimary) }, trailingIcon = { if (filterMode == WalkFilterMode.MONTH) Icon(Icons.Filled.Check, null, tint = NotePrimary) }, onClick = { showFilterMenu = false; showMonthPicker = true })
+                    DropdownMenuItem(text = { Text("按标签") }, leadingIcon = { Icon(Icons.Filled.Label, null, tint = NotePrimary) }, trailingIcon = { if (filterMode == WalkFilterMode.TAG) Icon(Icons.Filled.Check, null, tint = NotePrimary) }, onClick = { showFilterMenu = false; showTagPicker = true })
                 }
             }
-            TextButton(onClick = { index = filteredNotes.indices.randomOrNull() ?: 0 }, enabled = filteredNotes.isNotEmpty()) { Icon(Icons.Filled.Shuffle, null); Spacer(Modifier.width(4.dp)); Text("重新随机") }
+            Button(
+                onClick = { index = filteredNotes.indices.randomOrNull() ?: 0 },
+                enabled = filteredNotes.isNotEmpty(),
+                modifier = Modifier.height(46.dp),
+                shape = RoundedCornerShape(14.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+            ) {
+                Icon(Icons.Filled.Shuffle, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("重新随机", style = MaterialTheme.typography.labelLarge)
+            }
         }
         if (current == null) {
             EmptyHint("还没有可漫步的笔记")
@@ -1715,7 +2575,23 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
                 modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 620.dp).padding(vertical = 12.dp).combinedClickable(onClick = {}, onDoubleClick = { onEdit(current) }, onLongClick = { showDeleteDialog = true }),
             ) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
-                    Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(prettyTime(current.createdAt), color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                        moodEmoji(current.mood).takeIf { it.isNotEmpty() }?.let { Text(it, modifier = Modifier.padding(start = 6.dp), fontSize = 15.sp) }
+                        current.location?.let { Text(" · $it", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        Spacer(Modifier.weight(1f))
+                        NoteOverflowMenu(
+                            note = current,
+                            onToggleFavorite = { onToggleFavorite(current) },
+                            onTogglePinned = {
+                                if (!current.pinned && state.notes.count { it.pinned } >= MAX_PINNED_NOTES) Toast.makeText(context, "最多置顶6篇哦", Toast.LENGTH_SHORT).show()
+                                else onUpdate(state.copy(notes = state.notes.map { if (it.id == current.id) it.copy(pinned = !it.pinned) else it }))
+                            },
+                            onDelete = { onDelete(current) },
+                            showDeleteDialog = showDeleteDialog,
+                            onDeleteDialogChange = { showDeleteDialog = it },
+                        )
+                    }
                     CommentedNotePreview(current.content, current.comments, {}, showEye = false, modifier = Modifier.fillMaxWidth().padding(top = 16.dp))
                 }
             }
@@ -1725,12 +2601,13 @@ private fun WalkPage(state: NotesState, padding: PaddingValues, onEdit: (QuickNo
     Surface(color = Color.White, shadowElevation = 8.dp, shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFB8B0A8)), modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { if (index > 0) index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上一篇", tint = NotePrimary) }
-            IconButton(onClick = { current?.let(onEdit) }, enabled = current != null) { Icon(Icons.Filled.Edit, "编辑", tint = NotePrimary) }
+            IconButton(onClick = { current?.let(onToggleFavorite) }, enabled = current != null) {
+                Icon(if (current?.favorite == true) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, "收藏", tint = if (current?.favorite == true) NoteAccent else NotePrimary)
+            }
             IconButton(onClick = { if (index < filteredNotes.lastIndex) index++ }, enabled = index < filteredNotes.lastIndex) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "下一篇", tint = NotePrimary) }
         }
     }
     }
-    if (showDeleteDialog && current != null) AlertDialog(onDismissRequest = { showDeleteDialog = false }, title = { Text("删除笔记") }, text = { Text("确定删除这条笔记吗？") }, confirmButton = { TextButton(onClick = { showDeleteDialog = false; onDelete(current) }) { Text("删除") } }, dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("取消") } })
     WalkFilterPickers(
         showMonthPicker = showMonthPicker,
         showTagPicker = showTagPicker,
@@ -2323,8 +3200,7 @@ private fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
                     heading != null -> {
                         val level = heading.groupValues[1].length
                         val style = when (level) {
-                            1 -> MaterialTheme.typography.headlineMedium
-                            2 -> MaterialTheme.typography.headlineSmall
+                            1, 2 -> MaterialTheme.typography.bodyLarge
                             3 -> MaterialTheme.typography.titleLarge
                             else -> MaterialTheme.typography.titleMedium
                         }
@@ -2367,14 +3243,23 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
         val sourceToDisplay = IntArray(source.length + 1)
         val displayToSourceList = mutableListOf<Int>()
         val markerDisplayRanges = mutableListOf<IntRange>()
+        val commentsByPosition = comments.groupBy { it.position.coerceIn(0, source.length) }
+        val numberedLineStarts = Regex("(?m)^[ \\t]*\\d+[.)][ \\t]+")
+            .findAll(source)
+            .map { it.range.first }
+            .toSet()
         val display = StringBuilder()
         for (index in 0..source.length) {
             sourceToDisplay[index] = display.length
-            comments.filter { it.position.coerceIn(0, source.length) == index }.forEach {
+            commentsByPosition[index].orEmpty().forEach {
                 val markerStart = display.length
                 display.append("💬")
                 repeat(display.length - markerStart) { displayToSourceList += index }
                 markerDisplayRanges += markerStart until display.length
+            }
+            if (index in numberedLineStarts) {
+                display.append(0x2009.toChar())
+                displayToSourceList += index
             }
             sourceToDisplay[index] = display.length
             if (index == source.length) break
@@ -2395,7 +3280,9 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
             }
             Regex("(?m)^(#{1,6})\\s+.+$").findAll(source).forEach { match ->
                 val level = match.groupValues[1].length
-                styleRange(match.range, SpanStyle(fontWeight = FontWeight.Bold, fontSize = when (level) { 1 -> 24.sp; 2 -> 21.sp; 3 -> 18.sp; else -> 16.sp }, color = NoteInk))
+                val headingStyle = if (level <= 2) SpanStyle(fontWeight = FontWeight.Bold, color = NoteInk)
+                else SpanStyle(fontWeight = FontWeight.Bold, fontSize = if (level == 3) 18.sp else 16.sp, color = NoteInk)
+                styleRange(match.range, headingStyle)
             }
             inlinePattern.findAll(source).forEach { match ->
                 val contentRange = when {
@@ -2419,7 +3306,7 @@ private class MarkdownVisualTransformation(private val comments: List<NoteCommen
                     styleRange(contentRange, style)
                 }
             }
-            Regex("(?<![\\p{L}\\d_])#[\\p{L}\\d][\\p{L}\\d/._-]*(?=\\s|$)").findAll(source).forEach { match -> styleRange(match.range, SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium)) }
+            NoteTagRegex.findAll(source).forEach { match -> styleRange(match.range, SpanStyle(color = NoteTagColor, fontWeight = FontWeight.Medium, fontSize = 12.sp)) }
         }
         val displayToSource = IntArray(displayToSourceList.size + 1)
         displayToSourceList.forEachIndexed { index, sourceIndex -> displayToSource[index] = sourceIndex }

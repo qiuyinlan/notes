@@ -1,0 +1,8 @@
+<resources>
+    <string name="widget_walk_name">随机漫步</string>
+    <string name="widget_walk_description">随机漫步笔记</string>
+    <string name="widget_quick_input_name">快速记笔记</string>
+    <string name="widget_quick_input_description">快速新建笔记</string>
+    <string name="widget_favorite_name">收藏笔记</string>
+    <string name="widget_favorite_description">收藏笔记展示</string>
+</resources>

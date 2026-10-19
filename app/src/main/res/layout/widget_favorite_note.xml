@@ -1,0 +1,33 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="14dp"
+    android:background="@drawable/widget_background">
+    <TextView
+        android:id="@+id/widget_favorite_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="收藏笔记"
+        android:textColor="#8B6A52"
+        android:textSize="12sp"
+        android:maxLines="1" />
+    <TextView
+        android:id="@+id/widget_favorite_content"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:ellipsize="end"
+        android:maxLines="1000"
+        android:text="选择一条收藏笔记"
+        android:textColor="#332A24"
+        android:textSize="15sp" />
+    <TextView
+        android:id="@+id/widget_favorite_created_at"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#8A786B"
+        android:textSize="11sp"
+        android:maxLines="1" />
+</LinearLayout>

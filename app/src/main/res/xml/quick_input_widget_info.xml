@@ -1,0 +1,13 @@
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="250dp"
+    android:minHeight="56dp"
+    android:minResizeWidth="180dp"
+    android:minResizeHeight="48dp"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/widget_quick_input"
+    android:label="@string/widget_quick_input_name"
+    android:previewImage="@drawable/widget_preview_quick_input"
+    android:previewLayout="@layout/widget_quick_input"
+    android:resizeMode="horizontal"
+    android:widgetCategory="home_screen"
+    android:description="@string/widget_quick_input_description" />

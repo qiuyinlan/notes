@@ -1,0 +1,4 @@
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#FFFDFB" />
+    <corners android:radius="@dimen/note_widget_corner_radius" />
+</shape>

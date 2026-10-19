@@ -1,0 +1,3 @@
+<resources>
+    <dimen name="note_widget_corner_radius">12dp</dimen>
+</resources>
