@@ -637,6 +637,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     var letterEditor by remember { mutableStateOf<FutureLetter?>(null) }
     var renameTarget by remember { mutableStateOf<NoteCategory?>(null) }
     var homeDateFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var homeDateFilterReturnToMy by rememberSaveable { mutableStateOf(false) }
     var showCategoryMenu by remember { mutableStateOf(false) }
     var showChildCategoryMenu by remember { mutableStateOf(false) }
     var showHomeSearch by rememberSaveable { mutableStateOf(false) }
@@ -648,9 +649,13 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     var showTagActions by remember { mutableStateOf(false) }
 
     BackHandler(
-        enabled = showGlobalSearch || (page != NotesPage.HOME && editorNote == null && commentNote == null && letterEditor == null && renameTarget == null && !showNewCategory),
+        enabled = showGlobalSearch || (page == NotesPage.HOME && homeDateFilter != null && editorNote == null && commentNote == null && letterEditor == null && renameTarget == null && !showNewCategory) || (page != NotesPage.HOME && editorNote == null && commentNote == null && letterEditor == null && renameTarget == null && !showNewCategory),
     ) {
-        if (showGlobalSearch) showGlobalSearch = false else when (page) {
+        if (showGlobalSearch) showGlobalSearch = false else if (page == NotesPage.HOME && homeDateFilter != null && homeDateFilterReturnToMy) {
+            homeDateFilter = null
+            homeDateFilterReturnToMy = false
+            page = NotesPage.MY
+        } else when (page) {
             NotesPage.LETTERS -> { page = lettersReturnPage; selectedCategory = null }
             NotesPage.CATEGORY -> {
                 if (categoryReturnPage == NotesPage.HOME) {
@@ -671,6 +676,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                 page = NotesPage.HOME
                 selectedCategory = null
                 homeDateFilter = null
+                homeDateFilterReturnToMy = false
                 showHomeSearch = false
                 showTagsSearch = false
                 showCategorySearch = false
@@ -780,6 +786,12 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     }
     val dueLetters = state.letters.filter { it.deliverDate <= today() && !it.shown }
     fun navigateBackFromPage() {
+        if (page == NotesPage.HOME && homeDateFilter != null) {
+            homeDateFilter = null
+            if (homeDateFilterReturnToMy) page = NotesPage.MY
+            homeDateFilterReturnToMy = false
+            return
+        }
         when (page) {
             NotesPage.CATEGORY -> {
                 if (categoryReturnPage == NotesPage.HOME) {
@@ -898,7 +910,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = NotePaper),
                 )
             },
-            bottomBar = { MainNavigation(page) { target -> favoriteWidgetId = null; page = target; selectedCategory = null; homeDateFilter = null; showHomeSearch = false; showTagsSearch = false; showCategorySearch = false; if (target != NotesPage.TAGS) tagCategory = null } },
+            bottomBar = { MainNavigation(page) { target -> favoriteWidgetId = null; page = target; selectedCategory = null; homeDateFilter = null; homeDateFilterReturnToMy = false; showHomeSearch = false; showTagsSearch = false; showCategorySearch = false; if (target != NotesPage.TAGS) tagCategory = null } },
             floatingActionButton = {
                 if (page == NotesPage.TAGS) {
                     Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -937,7 +949,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
         ) { padding ->
             pageStateHolder.SaveableStateProvider(page.name) {
             when (page) {
-                NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; categoryReturnPage = NotesPage.HOME; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { lettersReturnPage = NotesPage.HOME; page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote)
+            NotesPage.HOME -> HomePage(state, if (homeDateFilter == null) dueLetters else state.letters.filter { it.deliverDate == homeDateFilter }, padding, homeDateFilter, showHomeSearch, onClearDateFilter = { homeDateFilter = null; homeDateFilterReturnToMy = false }, onCapture = { openEditor(it, NotesPage.HOME) }, onCategory = { selectedCategory = it; categoryReturnPage = NotesPage.HOME; page = NotesPage.CATEGORY }, onDiary = { page = NotesPage.WALK }, onLetters = { lettersReturnPage = NotesPage.HOME; page = NotesPage.LETTERS }, onOrganize = { page = NotesPage.ORGANIZER }, onEdit = { openEditor(it, NotesPage.HOME) }, onComment = { commentNote = it }, onUpdate = ::update, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote)
                 NotesPage.CATEGORY -> selectedCategory?.let { category -> CategoryPage(state, category, padding, showCategorySearch, onAdd = { openEditor(QuickNote(UUID.randomUUID().toString(), "", System.currentTimeMillis(), System.currentTimeMillis(), listOf(category.id)), NotesPage.CATEGORY) }, onEdit = { openEditor(it, NotesPage.CATEGORY) }, onCategory = { selectedCategory = it }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onDelete = ::deleteNote, onUpdate = ::update) }
                 NotesPage.ORGANIZER -> OrganizerPage(state, padding, organizerIndex, onUpdate = ::update, onSaveNote = ::saveNote, onEdit = { openEditor(it, NotesPage.ORGANIZER) }, onDelete = { deleteNote(it, showUndoNotice = false) }, onDismissDeleteNotice = { snackbarHostState.currentSnackbarData?.dismiss() })
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onUpdate = ::update, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onTogglePinned = { category ->
@@ -966,7 +978,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                     }
                 }
                 NotesPage.TRASH -> TrashPage(state.trash, padding, onRestore = { restoreFromTrash(it) }, onDeleteForever = { noteId -> update(state.copy(trash = state.trash.filterNot { it.note.id == noteId })) })
-            NotesPage.MY -> MyPage(state, padding, onLetters = { lettersReturnPage = NotesPage.MY; page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; page = NotesPage.HOME }, onImport = { bundle ->
+            NotesPage.MY -> MyPage(state, padding, onLetters = { lettersReturnPage = NotesPage.MY; page = NotesPage.LETTERS }, onDayClick = { day -> homeDateFilter = day; homeDateFilterReturnToMy = true; page = NotesPage.HOME }, onImport = { bundle ->
                     var importState = state
                     val mergedCategories = importState.categories.toMutableList()
                     val idMap = mutableMapOf<String, String>()
@@ -1087,7 +1099,7 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
         unselectedIconColor = NoteMuted,
         unselectedTextColor = NoteMuted,
     )
-    NavigationBar(modifier = Modifier.height(62.dp), containerColor = Color.White, tonalElevation = 0.dp) {
+    NavigationBar(modifier = Modifier.height(68.dp), containerColor = Color(0xFFFCFBF9), tonalElevation = 0.dp) {
         NavigationBarItem(page == NotesPage.HOME, { onSelect(NotesPage.HOME) }, icon = { Icon(Icons.Filled.Home, "首页", modifier = Modifier.size(20.dp)) }, label = { Text("首页", fontSize = 12.sp) }, colors = navColors)
         NavigationBarItem(page == NotesPage.ORGANIZER, { onSelect(NotesPage.ORGANIZER) }, icon = { Icon(Icons.Filled.Tune, "整理", modifier = Modifier.size(20.dp)) }, label = { Text("整理", fontSize = 12.sp) }, colors = navColors)
         NavigationBarItem(page == NotesPage.WALK, { onSelect(NotesPage.WALK) }, icon = { Icon(Icons.Filled.Book, "漫步", modifier = Modifier.size(20.dp)) }, label = { Text("漫步", fontSize = 12.sp) }, colors = navColors)
@@ -2748,12 +2760,18 @@ private fun CategoryPicker(
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索已有标签") }, leadingIcon = { Icon(Icons.Filled.Search, null) })
                 OutlinedTextField(newCategory, { newCategory = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("新建标签路径") }, placeholder = { Text("例如：生活/阅读") })
                 if (newCategory.isNotBlank()) {
-                    TextButton(onClick = { onCreate(newCategory)?.let { pickedIds = pickedIds + it; newCategory = "" } }, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("新建并选择 #${newCategory.trim().trimStart('#')}")
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().clickable { onCreate(newCategory)?.let { pickedIds = pickedIds + it; newCategory = "" } },
+                        color = Color(0xFFF5F0E9), shape = RoundedCornerShape(10.dp),
+                    ) {
+                        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Add, null, tint = NotePrimary)
+                            Text("新建并选择 #${newCategory.trim().trimStart('#')}", Modifier.padding(start = 8.dp), color = NoteInk, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        }
                     }
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("已有标签", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+                    Text("已有标签", color = NoteInk, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = { expandedIds = emptySet() }, modifier = Modifier.size(34.dp)) {
                         Icon(Icons.Filled.KeyboardArrowUp, "收起到一级标签", tint = Color(0xFF8B5E3C))
@@ -2773,7 +2791,7 @@ private fun CategoryPicker(
                                 Modifier.fillMaxWidth().padding(start = (depth * 14).dp).combinedClickable(
                                     onClick = { pickedIds = if (category.id in pickedIds) pickedIds - category.id else pickedIds + category.id },
                                     onLongClick = { deleteTarget = category },
-                                ).padding(horizontal = 4.dp, vertical = 3.dp),
+                                ).padding(horizontal = 8.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Checkbox(category.id in pickedIds, onCheckedChange = { checked ->
@@ -2783,8 +2801,10 @@ private fun CategoryPicker(
                                     Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.Label, null, tint = NoteInk, modifier = Modifier.size(15.dp)) }
                                 }
                                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                                    Text("#${category.path}", color = NoteInk, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text(category.name, color = NoteInk, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (category.parentId != null) Text("#${category.path}", color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
+                                if (category.id in pickedIds) Icon(Icons.Filled.Check, null, tint = NotePrimary, modifier = Modifier.size(18.dp))
                                 if (hasChildren) IconButton(onClick = {
                                     expandedIds = if (category.id in expandedIds) expandedIds - category.id else expandedIds + category.id
                                 }, modifier = Modifier.size(32.dp)) {
@@ -2797,7 +2817,7 @@ private fun CategoryPicker(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(pickedIds) }) { Text("完成") } },
+        confirmButton = { Button(onClick = { onConfirm(pickedIds) }) { Text("完成${if (pickedIds.isEmpty()) "" else " · ${pickedIds.size}"}") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
     deleteTarget?.let { category ->
@@ -4239,6 +4259,83 @@ private fun DiaryWalkDialog(diaries: List<Diary>, onDismiss: () -> Unit, onEdit:
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
+private fun MyStatBlock(value: String, label: String, tint: Color, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.height(78.dp),
+        color = tint,
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(value, color = NoteInk, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(label, color = NoteMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun MyActionRow(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth().height(68.dp).clickable(onClick = onClick),
+        color = Color.White,
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE8E5E0)),
+    ) {
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(color = tint, shape = RoundedCornerShape(10.dp), modifier = Modifier.size(40.dp)) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(icon, null, tint = NoteInk, modifier = Modifier.size(21.dp))
+                }
+            }
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(title, color = NoteInk, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+            }
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = NoteMuted, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+@Composable
+private fun TransferOption(
+    title: String,
+    description: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        color = Color.White,
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEAE6E0)),
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(color = Color(0xFFF1ECE5), shape = RoundedCornerShape(8.dp), modifier = Modifier.size(38.dp)) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(icon, null, tint = NotePrimary, modifier = Modifier.size(20.dp)) }
+            }
+            Column(Modifier.weight(1f).padding(start = 11.dp)) {
+                Text(title, color = NoteInk, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(description, color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+            }
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = NoteMuted, modifier = Modifier.size(17.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onDayClick: (String) -> Unit, onImport: (ImportBundle) -> Unit, onRestore: (NotesState) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showTransfer by remember { mutableStateOf(false) }
@@ -4290,10 +4387,18 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
     }
     Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp)) {
         Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("本地保存 · ${state.notes.size} 条笔记 · ${state.categories.size} 个标签", color = NoteMuted, modifier = Modifier.padding(top = 3.dp))
-        Text("记录热力", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp))
-        Text("左右滑动切换月份，点击日期查看当天全部笔记", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 3.dp, bottom = 12.dp))
-        Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { monthOffset = 0 })) {
+        Text("本地数据概览", color = NoteMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 3.dp, bottom = 14.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            MyStatBlock(state.notes.size.toString(), "篇笔记", Color(0xFFE8F0EB), Modifier.weight(1f))
+            MyStatBlock(state.categories.size.toString(), "个标签", Color(0xFFE9EEF4), Modifier.weight(1f))
+            MyStatBlock(state.notes.sumOf { it.content.count { character -> !character.isWhitespace() } }.toString(), "字", Color(0xFFF5EDE2), Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("记录热力", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            Text("按日查看", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+        }
+        Surface(color = Color.White, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE8E5E0)), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { monthOffset = 0 })) {
             Column(Modifier.fillMaxWidth().pointerInput(monthOffset) {
                 var dragDistance = 0f
                 detectHorizontalDragGestures(
@@ -4305,7 +4410,7 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
                     },
                     onDragCancel = { dragDistance = 0f },
                 )
-            }.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            }.padding(horizontal = 12.dp, vertical = 10.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { monthOffset -= 1 }, modifier = Modifier.size(36.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上个月", tint = NotePrimary) }
                     Text(monthLabel, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = FontWeight.Bold)
@@ -4333,19 +4438,22 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
                 }
             }
         }
-        Button(onClick = onLetters, modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) { Icon(Icons.Filled.MailOutline, null); Spacer(Modifier.width(7.dp)); Text("我的信件") }
-        OutlinedButton(onClick = { showTransfer = true }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) { Icon(Icons.Filled.Save, null); Spacer(Modifier.width(7.dp)); Text("导入 / 导出") }
-        result?.let { Text(it, color = NotePrimary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 12.dp)) }
+        Text("工具", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+        MyActionRow("我的信件", "写给未来的自己", Icons.Filled.MailOutline, Color(0xFFE8F0EB), onLetters)
+        MyActionRow("导入 / 导出", "迁移、备份或导出记录", Icons.Filled.Save, Color(0xFFE9EEF4), { showTransfer = true }, Modifier.padding(top = 8.dp))
+        result?.let { Text(it, color = NotePrimary, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 12.dp)) }
     }
-    if (showTransfer) AlertDialog(onDismissRequest = { showTransfer = false }, title = { Text("导入 / 导出") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            TextButton(onClick = { showTransfer = false; importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed")) }, modifier = Modifier.fillMaxWidth()) { Text("导入 Flomo ZIP 压缩包") }
-            TextButton(onClick = { showTransfer = false; showWeRead = true; weReadBooks = emptyList(); selectedWeReadIds = emptySet(); weReadTag = "微信读书"; weReadProgress = 0f; weReadProgressText = null }, modifier = Modifier.fillMaxWidth()) { Text("导入微信读书笔记") }
-            TextButton(onClick = { showTransfer = false; backupExportLauncher.launch("suixinji-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("备份全部数据") }
-            TextButton(onClick = { showTransfer = false; backupImportLauncher.launch(arrayOf("application/json", "text/plain")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
-            TextButton(onClick = { showTransfer = false; showExport = true }, modifier = Modifier.fillMaxWidth()) { Text("导出记录 ZIP") }
+    if (showTransfer) AlertDialog(onDismissRequest = { showTransfer = false }, title = { Text("导入 / 导出", fontWeight = FontWeight.Bold) }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("导入", color = NoteMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+            TransferOption("导入 Flomo 笔记", "读取 ZIP 压缩包", Icons.Filled.Inbox) { showTransfer = false; importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed")) }
+            TransferOption("导入微信读书", "选择书籍并整理为标签", Icons.Filled.Book) { showTransfer = false; showWeRead = true; weReadBooks = emptyList(); selectedWeReadIds = emptySet(); weReadTag = "微信读书"; weReadProgress = 0f; weReadProgressText = null }
+            Text("备份与导出", color = NoteMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+            TransferOption("备份全部数据", "保存为可恢复的 JSON", Icons.Filled.Save) { showTransfer = false; backupExportLauncher.launch("suixinji-backup.json") }
+            TransferOption("从备份恢复", "从 JSON 备份还原记录", Icons.Filled.Folder) { showTransfer = false; backupImportLauncher.launch(arrayOf("application/json", "text/plain")) }
+            TransferOption("导出记录", "导出笔记为 ZIP 文件", Icons.Filled.Inbox) { showTransfer = false; showExport = true }
         }
-    }, confirmButton = { TextButton(onClick = { showTransfer = false }) { Text("取消") } })
+    }, confirmButton = { TextButton(onClick = { showTransfer = false }) { Text("关闭") } })
     if (showWeRead) AlertDialog(
         onDismissRequest = { if (!importingWeRead) showWeRead = false },
         title = { Text(if (weReadBooks.isEmpty()) "导入微信读书" else "选择要导入的书") },
@@ -4404,12 +4512,13 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
         }) { Text(if (weReadBooks.isEmpty()) "扫描书籍" else "开始导入") } },
         dismissButton = { TextButton(enabled = !importingWeRead, onClick = { showWeRead = false }) { Text("取消") } },
     )
-    if (showExport) AlertDialog(onDismissRequest = { showExport = false }, title = { Text("选择导出格式") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            TextButton(onClick = { pendingFormat = "md"; showExport = false; exportLauncher.launch("suixinji-${today()}.zip") }, modifier = Modifier.fillMaxWidth()) { Text("Markdown（.md）") }
-            TextButton(onClick = { pendingFormat = "txt"; showExport = false; exportLauncher.launch("suixinji-${today()}.zip") }, modifier = Modifier.fillMaxWidth()) { Text("纯文本（.txt）") }
+    if (showExport) AlertDialog(onDismissRequest = { showExport = false }, title = { Text("选择导出格式", fontWeight = FontWeight.Bold) }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("文件将以 ZIP 格式保存", color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+            TransferOption("Markdown", "适合保留标题与格式", Icons.Filled.Book) { pendingFormat = "md"; showExport = false; exportLauncher.launch("suixinji-${today()}.zip") }
+            TransferOption("纯文本", "导出为简单易读的 TXT", Icons.Filled.Inbox) { pendingFormat = "txt"; showExport = false; exportLauncher.launch("suixinji-${today()}.zip") }
         }
-    }, confirmButton = { TextButton(onClick = { showExport = false }) { Text("取消") } })
+    }, confirmButton = { TextButton(onClick = { showExport = false }) { Text("关闭") } })
 }
 
 private fun parseFlomoZip(context: Context, uri: Uri): ImportBundle = runCatching {
