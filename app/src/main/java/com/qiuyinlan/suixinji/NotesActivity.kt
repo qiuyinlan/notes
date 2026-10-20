@@ -161,6 +161,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -175,6 +176,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -271,13 +273,41 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 
-private val NoteInk = Color(0xFF4B3B30)
+private data class NoteThemePalette(
+    val id: String,
+    val name: String,
+    val primary: Color,
+    val accent: Color,
+    val paper: Color,
+    val soft: Color,
+    val surface: Color,
+    val ink: Color,
+    val muted: Color,
+)
+
+private val NoteThemes = listOf(
+    NoteThemePalette("beige", "米色", Color(0xFF8B6A52), Color(0xFFC68E6B), Color(0xFFF4E8DA), Color(0xFFEAD9C7), Color(0xFFFFFCF8), Color(0xFF4B3B30), Color(0xFF8A786B)),
+    NoteThemePalette("mono", "黑白", Color(0xFF343434), Color(0xFF6B6B6B), Color(0xFFF4F4F4), Color(0xFFE4E4E4), Color.White, Color(0xFF202020), Color(0xFF707070)),
+    NoteThemePalette("green", "浅绿色", Color(0xFF5E806A), Color(0xFF8DAE91), Color(0xFFEAF3EA), Color(0xFFD7E8D8), Color(0xFFF8FCF8), Color(0xFF26382B), Color(0xFF6D8171)),
+    NoteThemePalette("red", "浅红色", Color(0xFFAD6468), Color(0xFFD38C8F), Color(0xFFF8EAEA), Color(0xFFF0D6D7), Color(0xFFFFF9F9), Color(0xFF482C2E), Color(0xFF8D7071)),
+    NoteThemePalette("yellow", "浅黄色", Color(0xFF947B37), Color(0xFFC0A34C), Color(0xFFF8F2D9), Color(0xFFF0E6B9), Color(0xFFFFFDF2), Color(0xFF40391F), Color(0xFF81764E)),
+    NoteThemePalette("blue", "浅蓝色", Color(0xFF557B9B), Color(0xFF82A9C8), Color(0xFFE7F0F7), Color(0xFFD2E3F0), Color(0xFFF8FBFE), Color(0xFF263746), Color(0xFF687D8C)),
+)
+
+private var activeNoteTheme by mutableStateOf(NoteThemes.first())
+private val NoteInk get() = activeNoteTheme.ink
 private const val MAX_PINNED_NOTES = 6
-private val NotePrimary = Color(0xFF8B6A52)
-private val NoteAccent = Color(0xFFC68E6B)
-private val NotePaper = Color(0xFFF4E8DA)
-private val NoteSoft = Color(0xFFEAD9C7)
-private val NoteMuted = Color(0xFF8A786B)
+private val NotePrimary get() = activeNoteTheme.primary
+private val NoteAccent get() = activeNoteTheme.accent
+private val NotePaper get() = activeNoteTheme.paper
+private val NoteSoft get() = activeNoteTheme.soft
+private val NoteSurface get() = activeNoteTheme.surface
+private val NoteMuted get() = activeNoteTheme.muted
+private fun selectNoteTheme(context: Context, themeId: String) {
+    val theme = NoteThemes.firstOrNull { it.id == themeId } ?: return
+    activeNoteTheme = theme
+    context.getSharedPreferences("suixin_notes", Context.MODE_PRIVATE).edit().putString("theme", theme.id).apply()
+}
 private val NoteCommentColor = Color(0xFF808080)
 private val NoteTagColor = Color(0xFF3A7FD5)
 private val NoteTypography = Typography().copy(
@@ -583,8 +613,30 @@ class NotesActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         acceptWidgetIntent(intent)
+        activeNoteTheme = NoteThemes.firstOrNull {
+            it.id == getSharedPreferences("suixin_notes", Context.MODE_PRIVATE).getString("theme", "beige")
+        } ?: NoteThemes.first()
         setContent {
-            MaterialTheme(typography = NoteTypography, colorScheme = lightColorScheme(primary = NotePrimary, secondary = NoteAccent, background = NotePaper, surface = Color.White, onSurface = NoteInk)) {
+            MaterialTheme(typography = NoteTypography, colorScheme = lightColorScheme(
+                primary = NotePrimary,
+                onPrimary = Color.White,
+                primaryContainer = NotePaper,
+                onPrimaryContainer = NoteInk,
+                secondary = NoteAccent,
+                onSecondary = Color.White,
+                secondaryContainer = NoteSoft,
+                onSecondaryContainer = NoteInk,
+                tertiary = NotePrimary,
+                onTertiary = Color.White,
+                tertiaryContainer = NoteSoft,
+                onTertiaryContainer = NoteInk,
+                background = NotePaper,
+                surface = NoteSurface,
+                onSurface = NoteInk,
+                surfaceVariant = NoteSoft,
+                onSurfaceVariant = NoteMuted,
+                outline = NoteSoft,
+            )) {
                 NotesApp(widgetLaunchRequest)
             }
         }
@@ -1004,7 +1056,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                         note.copy(categoryIds = ids.distinct(), status = if (ids.isEmpty()) note.status else "organized")
                     }
                     update(importState.copy(categories = mergedCategories, notes = (state.notes + importedNotes).distinctBy { it.id }.sortedByDescending { it.createdAt }))
-            }, onRestore = { restored -> update(restored) })
+            }, onRestore = { restored -> update(restored) }, onThemeChange = { themeId -> selectNoteTheme(context, themeId) })
                 NotesPage.LETTERS -> LetterPage(state, dueLetters, padding, onBack = { page = lettersReturnPage }, onEdit = { letterEditor = it }, onCreate = { letterEditor = FutureLetter(UUID.randomUUID().toString(), "", "", today()) }, onUpdate = ::update)
             }
             }
@@ -2240,7 +2292,7 @@ private fun SearchBrowserDialog(
                     onDragCancel = { dragDistance = 0f },
                 )
             },
-            color = Color(0xFFF4F3F5),
+            color = Color(0xFFFFFCF8),
         ) {
             Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2289,7 +2341,7 @@ private fun SearchBrowserDialog(
                                         ) {
                                             visibleCategories.forEach { category ->
                                                 Surface(
-                                                    color = Color(0xFFEEF3FB),
+                                                    color = Color(0xFFF3ECE5),
                                                     shape = RoundedCornerShape(5.dp),
                                                     modifier = Modifier.combinedClickable(
                                                         onClick = { selectedPath = category.path; noteTagPath = null; selectedNoteId = null },
@@ -2330,10 +2382,10 @@ private fun SearchBrowserDialog(
                             }
                             Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { collapsedPanel = if (collapsedPanel == 1) null else 1 }, modifier = Modifier.size(34.dp)) {
-                                    Icon(Icons.Filled.KeyboardArrowUp, "收起标签，仅显示笔记", tint = Color(0xFF3478B8))
+                                    Icon(Icons.Filled.KeyboardArrowUp, "收起标签，仅显示笔记", tint = NotePrimary)
                                 }
                                 IconButton(onClick = { collapsedPanel = if (collapsedPanel == 2) null else 2 }, modifier = Modifier.size(34.dp)) {
-                                    Icon(Icons.Filled.KeyboardArrowDown, "收起笔记，仅显示标签", tint = Color(0xFF3478B8))
+                                    Icon(Icons.Filled.KeyboardArrowDown, "收起笔记，仅显示标签", tint = NotePrimary)
                                 }
                             }
                         }
@@ -4286,7 +4338,7 @@ private fun MyActionRow(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth().height(68.dp).clickable(onClick = onClick),
-        color = Color.White,
+        color = NoteSurface,
         shape = RoundedCornerShape(12.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE8E5E0)),
     ) {
@@ -4317,12 +4369,12 @@ private fun TransferOption(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        color = Color.White,
+        color = NoteSurface,
         shape = RoundedCornerShape(10.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEAE6E0)),
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(color = Color(0xFFF1ECE5), shape = RoundedCornerShape(8.dp), modifier = Modifier.size(38.dp)) {
+            Surface(color = NoteSoft, shape = RoundedCornerShape(8.dp), modifier = Modifier.size(38.dp)) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(icon, null, tint = NotePrimary, modifier = Modifier.size(20.dp)) }
             }
             Column(Modifier.weight(1f).padding(start = 11.dp)) {
@@ -4336,13 +4388,14 @@ private fun TransferOption(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onDayClick: (String) -> Unit, onImport: (ImportBundle) -> Unit, onRestore: (NotesState) -> Unit) {
+private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> Unit, onDayClick: (String) -> Unit, onImport: (ImportBundle) -> Unit, onRestore: (NotesState) -> Unit, onThemeChange: (String) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showTransfer by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
     var pendingFormat by remember { mutableStateOf<String?>(null) }
     var result by remember { mutableStateOf<String?>(null) }
     var showWeRead by remember { mutableStateOf(false) }
+    var showThemePicker by remember { mutableStateOf(false) }
     var weReadKey by remember { mutableStateOf("") }
     var importingWeRead by remember { mutableStateOf(false) }
     var weReadProgress by remember { mutableStateOf(0f) }
@@ -4441,9 +4494,10 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
         Text("工具", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
         MyActionRow("我的信件", "写给未来的自己", Icons.Filled.MailOutline, Color(0xFFE8F0EB), onLetters)
         MyActionRow("导入 / 导出", "迁移、备份或导出记录", Icons.Filled.Save, Color(0xFFE9EEF4), { showTransfer = true }, Modifier.padding(top = 8.dp))
+        MyActionRow("主题色", "切换应用的背景与点缀颜色", Icons.Filled.FormatColorFill, NoteSoft, { showThemePicker = true }, Modifier.padding(top = 8.dp))
         result?.let { Text(it, color = NotePrimary, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 12.dp)) }
     }
-    if (showTransfer) AlertDialog(onDismissRequest = { showTransfer = false }, title = { Text("导入 / 导出", fontWeight = FontWeight.Bold) }, text = {
+    if (showTransfer) AlertDialog(onDismissRequest = { showTransfer = false }, containerColor = NoteSurface, titleContentColor = NoteInk, textContentColor = NoteInk, title = { Text("导入 / 导出", fontWeight = FontWeight.Bold) }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("导入", color = NoteMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
             TransferOption("导入 Flomo 笔记", "读取 ZIP 压缩包", Icons.Filled.Inbox) { showTransfer = false; importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed")) }
@@ -4454,44 +4508,120 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
             TransferOption("导出记录", "导出笔记为 ZIP 文件", Icons.Filled.Inbox) { showTransfer = false; showExport = true }
         }
     }, confirmButton = { TextButton(onClick = { showTransfer = false }) { Text("关闭") } })
-    if (showWeRead) AlertDialog(
-        onDismissRequest = { if (!importingWeRead) showWeRead = false },
-        title = { Text(if (weReadBooks.isEmpty()) "导入微信读书" else "选择要导入的书") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (weReadBooks.isEmpty()) {
-                Text("输入 API Key 后先扫描书籍，再选择要导入的书。", color = NoteMuted, style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(weReadKey, { weReadKey = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("API Key") })
-            } else {
-                Text("已选择 ${selectedWeReadIds.size} / ${weReadBooks.size} 本", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
-                OutlinedTextField(weReadTag, { weReadTag = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("导入到标签") }, supportingText = { Text("可选择已有标签，也可以直接输入新标签") })
-                if (state.categories.any { it.parentId == null }) {
-                    Text("选择已有标签", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        state.categories.filter { it.parentId == null }.forEach { category ->
-                            FilterChip(selected = weReadTag == category.path, onClick = { weReadTag = category.path }, label = { Text(category.path) })
+    if (showThemePicker) AlertDialog(
+        onDismissRequest = { showThemePicker = false },
+        containerColor = NoteSurface,
+        titleContentColor = NoteInk,
+        textContentColor = NoteInk,
+        title = { Text("主题色", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                NoteThemes.forEach { theme ->
+                    val selected = activeNoteTheme.id == theme.id
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            onThemeChange(theme.id)
+                            showThemePicker = false
+                        },
+                        color = if (selected) theme.soft else theme.surface,
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) theme.accent else theme.soft),
+                    ) {
+                        Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                listOf(theme.paper, theme.soft, theme.primary).forEach { swatch ->
+                                    Surface(color = swatch, shape = CircleShape, border = androidx.compose.foundation.BorderStroke(1.dp, theme.ink.copy(alpha = 0.12f)), modifier = Modifier.size(18.dp)) {}
+                                }
+                            }
+                            Text(theme.name, color = theme.ink, style = MaterialTheme.typography.bodyMedium, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, modifier = Modifier.weight(1f).padding(start = 12.dp))
+                            RadioButton(selected = selected, onClick = {
+                                onThemeChange(theme.id)
+                                showThemePicker = false
+                            })
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { selectedWeReadIds = weReadBooks.map { it.id }.toSet() }) { Text("全选") }
-                    TextButton(onClick = { selectedWeReadIds = emptySet() }) { Text("清空") }
+            }
+        },
+        confirmButton = { TextButton(onClick = { showThemePicker = false }) { Text("完成", color = NotePrimary) } },
+    )
+    if (showWeRead) AlertDialog(
+        onDismissRequest = { if (!importingWeRead) showWeRead = false },
+        containerColor = NoteSurface,
+        titleContentColor = NoteInk,
+        textContentColor = NoteInk,
+        title = {
+            Column {
+                Text("导入微信读书", fontWeight = FontWeight.Bold)
+                Text(if (weReadBooks.isEmpty()) "连接账号 · 扫描笔记" else "选择书籍 · ${selectedWeReadIds.size}/${weReadBooks.size}", color = NoteMuted, style = MaterialTheme.typography.labelMedium)
+            }
+        },
+        text = { Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (weReadBooks.isEmpty()) {
+                Text("输入微信读书 API Key，扫描书籍后可选择要导入的笔记。", color = NoteMuted, style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = weReadKey,
+                    onValueChange = { weReadKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    enabled = !importingWeRead,
+                    label = { Text("API Key") },
+                    supportingText = { Text("密钥仅用于本次连接") },
+                )
+            } else {
+                OutlinedTextField(value = weReadTag, onValueChange = { weReadTag = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !importingWeRead, label = { Text("归入标签") }, supportingText = { Text("每本书会作为子标签，可输入多级路径") })
+                if (state.categories.any { it.parentId == null }) {
+                    Text("常用标签", color = NoteInk, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        state.categories.filter { it.parentId == null }.forEach { category ->
+                            FilterChip(
+                                selected = weReadTag == category.path,
+                                onClick = { weReadTag = category.path },
+                                label = { Text(category.name) },
+                                enabled = !importingWeRead,
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = NoteSoft,
+                                    selectedLabelColor = NoteInk,
+                                    selectedLeadingIconColor = NotePrimary,
+                                ),
+                            )
+                        }
+                    }
                 }
-                Column(Modifier.fillMaxWidth().heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("书籍", color = NoteInk, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(enabled = !importingWeRead, onClick = { selectedWeReadIds = weReadBooks.map { it.id }.toSet() }) { Text("全选", color = NotePrimary) }
+                    TextButton(enabled = !importingWeRead, onClick = { selectedWeReadIds = emptySet() }) { Text("清空", color = NotePrimary) }
+                }
+                Column(Modifier.fillMaxWidth().heightIn(max = 230.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     weReadBooks.forEach { book ->
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = book.id in selectedWeReadIds, onCheckedChange = { checked -> selectedWeReadIds = if (checked) selectedWeReadIds + book.id else selectedWeReadIds - book.id })
-                            Column(Modifier.weight(1f).clickable { selectedWeReadIds = if (book.id in selectedWeReadIds) selectedWeReadIds - book.id else selectedWeReadIds + book.id }.padding(vertical = 5.dp)) { Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis); Text("${book.noteCount} 条笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall) }
+                        val selected = book.id in selectedWeReadIds
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = !importingWeRead) { selectedWeReadIds = if (selected) selectedWeReadIds - book.id else selectedWeReadIds + book.id },
+                            color = if (selected) NoteSoft else NoteSurface,
+                            shape = RoundedCornerShape(9.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) NoteAccent else Color(0xFFEAE3DC)),
+                        ) {
+                            Row(Modifier.padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = selected, enabled = !importingWeRead, onCheckedChange = { checked -> selectedWeReadIds = if (checked) selectedWeReadIds + book.id else selectedWeReadIds - book.id })
+                                Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+                                    Text(book.title, color = NoteInk, style = MaterialTheme.typography.bodyMedium, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text("${book.noteCount} 条笔记", color = NoteMuted, style = MaterialTheme.typography.labelSmall)
+                                }
+                                if (selected) Icon(Icons.Filled.Check, null, tint = NotePrimary, modifier = Modifier.padding(horizontal = 8.dp).size(18.dp))
+                            }
                         }
                     }
                 }
             }
             if (importingWeRead) {
-                weReadProgressText?.let { Text(it, color = NoteMuted, style = MaterialTheme.typography.labelSmall) }
-                if (weReadProgress > 0f) LinearProgressIndicator(progress = weReadProgress, modifier = Modifier.fillMaxWidth()) else LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                weReadProgressText?.let { Text(it, color = NotePrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium) }
+                if (weReadProgress > 0f) LinearProgressIndicator(progress = weReadProgress, modifier = Modifier.fillMaxWidth(), color = NotePrimary, trackColor = NoteSoft) else LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = NotePrimary, trackColor = NoteSoft)
             }
             result?.let { Text(it, color = NotePrimary, style = MaterialTheme.typography.labelSmall) }
         } },
-        confirmButton = { TextButton(enabled = !importingWeRead && ((weReadBooks.isEmpty() && weReadKey.isNotBlank()) || (weReadBooks.isNotEmpty() && selectedWeReadIds.isNotEmpty() && weReadTag.isNotBlank())), onClick = {
+        confirmButton = { Button(enabled = !importingWeRead && ((weReadBooks.isEmpty() && weReadKey.isNotBlank()) || (weReadBooks.isNotEmpty() && selectedWeReadIds.isNotEmpty() && weReadTag.isNotBlank())), onClick = {
             importingWeRead = true
             weReadProgress = 0f
             weReadProgressText = if (weReadBooks.isEmpty()) "正在扫描书籍…" else "正在准备导入…"
@@ -4509,10 +4639,10 @@ private fun MyPage(state: NotesState, padding: PaddingValues, onLetters: () -> U
                     withContext(Dispatchers.Main) { importingWeRead = false; if (imported.notes.isNotEmpty()) { onImport(imported); result = "已导入 ${imported.notes.size} 条笔记"; showWeRead = false } else result = "所选书籍没有可导入笔记" }
                 }
             }
-        }) { Text(if (weReadBooks.isEmpty()) "扫描书籍" else "开始导入") } },
-        dismissButton = { TextButton(enabled = !importingWeRead, onClick = { showWeRead = false }) { Text("取消") } },
+        }) { Text(if (importingWeRead) "处理中…" else if (weReadBooks.isEmpty()) "扫描书籍" else "导入 ${selectedWeReadIds.size} 本") } },
+        dismissButton = { TextButton(enabled = !importingWeRead, onClick = { showWeRead = false }) { Text("取消", color = NotePrimary) } },
     )
-    if (showExport) AlertDialog(onDismissRequest = { showExport = false }, title = { Text("选择导出格式", fontWeight = FontWeight.Bold) }, text = {
+    if (showExport) AlertDialog(onDismissRequest = { showExport = false }, containerColor = NoteSurface, titleContentColor = NoteInk, textContentColor = NoteInk, title = { Text("选择导出格式", fontWeight = FontWeight.Bold) }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("文件将以 ZIP 格式保存", color = NoteMuted, style = MaterialTheme.typography.bodySmall)
             TransferOption("Markdown", "适合保留标题与格式", Icons.Filled.Book) { pendingFormat = "md"; showExport = false; exportLauncher.launch("suixinji-${today()}.zip") }
