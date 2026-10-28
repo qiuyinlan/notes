@@ -220,7 +220,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
@@ -1984,7 +1984,7 @@ private fun NotePreviewConnections(
                                 color = tagColor(category),
                                 shape = RoundedCornerShape(7.dp),
                             ) {
-                                Box(Modifier.fillMaxSize().padding(6.dp), contentAlignment = Alignment.Center) {
+                                Box(Modifier.fillMaxSize().padding(6.dp), contentAlignment = Alignment.TopStart) {
                                     Text(category.name, color = NoteInk, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 }
                             }
@@ -2591,10 +2591,10 @@ private fun OrganizerPage(state: NotesState, padding: PaddingValues, indexState:
     var index by indexState
     var selected by remember { mutableStateOf<QuickNote?>(null) }
     var photoMode by rememberSaveable { mutableStateOf(false) }
-    var photoUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
-    var photoIndex by remember { mutableStateOf(0) }
-    var photoDraft by remember { mutableStateOf("") }
-    var deletePhotoAfterSave by remember { mutableStateOf(false) }
+    var photoUris by rememberSaveable { mutableStateOf<List<Uri>>(emptyList()) }
+    var photoIndex by rememberSaveable { mutableStateOf(0) }
+    var photoDraft by rememberSaveable { mutableStateOf("") }
+    var deletePhotoAfterSave by rememberSaveable { mutableStateOf(false) }
     var photoPreview by remember { mutableStateOf<Uri?>(null) }
     var mode by rememberSaveable { mutableStateOf("ALL") }
     var monthFilter by rememberSaveable { mutableStateOf("全部月份") }
@@ -2978,6 +2978,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
     var editorTextLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var editorTextLayoutSource by remember { mutableStateOf<String?>(null) }
     var editorPosition by remember { mutableStateOf<IntOffset?>(null) }
+    var editorOverlayPosition by remember { mutableStateOf<IntOffset?>(null) }
     val editorScroll = rememberScrollState()
     var editorViewportHeight by remember { mutableStateOf(0) }
     var nativeImeBottom by remember { mutableStateOf(0) }
@@ -3463,13 +3464,16 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                     val editorTextStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, color = Color.Black)
                     BoxWithConstraints(Modifier.fillMaxSize().onGloballyPositioned {
                         if (editorViewportHeight != it.size.height) editorViewportHeight = it.size.height
+                        val position = it.positionInRoot()
+                        val next = IntOffset(position.x.roundToInt(), position.y.roundToInt())
+                        if (editorOverlayPosition != next) editorOverlayPosition = next
                     }) {
                         val density = androidx.compose.ui.platform.LocalDensity.current
                         val suggestions = inlineTagSuggestions.take(4)
                         val popupWidth = maxWidth * 0.70f
                         val popupHeight = (suggestions.size * 40 + 4).dp
                         val cursorMargin = with(density) {
-                            if (activeTagQuery != null && suggestions.isNotEmpty()) (suggestions.size * 40 + 12).dp.toPx()
+                            if (activeTagQuery != null && suggestions.isNotEmpty()) (suggestions.size * 40 + 20).dp.toPx()
                             else 32.dp.toPx()
                         }
                         LaunchedEffect(editorTextLayout, text.selection, editorViewportHeight, activeTagQuery, suggestions.size) {
@@ -3498,12 +3502,13 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                             layout.getCursorRect(transformedOffset)
                         } else null
                         val fieldPosition = editorPosition
-                        if (tagQuery != null && suggestions.isNotEmpty() && cursorRect != null && fieldPosition != null) {
+                        val overlayPosition = editorOverlayPosition
+                        if (tagQuery != null && suggestions.isNotEmpty() && cursorRect != null && fieldPosition != null && overlayPosition != null) {
                             val popupWidthPx = with(density) { popupWidth.toPx() }
-                            val x = fieldPosition.x.toFloat()
+                            val x = (fieldPosition.x - overlayPosition.x).toFloat()
                                 .coerceIn(0f, (constraints.maxWidth - popupWidthPx).coerceAtLeast(0f))
                                 .toInt()
-                            val y = (fieldPosition.y + cursorRect.bottom - editorScroll.value + with(density) { 4.dp.toPx() })
+                            val y = (fieldPosition.y + cursorRect.bottom - overlayPosition.y + with(density) { 8.dp.toPx() })
                                 .roundToInt()
                             Surface(
                                 modifier = Modifier.offset { IntOffset(x, y) }.width(popupWidth).height(popupHeight).zIndex(1f),
@@ -3569,7 +3574,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                             value = text,
                             onValueChange = ::handleEditorInput,
                             modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 48.dp).focusRequester(focusRequester).onGloballyPositioned {
-                                val position = it.positionInParent()
+                                val position = it.positionInRoot()
                                 val next = IntOffset(position.x.roundToInt(), position.y.roundToInt())
                                 if (editorPosition != next) editorPosition = next
                             }.pointerInput(text.text, editorTextLayout) {
@@ -3929,7 +3934,7 @@ private fun ConnectionBackFace(
                                 color = tagColor(category),
                                 shape = RoundedCornerShape(8.dp),
                             ) {
-                                Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+                                Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.TopStart) {
                                     Text(category.name, color = NoteInk, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 }
                             }

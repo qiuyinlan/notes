@@ -1,7 +1,7 @@
 {
-  "versionCode": 36,
-  "versionName": "0.1.8",
+  "versionCode": 37,
+  "versionName": "0.1.9",
   "apkUrl": "https://github.com/qiuyinlan/notes/releases/latest/download/app-release.apk",
-  "sha256": "9f471e42bf69610f687f8d5fec990c9a737019b48db1444465cffab5ce257c3d",
-  "changelog": "照片整理新增总览跳转与无笔记跳过；修复更新检查来源与回退逻辑。"
+  "sha256": "3d6f059295dcf8f90d0ae8dd09f971a672ddb6cf87bd52149acca1da4cd03f62",
+  "changelog": "调整标签建议位置，显示在光标行下方，避免遮挡正在编辑的文字。"
 }
