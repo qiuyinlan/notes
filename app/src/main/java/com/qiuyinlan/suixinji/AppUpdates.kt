@@ -73,7 +73,7 @@ internal object AppUpdateClient {
         val configuredUrl = BuildConfig.APP_UPDATE_MANIFEST_URL
         val sources = listOfNotNull(configuredUrl, updateManifestFallbackUrl(configuredUrl), updateManifestMirrorUrl(configuredUrl)).distinct()
         val currentVersion = context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
-        var lastError: Exception? = null
+        val sourceErrors = mutableListOf<String>()
         var manifestRead = false
         for (source in sources) {
             try {
@@ -83,11 +83,12 @@ internal object AppUpdateClient {
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                lastError = error
+                val host = runCatching { URI(source).host }.getOrNull() ?: "更新地址"
+                sourceErrors += "$host: ${error.message ?: error.javaClass.simpleName}"
             }
         }
         if (manifestRead) return@withContext null
-        throw IOException("无法获取更新，请检查网络或稍后重试（${lastError?.message ?: "未知错误"}）", lastError)
+        throw IOException("无法获取更新清单：${sourceErrors.joinToString("；")}")
     }
 
     private fun readManifest(source: String): JSONObject {
@@ -95,6 +96,7 @@ internal object AppUpdateClient {
         val connection = openHttpsConnection(manifestUrl, "GET", 10_000, 15_000, "application/json")
         try {
             if (connection.responseCode !in 200..299) throw IOException("更新服务返回 HTTP ${connection.responseCode}")
+            if (!connection.url.protocol.equals("https", ignoreCase = true)) throw IOException("更新服务跳转到了非 HTTPS 地址")
             val json = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText().removePrefix("\uFEFF") }
             return JSONObject(json)
         } finally { connection.disconnect() }
@@ -142,12 +144,13 @@ internal object AppUpdateClient {
             require(uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()) { "更新地址必须使用 HTTPS" }
             val connection = connectionFactory(URL(uri.toString())).apply {
                 requestMethod = method
-                instanceFollowRedirects = false
+                instanceFollowRedirects = true
                 useCaches = false
                 this.connectTimeout = connectTimeout
                 this.readTimeout = readTimeout
                 setRequestProperty("Cache-Control", "no-cache, no-store")
                 setRequestProperty("Accept", accept)
+                setRequestProperty("User-Agent", "SuiXinJi-Android-Updater")
             }
             val code = connection.responseCode
             if (code in listOf(301, 302, 303, 307, 308)) {

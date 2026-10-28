@@ -17,6 +17,8 @@ class AppUpdateTest {
                 override fun getResponseCode(): Int {
                     assertEquals("application/json", getRequestProperty("Accept"))
                     assertEquals("no-cache, no-store", getRequestProperty("Cache-Control"))
+                    assertEquals("SuiXinJi-Android-Updater", getRequestProperty("User-Agent"))
+                    assertTrue(instanceFollowRedirects)
                     connect()
                     return if (connections.size == 1) 302 else 200
                 }
