@@ -1,5 +1,7 @@
 {
   "versionCode": 36,
   "versionName": "0.1.8",
-  "changelog": "随心记 0.1.8"
+  "apkUrl": "https://github.com/qiuyinlan/notes/releases/latest/download/app-release.apk",
+  "sha256": "9f471e42bf69610f687f8d5fec990c9a737019b48db1444465cffab5ce257c3d",
+  "changelog": "照片整理新增总览跳转与无笔记跳过；修复更新检查来源与回退逻辑。"
 }
