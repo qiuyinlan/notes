@@ -68,10 +68,32 @@ internal fun updateManifestMirrorUrl(configuredUrl: String): String? {
     return "https://cdn.jsdelivr.net/gh/$owner/$repository@main/updates/$channel.json"
 }
 
+internal fun updateManifestApiFallbackUrls(configuredUrl: String): List<String> {
+    val uri = runCatching { URI(configuredUrl) }.getOrNull() ?: return emptyList()
+    if (uri.scheme != "https" || uri.host != "api.github.com") return emptyList()
+    val match = Regex("^/repos/([^/]+)/([^/]+)/contents/updates/(stable|latest)\\.json$")
+        .matchEntire(uri.path) ?: return emptyList()
+    val (owner, repository, channel) = match.destructured
+    return listOf(
+        "https://raw.githubusercontent.com/$owner/$repository/main/updates/$channel.json",
+        "https://cdn.jsdelivr.net/gh/$owner/$repository@main/updates/$channel.json",
+    )
+}
+
+internal fun updateManifestAcceptHeader(source: String): String {
+    val uri = runCatching { URI(source) }.getOrNull()
+    return if (uri?.host == "api.github.com" && uri.path.matches(Regex("^/repos/[^/]+/[^/]+/contents/.+\\.json$"))) {
+        "application/vnd.github.raw+json"
+    } else {
+        "application/json"
+    }
+}
+
 internal object AppUpdateClient {
     suspend fun check(context: Context): AppUpdate? = withContext(Dispatchers.IO) {
         val configuredUrl = BuildConfig.APP_UPDATE_MANIFEST_URL
-        val sources = listOfNotNull(configuredUrl, updateManifestFallbackUrl(configuredUrl), updateManifestMirrorUrl(configuredUrl)).distinct()
+        val sources = listOfNotNull(configuredUrl, updateManifestFallbackUrl(configuredUrl), updateManifestMirrorUrl(configuredUrl)) +
+            updateManifestApiFallbackUrls(configuredUrl)
         val currentVersion = context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
         val sourceErrors = mutableListOf<String>()
         var manifestRead = false
@@ -93,7 +115,7 @@ internal object AppUpdateClient {
 
     private fun readManifest(source: String): JSONObject {
         val manifestUrl = source + if ('?' in source) "&_=${System.currentTimeMillis()}" else "?_=${System.currentTimeMillis()}"
-        val connection = openHttpsConnection(manifestUrl, "GET", 10_000, 15_000, "application/json")
+        val connection = openHttpsConnection(manifestUrl, "GET", 10_000, 15_000, updateManifestAcceptHeader(source))
         try {
             if (connection.responseCode !in 200..299) throw IOException("更新服务返回 HTTP ${connection.responseCode}")
             if (!connection.url.protocol.equals("https", ignoreCase = true)) throw IOException("更新服务跳转到了非 HTTPS 地址")

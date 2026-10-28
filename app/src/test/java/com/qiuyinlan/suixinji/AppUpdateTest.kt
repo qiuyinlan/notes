@@ -42,6 +42,16 @@ class AppUpdateTest {
             updateManifestMirrorUrl("https://github.com/qiuyinlan/notes/releases/latest/download/latest.json"))
     }
 
+    @Test fun requestsRawJsonFromGithubContentsApi() {
+        val apiUrl = "https://api.github.com/repos/qiuyinlan/notes/contents/updates/stable.json?ref=main"
+        assertEquals("application/vnd.github.raw+json", updateManifestAcceptHeader(apiUrl))
+        assertEquals("application/json", updateManifestAcceptHeader("https://updates.example/stable.json"))
+        assertEquals(listOf(
+            "https://raw.githubusercontent.com/qiuyinlan/notes/main/updates/stable.json",
+            "https://cdn.jsdelivr.net/gh/qiuyinlan/notes@main/updates/stable.json",
+        ), updateManifestApiFallbackUrls(apiUrl))
+    }
+
     @Test fun doesNotOverrideCustomOrUntrustedUpdateSources() {
         assertNull(updateManifestFallbackUrl("https://updates.example/stable.json"))
         assertNull(updateManifestFallbackUrl("http://github.com/qiuyinlan/notes/releases/latest/download/stable.json"))

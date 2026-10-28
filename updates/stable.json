@@ -1,7 +1,7 @@
 {
-  "versionCode": 41,
-  "versionName": "0.1.13",
-  "apkUrl": "https://github.com/qiuyinlan/notes/releases/download/v0.1.13/app-release.apk",
-  "sha256": "82a78c229637652250a43fbafd883e60506f674b8cacba22902d5f4995ec6f36",
-  "changelog": "修正正式版更新清单地址，提升检查更新成功率。"
+  "versionCode": 42,
+  "versionName": "0.1.14",
+  "apkUrl": "https://github.com/qiuyinlan/notes/releases/download/v0.1.14/app-release.apk",
+  "sha256": "205a173f650614440d9df231b7e3ade8fa51bf93a7f95dfbb55b18b92f95e1cc",
+  "changelog": "修正更新清单读取方式，改由 GitHub API 实时获取。"
 }
