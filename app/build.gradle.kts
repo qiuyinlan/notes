@@ -19,9 +19,9 @@ val internalSigningProperties = Properties().apply {
 val membershipApiBaseUrl = providers.gradleProperty("membershipApiBaseUrl")
     .orElse("https://replace-with-membership-api.example")
 val appUpdateManifestUrl = providers.gradleProperty("appUpdateManifestUrl")
-    .orElse("https://github.com/qiuyinlan/notes/releases/latest/download/stable.json")
+    .orElse("https://cdn.jsdelivr.net/gh/qiuyinlan/notes@main/updates/stable.json")
 val internalUpdateManifestUrl = providers.gradleProperty("internalUpdateManifestUrl")
-    .orElse("https://github.com/qiuyinlan/notes/releases/latest/download/latest.json")
+    .orElse("https://cdn.jsdelivr.net/gh/qiuyinlan/notes@main/updates/latest.json")
 
 android {
     namespace = "com.qiuyinlan.suixinji"
@@ -36,8 +36,8 @@ android {
         applicationId = "com.qiuyinlan.suixinji"
         minSdk = 29
         targetSdk = 35
-        versionCode = 40
-        versionName = "0.1.12"
+        versionCode = 41
+        versionName = "0.1.13"
         buildConfigField("String", "MEMBERSHIP_API_BASE_URL", "\"${membershipApiBaseUrl.get()}\"")
         buildConfigField("String", "APP_UPDATE_MANIFEST_URL", "\"${appUpdateManifestUrl.get()}\"")
     }
