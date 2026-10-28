@@ -36,8 +36,8 @@ android {
         applicationId = "com.qiuyinlan.suixinji"
         minSdk = 29
         targetSdk = 35
-        versionCode = 39
-        versionName = "0.1.11"
+        versionCode = 40
+        versionName = "0.1.12"
         buildConfigField("String", "MEMBERSHIP_API_BASE_URL", "\"${membershipApiBaseUrl.get()}\"")
         buildConfigField("String", "APP_UPDATE_MANIFEST_URL", "\"${appUpdateManifestUrl.get()}\"")
     }

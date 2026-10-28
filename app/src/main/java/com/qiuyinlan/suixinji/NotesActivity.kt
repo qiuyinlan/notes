@@ -3508,7 +3508,10 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                             val x = (fieldPosition.x - overlayPosition.x).toFloat()
                                 .coerceIn(0f, (constraints.maxWidth - popupWidthPx).coerceAtLeast(0f))
                                 .toInt()
-                            val y = (fieldPosition.y + cursorRect.bottom - overlayPosition.y + with(density) { 8.dp.toPx() })
+                            val y = (
+                                fieldPosition.y + cursorRect.bottom + cursorRect.height - overlayPosition.y +
+                                    with(density) { 8.dp.toPx() }
+                                )
                                 .roundToInt()
                             Surface(
                                 modifier = Modifier.offset { IntOffset(x, y) }.width(popupWidth).height(popupHeight).zIndex(1f),
@@ -3519,8 +3522,8 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                             ) {
                                 Column(Modifier.padding(vertical = 2.dp)) {
                                     suggestions.forEach { category ->
-                                        TextButton(
-                                            onClick = {
+                                        Box(
+                                            modifier = Modifier.fillMaxWidth().height(40.dp).clickable {
                                                 val (start, cursor, _) = tagQuery
                                                 val hasChildren = categories.any { it.parentId == category.id }
                                                 val insertion = if (hasChildren) "#${category.path}/" else "#${category.path} "
@@ -3529,17 +3532,15 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                                                 replaceEditorText(TextFieldValue(next, TextRange(start + insertion.length)))
                                                 focusRequester.requestFocus()
                                                 keyboardController?.show()
-                                            },
-                                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                                            }.padding(horizontal = 12.dp),
+                                            contentAlignment = Alignment.CenterStart,
                                         ) {
                                             Text(
                                                 "#${category.path}",
-                                                modifier = Modifier.fillMaxWidth(),
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 fontSize = 13.sp,
                                                 color = NoteInk,
-                                                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
                                             )
                                         }
                                     }

@@ -1,7 +1,7 @@
 {
-  "versionCode": 39,
-  "versionName": "0.1.11",
-  "apkUrl": "https://github.com/qiuyinlan/notes/releases/latest/download/app-release.apk",
-  "sha256": "07042d439f3892294cd1c0c2af1a884ecf585fac9c96342835d3f2772d067c5c",
-  "changelog": "调整按 # 输入时的标签建议列表，标签文字改为左对齐。"
+  "versionCode": 40,
+  "versionName": "0.1.12",
+  "apkUrl": "https://github.com/qiuyinlan/notes/releases/download/v0.1.12/app-release.apk",
+  "sha256": "7fd775eb2db9a94833d002024c851d89d36a3896b38b2a8530f46c3594c58595",
+  "changelog": "修正按 # 输入时标签建议列表的位置和左对齐，确保列表显示在光标行下方。"
 }
