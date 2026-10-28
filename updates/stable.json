@@ -1,7 +1,7 @@
 {
-  "versionCode": 38,
-  "versionName": "0.1.10",
+  "versionCode": 39,
+  "versionName": "0.1.11",
   "apkUrl": "https://github.com/qiuyinlan/notes/releases/latest/download/app-release.apk",
-  "sha256": "7c0132e600839e4e32a6fe1598dc807c6bfda77251c502f428124ca536cc86c4",
-  "changelog": "修复 GitHub 更新清单跳转识别问题，并优化更新源错误提示。"
+  "sha256": "07042d439f3892294cd1c0c2af1a884ecf585fac9c96342835d3f2772d067c5c",
+  "changelog": "调整按 # 输入时的标签建议列表，标签文字改为左对齐。"
 }

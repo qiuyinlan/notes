@@ -3532,7 +3532,15 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                                             },
                                             modifier = Modifier.fillMaxWidth().height(40.dp),
                                         ) {
-                                            Text("#${category.path}", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, color = NoteInk)
+                                            Text(
+                                                "#${category.path}",
+                                                modifier = Modifier.fillMaxWidth(),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                fontSize = 13.sp,
+                                                color = NoteInk,
+                                                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
+                                            )
                                         }
                                     }
                                 }
