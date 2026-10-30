@@ -1,7 +1,7 @@
 {
-  "versionCode": 43,
-  "versionName": "0.1.15",
-  "apkUrl": "https://github.com/qiuyinlan/notes/releases/download/v0.1.15/app-release.apk",
-  "sha256": "d6139526f8b577e9a94c0889921eaadcaddc08e30cbf4f677dc3ebb035d9a416",
-  "changelog": "修复首行回车闪退，优化预览切换和标签建议位置，增加标签删除功能。"
+  "versionCode": 42,
+  "versionName": "0.1.14",
+  "apkUrl": "https://github.com/qiuyinlan/notes/releases/download/v0.1.14/app-release.apk",
+  "sha256": "205a173f650614440d9df231b7e3ade8fa51bf93a7f95dfbb55b18b92f95e1cc",
+  "changelog": "修正更新清单读取方式，改由 GitHub API 实时获取。"
 }
