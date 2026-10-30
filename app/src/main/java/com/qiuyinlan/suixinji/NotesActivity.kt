@@ -691,6 +691,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     var commentNote by remember { mutableStateOf<QuickNote?>(null) }
     var letterEditor by remember { mutableStateOf<FutureLetter?>(null) }
     var renameTarget by remember { mutableStateOf<NoteCategory?>(null) }
+    var deleteCategoryTarget by remember { mutableStateOf<Pair<NoteCategory, Boolean>?>(null) }
     var homeDateFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var homeDateFilterReturnToMy by rememberSaveable { mutableStateOf(false) }
     var showCategoryMenu by remember { mutableStateOf(false) }
@@ -910,6 +911,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                     page = page,
                     selected = selectedCategory,
                     onRename = { renameTarget = it },
+                    onDelete = { category, children -> deleteCategoryTarget = category to children },
                     onTogglePinned = { category ->
                         val pinned = state.drawerPinnedIds
                         update(state.copy(drawerPinnedIds = if (category.id in pinned) pinned - category.id else if (pinned.size < 6) pinned + category.id else pinned))
@@ -974,6 +976,8 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                                         Column(Modifier.padding(vertical = 6.dp)) {
                                             Text("标签操作", color = NoteMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 18.dp, vertical = 7.dp))
                                             DropdownMenuItem(text = { Text("编辑这个标签") }, onClick = { showCategoryMenu = false; renameTarget = category })
+                                            DropdownMenuItem(text = { Text("删除标签") }, onClick = { showCategoryMenu = false; deleteCategoryTarget = category to false })
+                                            DropdownMenuItem(text = { Text("删除标签及其子标签") }, onClick = { showCategoryMenu = false; deleteCategoryTarget = category to true })
                                             DropdownMenuItem(text = { Text("查看上级标签") }, enabled = parent != null, onClick = { if (parent != null) { selectedCategory = parent; showCategoryMenu = false } })
                                             DropdownMenuItem(text = { Text(if (children.isEmpty()) "暂无下级标签" else "查看下级标签") }, enabled = children.isNotEmpty(), onClick = { showCategoryMenu = false; showChildCategoryMenu = true })
                                         }
@@ -1045,7 +1049,7 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
                 NotesPage.TAGS -> TagsPage(state, tagCategory, padding, showTagsSearch, onSelect = { tagCategory = it }, onEdit = { openEditor(it, NotesPage.TAGS) }, onToggleFavorite = { note -> update(state.copy(notes = state.notes.map { if (it.id == note.id) it.copy(favorite = !it.favorite) else it })) }, onUpdate = ::update, onColorChange = { category, color -> update(state.copy(categories = state.categories.map { if (it.id == category.id) it.copy(color = color.toLong()) else it })) }, onTogglePinned = { category ->
                     val pinned = state.tagPinnedIds
                     update(state.copy(tagPinnedIds = if (category.id in pinned) pinned - category.id else if (pinned.size < 6) pinned + category.id else pinned))
-                }, onRename = { renameTarget = it }, onDeleteNote = ::deleteNote, onDeleteMany = { selectedCategories ->
+                }, onRename = { renameTarget = it }, onDeleteCategory = { category, children -> deleteCategoryTarget = category to children }, onDeleteNote = ::deleteNote, onDeleteMany = { selectedCategories ->
                     val removedIds = state.categories.filter { item -> selectedCategories.any { category -> item.id == category.id || item.path.startsWith("${category.path}/") } }.map { it.id }.toSet()
                     update(state.copy(
                         categories = state.categories.filterNot { it.id in removedIds },
@@ -1179,6 +1183,53 @@ private fun NotesApp(widgetLaunchRequest: WidgetLaunchRequest? = null) {
     ) } }
     commentNote?.let { note -> CommentSheet(note, onDismiss = { commentNote = null }, onSave = { comment -> update(state.copy(notes = state.notes.map { current -> if (current.id == note.id) current.copy(comments = current.comments + comment, updatedAt = System.currentTimeMillis()) else current })); commentNote = null }) }
     letterEditor?.let { letter -> LetterEditor(letter, onDismiss = { letterEditor = null; page = lettersReturnPage }, onSave = { value -> update(state.copy(letters = listOf(value) + state.letters.filterNot { it.id == value.id })); letterEditor = null; page = lettersReturnPage }) }
+    deleteCategoryTarget?.let { (category, includeChildren) ->
+        AlertDialog(
+            onDismissRequest = { deleteCategoryTarget = null },
+            title = { Text(if (includeChildren) "删除标签及其子标签？" else "删除标签？") },
+            text = { Text(if (includeChildren) "将删除“${category.path}”及其子标签，笔记和正文文字会保留。" else "将删除“${category.path}”，子标签移至上一级，笔记和正文文字会保留。") },
+            confirmButton = { TextButton(onClick = {
+                val descendants = state.categories.filter { it.path.startsWith("${category.path}/") }
+                val parentPath = category.path.substringBeforeLast('/', "")
+                fun promotedPath(path: String): String = listOf(parentPath, path.removePrefix("${category.path}/")).filter { it.isNotEmpty() }.joinToString("/")
+                val collisions = !includeChildren && descendants.any { child -> state.categories.any { it.id != child.id && it.id != category.id && it !in descendants && it.path == promotedPath(child.path) } }
+                if (collisions) {
+                    Toast.makeText(context, "子标签与上一级已有标签重名，请先修改名称", Toast.LENGTH_LONG).show()
+                } else {
+                    val removedIds = (if (includeChildren) descendants + category else listOf(category)).map { it.id }.toSet()
+                    val categories = state.categories.filterNot { it.id in removedIds }.map { item ->
+                        if (!includeChildren && item in descendants) item.copy(path = promotedPath(item.path), parentId = if (item.parentId == category.id) category.parentId else item.parentId) else item
+                    }
+                    fun cleanNote(note: QuickNote): QuickNote {
+                        val matches = NoteTagRegex.findAll(note.content).toList()
+                        var content = note.content
+                        var comments = note.comments
+                        matches.asReversed().forEach { match ->
+                            val path = match.groupValues[1]
+                            val replacement = when {
+                                path == category.path || (includeChildren && path.startsWith("${category.path}/")) -> path
+                                !includeChildren && path.startsWith("${category.path}/") -> "#${promotedPath(path)}"
+                                else -> match.value
+                            }
+                            if (replacement != match.value) {
+                                val start = match.range.first
+                                val end = match.range.last + 1
+                                content = content.replaceRange(start, end, replacement)
+                                comments = comments.map { comment -> comment.copy(position = when { comment.position >= end -> comment.position + replacement.length - (end - start); comment.position > start -> start + (comment.position - start).coerceAtMost(replacement.length); else -> comment.position }) }
+                            }
+                        }
+                        return note.copy(content = content, comments = comments, categoryIds = note.categoryIds.filterNot { it in removedIds })
+                    }
+                    update(state.copy(categories = categories, notes = state.notes.map(::cleanNote), trash = state.trash.map { it.copy(note = cleanNote(it.note)) }, tagPinnedIds = state.tagPinnedIds.filterNot { it in removedIds }, drawerPinnedIds = state.drawerPinnedIds.filterNot { it in removedIds }))
+                    selectedCategory = selectedCategory?.let { current -> categories.firstOrNull { it.id == current.id } }
+                    tagCategory = tagCategory?.let { current -> categories.firstOrNull { it.id == current.id } }
+                    if (page == NotesPage.CATEGORY && selectedCategory == null) page = NotesPage.TAGS
+                }
+                deleteCategoryTarget = null
+            }) { Text("删除", color = Color(0xFFB3261E)) } },
+            dismissButton = { TextButton(onClick = { deleteCategoryTarget = null }) { Text("取消") } },
+        )
+    }
     renameTarget?.let { category ->
         RenameCategoryDialog(category, onDismiss = { renameTarget = null }, onSave = { newName ->
             val cleanName = newName.trim().trimStart('#')
@@ -1233,7 +1284,7 @@ private fun MainNavigation(page: NotesPage, onSelect: (NotesPage) -> Unit) {
 }
 
 @Composable
-private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCategory?, onRename: (NoteCategory) -> Unit, onTogglePinned: (NoteCategory) -> Unit, onNavigate: (NotesPage, NoteCategory?) -> Unit) {
+private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCategory?, onRename: (NoteCategory) -> Unit, onDelete: (NoteCategory, Boolean) -> Unit, onTogglePinned: (NoteCategory) -> Unit, onNavigate: (NotesPage, NoteCategory?) -> Unit) {
     var expandedTags by remember { mutableStateOf(emptySet<String>()) }
     val rootTags = state.categories.filter { it.parentId == null }
     val pinnedTags = orderedCategories(state.categories.filter { it.id in state.drawerPinnedIds }, state.drawerPinnedIds)
@@ -1263,6 +1314,7 @@ private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCate
                     expandedTags = expandedTags,
                     onToggle = { id -> expandedTags = if (id in expandedTags) expandedTags - id else expandedTags + id },
                     onRename = onRename,
+                    onDelete = onDelete,
                     pinnedIds = state.drawerPinnedIds,
                     onTogglePinned = onTogglePinned,
                     onNavigate = onNavigate,
@@ -1280,6 +1332,7 @@ private fun DrawerContent(state: NotesState, page: NotesPage, selected: NoteCate
                     expandedTags = expandedTags,
                     onToggle = { id -> expandedTags = if (id in expandedTags) expandedTags - id else expandedTags + id },
                     onRename = onRename,
+                    onDelete = onDelete,
                     pinnedIds = state.drawerPinnedIds,
                     onTogglePinned = onTogglePinned,
                     onNavigate = onNavigate,
@@ -1355,6 +1408,7 @@ private fun DrawerTagRow(
     expandedTags: Set<String>,
     onToggle: (String) -> Unit,
     onRename: (NoteCategory) -> Unit,
+    onDelete: (NoteCategory, Boolean) -> Unit,
     pinnedIds: List<String>,
     onTogglePinned: (NoteCategory) -> Unit,
     onNavigate: (NotesPage, NoteCategory?) -> Unit,
@@ -1390,6 +1444,8 @@ private fun DrawerTagRow(
             IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "标签操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
             NotePopupMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(text = { Text("修改名字") }, onClick = { menuOpen = false; onRename(category) })
+                DropdownMenuItem(text = { Text("删除标签") }, onClick = { menuOpen = false; onDelete(category, false) })
+                DropdownMenuItem(text = { Text("删除标签及其子标签") }, onClick = { menuOpen = false; onDelete(category, true) })
                 DropdownMenuItem(
                     text = { Text(if (category.id in pinnedIds) "取消置顶" else "置顶") },
                     enabled = category.id in pinnedIds || pinnedIds.size < 6,
@@ -1401,7 +1457,7 @@ private fun DrawerTagRow(
 
     if (isExpanded) {
         children.forEach { child ->
-            DrawerTagRow(child, allCategories, notes, selected, expandedTags, onToggle, onRename, pinnedIds, onTogglePinned, onNavigate, flat = false)
+            DrawerTagRow(child, allCategories, notes, selected, expandedTags, onToggle, onRename, onDelete, pinnedIds, onTogglePinned, onNavigate, flat = false)
         }
     }
 }
@@ -2113,6 +2169,7 @@ private fun TagsPage(
     onColorChange: (NoteCategory, Int) -> Unit,
     onTogglePinned: (NoteCategory) -> Unit,
     onRename: (NoteCategory) -> Unit,
+    onDeleteCategory: (NoteCategory, Boolean) -> Unit,
     onDeleteMany: (Set<NoteCategory>) -> Unit,
 ) {
     var colorTarget by remember { mutableStateOf<NoteCategory?>(null) }
@@ -2200,6 +2257,8 @@ private fun TagsPage(
                                             IconButton(onClick = { menuTarget = category }, modifier = Modifier.size(30.dp)) { Icon(Icons.Filled.MoreVert, "标签操作", tint = NoteMuted, modifier = Modifier.size(19.dp)) }
                                             NotePopupMenu(expanded = menuTarget?.id == category.id, onDismissRequest = { menuTarget = null }) {
                                                 DropdownMenuItem(text = { Text("修改名字") }, onClick = { menuTarget = null; onRename(category) })
+                                                DropdownMenuItem(text = { Text("删除标签") }, onClick = { menuTarget = null; onDeleteCategory(category, false) })
+                                                DropdownMenuItem(text = { Text("删除标签及其子标签") }, onClick = { menuTarget = null; onDeleteCategory(category, true) })
                                                 DropdownMenuItem(text = { Text("调整颜色") }, onClick = { menuTarget = null; colorTarget = category })
                                                 DropdownMenuItem(
                                                     text = { Text(if (category.id in state.tagPinnedIds) "取消置顶" else "置顶") },
@@ -2980,6 +3039,10 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
     var editorPosition by remember { mutableStateOf<IntOffset?>(null) }
     var editorOverlayPosition by remember { mutableStateOf<IntOffset?>(null) }
     val editorScroll = rememberScrollState()
+    val previewScroll = rememberScrollState()
+    var switchScrollProgress by remember { mutableStateOf<Float?>(null) }
+    var suppressCursorScroll by remember { mutableStateOf(false) }
+    var returningFromPreview by remember { mutableStateOf(false) }
     var editorViewportHeight by remember { mutableStateOf(0) }
     var nativeImeBottom by remember { mutableStateOf(0) }
     val editorVisualTransformation = remember(comments, activeSearchMatch) { MarkdownVisualTransformation(comments, activeSearchMatch) }
@@ -3131,6 +3194,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
         bodyFocusRequest++
     }
     fun handleEditorInput(value: TextFieldValue) {
+        suppressCursorScroll = false
         val oldText = text.text
         val newText = value.text
         val spaceIndex = value.selection.start - 1
@@ -3159,7 +3223,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
             return
         }
         val newline = value.selection.start - 1
-        val lineStart = newText.lastIndexOf('\n', (newline - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+        val lineStart = editorLineStart(newText, newline)
         val previousLine = newText.substring(lineStart, newline)
         val emptyTask = Regex("^(\\s*)- \\[ \\]\\s*$").find(previousLine)
         val task = Regex("^(\\s*)- \\[[ xX]\\]\\s+.+$").find(previousLine)
@@ -3311,11 +3375,18 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
         }
         LaunchedEffect(editorView, note.id, previewMode) {
             (editorView.parent as? DialogWindowProvider)?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-            if (previewMode) return@LaunchedEffect
+            if (previewMode || returningFromPreview) return@LaunchedEffect
             delay(150)
             focusRequester.requestFocus()
             delay(100)
             editorKeyboardController?.show()
+        }
+        LaunchedEffect(previewMode) {
+            val progress = switchScrollProgress ?: return@LaunchedEffect
+            delay(150)
+            val scroll = if (previewMode) previewScroll else editorScroll
+            scroll.scrollTo((scroll.maxValue * progress).roundToInt())
+            switchScrollProgress = null
         }
         Surface(
             Modifier.fillMaxSize()
@@ -3385,9 +3456,13 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                     }
                     IconButton(onClick = {
                         if (previewMode) {
+                            switchScrollProgress = if (previewScroll.maxValue > 0) previewScroll.value.toFloat() / previewScroll.maxValue else 0f
+                            suppressCursorScroll = true
+                            returningFromPreview = true
                             previewMode = false
                         } else {
                             if (hasDraftChanges()) saveChanges()
+                            switchScrollProgress = if (editorScroll.maxValue > 0) editorScroll.value.toFloat() / editorScroll.maxValue else 0f
                             previewMode = true
                             keyboardController?.hide()
                         }
@@ -3448,7 +3523,7 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                 val densityScale = androidx.compose.ui.platform.LocalDensity.current.density
                 Box(Modifier.fillMaxWidth().weight(1f).graphicsLayer { rotationY = flipRotation; cameraDistance = 12f * densityScale }) {
                     if (previewMode) {
-                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Column(Modifier.fillMaxSize().verticalScroll(previewScroll).padding(horizontal = 16.dp, vertical = 12.dp)) {
                             location?.let { Text("位置：$it", color = NoteMuted, style = MaterialTheme.typography.labelSmall) }
                             CommentedNotePreview(
                                 content = text.text,
@@ -3472,13 +3547,10 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                         val suggestions = inlineTagSuggestions.take(4)
                         val popupWidth = maxWidth * 0.70f
                         val popupHeight = (suggestions.size * 40 + 4).dp
-                        val cursorMargin = with(density) {
-                            if (activeTagQuery != null && suggestions.isNotEmpty()) (suggestions.size * 40 + 20).dp.toPx()
-                            else 32.dp.toPx()
-                        }
+                        val cursorMargin = with(density) { 32.dp.toPx() }
                         LaunchedEffect(editorTextLayout, text.selection, editorViewportHeight, activeTagQuery, suggestions.size) {
                             val currentLayout = editorTextLayout
-                            if (comments.isEmpty() && currentLayout != null && editorTextLayoutSource == text.text && editorViewportHeight > 0) {
+                            if (!suppressCursorScroll && comments.isEmpty() && currentLayout != null && editorTextLayoutSource == text.text && editorViewportHeight > 0) {
                                 val offset = editorVisualTransformation.filter(androidx.compose.ui.text.AnnotatedString(text.text))
                                     .offsetMapping.originalToTransformed(text.selection.end)
                                 val cursor = currentLayout.getCursorRect(offset)
@@ -3508,19 +3580,24 @@ private fun QuickNoteEditor(note: QuickNote, categories: List<NoteCategory>, all
                             val x = (fieldPosition.x - overlayPosition.x).toFloat()
                                 .coerceIn(0f, (constraints.maxWidth - popupWidthPx).coerceAtLeast(0f))
                                 .toInt()
-                            val y = (
-                                fieldPosition.y + cursorRect.bottom + cursorRect.height - overlayPosition.y +
-                                    with(density) { 8.dp.toPx() }
-                                )
-                                .roundToInt()
+                            val gap = with(density) { 4.dp.toPx() }
+                            val cursorTop = fieldPosition.y + cursorRect.top - overlayPosition.y
+                            val cursorBottom = fieldPosition.y + cursorRect.bottom - overlayPosition.y
+                            val availableAbove = (cursorTop - gap).coerceAtLeast(0f)
+                            val availableBelow = (constraints.maxHeight - cursorBottom - gap).coerceAtLeast(0f)
+                            val desiredHeight = with(density) { popupHeight.toPx() }
+                            val showBelow = availableBelow >= desiredHeight || availableBelow >= availableAbove
+                            val availableHeight = if (showBelow) availableBelow else availableAbove
+                            val height = minOf(desiredHeight, availableHeight)
+                            val y = if (showBelow) cursorBottom + gap else cursorTop - gap - height
                             Surface(
-                                modifier = Modifier.offset { IntOffset(x, y) }.width(popupWidth).height(popupHeight).zIndex(1f),
+                                modifier = Modifier.offset { IntOffset(x, y.roundToInt()) }.width(popupWidth).height(with(density) { height.toDp() }).zIndex(1f),
                                 color = Color(0xFFFFF8F2),
                                 shape = RoundedCornerShape(8.dp),
                                 border = androidx.compose.foundation.BorderStroke(1.dp, NoteSoft),
                                 shadowElevation = 8.dp,
                             ) {
-                                Column(Modifier.padding(vertical = 2.dp)) {
+                                Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 2.dp)) {
                                     suggestions.forEach { category ->
                                         Box(
                                             modifier = Modifier.fillMaxWidth().height(40.dp).clickable {
@@ -4086,6 +4163,9 @@ private fun EmbeddedCommentEditor(
         }
     }
 }
+
+internal fun editorLineStart(text: String, offset: Int): Int =
+    text.lastIndexOf('\n', offset - 1).let { if (it < 0) 0 else it + 1 }
 
 private fun insertTagAtCursor(tag: String, value: TextFieldValue, onChange: (TextFieldValue) -> Unit) {
     val insertion = "#${tag.trim().trimStart('#')} "
